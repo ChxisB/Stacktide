@@ -10,6 +10,20 @@ const SCRUBBERS: [RegExp, string][] = [
   [/\bBearer\s+[\w.~+/-]+=*/gi, `Bearer ${REDACTED}`],
   // Bounded {0,64} runs: unbounded ones backtrack quadratically on `?tokentokentoken...`.
   [/([?&;][\w.-]{0,64}(?:token|key|secret|pass|sig|auth)[\w.-]{0,64}=)[^&\s#]+/gi, `$1${REDACTED}`],
+  // Tokens by shape (GitLab, GitHub, Slack, Stripe-style), AWS access key ids, JWTs.
+  [
+    /\b(?:gl(?:pat|ptt|dt|rt|cbt|oas|soat|ffct|imt|agent|ft|wt)|gh[pousr]|github_pat|xox[abprs]|sk|rk)[-_][\w-]{10,}/g,
+    REDACTED,
+  ],
+  [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, REDACTED],
+  [/\beyJ[\w-]{5,}\.[\w-]{5,}\.[\w-]*/g, REDACTED],
+  // Drizzle's "Failed query: ...\nparams: a,b,c" carries the bound values of the failed statement.
+  [/(\bparams:[ \t]*)[^\n]*/gi, `$1${REDACTED}`],
+  // `password=hunter2`, `"token": "x"`, `API_KEY: x`: the key names a secret, the value goes.
+  [
+    /(["']?[\w.-]{0,32}(?:token|secret|pass(?:word|wd|phrase)?|pwd|api[_-]?key|private[_-]?key|authorization|credential)[\w.-]{0,32}["']?\s{0,3}[:=]\s{0,3})("(?:[^"\\]|\\.){0,2048}"|'(?:[^'\\]|\\.){0,2048}'|[^\s,;&}"']{1,2048})/gi,
+    `$1${REDACTED}`,
+  ],
 ];
 
 export type Level = keyof typeof LEVELS;
@@ -28,7 +42,8 @@ export interface LoggerOptions {
   bindings?: object;
 }
 
-const scrub = (s: string) => SCRUBBERS.reduce((acc, [re, to]) => acc.replace(re, to), s);
+/** Hides secrets in free text (error messages, URLs). Over-redacts rather than miss one. */
+export const scrubText = (s: string) => SCRUBBERS.reduce((acc, [re, to]) => acc.replace(re, to), s);
 
 /** Objects whose own enumerable props are not their useful content. */
 function plain(o: object): object {
@@ -43,12 +58,12 @@ function plain(o: object): object {
 }
 
 function walk(input: unknown, path: Set<object>): unknown {
-  if (typeof input === "string") return scrub(input);
+  if (typeof input === "string") return scrubText(input);
   if (typeof input === "bigint") return input.toString();
   if (typeof input !== "object" || input === null) return input;
   if (ArrayBuffer.isView(input) || input instanceof ArrayBuffer) return "[Binary]";
   if (input instanceof Date) return input.toJSON();
-  if (input instanceof URL) return scrub(input.href);
+  if (input instanceof URL) return scrubText(input.href);
   if (path.has(input)) return "[Circular]";
 
   const value = plain(input);
@@ -80,7 +95,7 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
       body = { logError: "fields could not be serialised" };
     }
     // Built-in fields win over caller fields of the same name.
-    write(JSON.stringify({ ...body, time: new Date().toISOString(), level, msg: scrub(msg) }));
+    write(JSON.stringify({ ...body, time: new Date().toISOString(), level, msg: scrubText(msg) }));
   };
 
   return {

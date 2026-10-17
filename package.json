@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "dev": "bun --env-file=.env.example --watch apps/api/src/index.ts",
+    "worker": "bun --env-file=.env.example --watch apps/api/src/worker-main.ts",
     "dev:db": "docker compose --env-file .env.example up -d --wait db",
     "db:generate": "cd packages/db && bunx drizzle-kit generate",
     "db:migrate": "bun --env-file=.env.example packages/db/src/migrate.ts",

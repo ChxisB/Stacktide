@@ -20,7 +20,7 @@ Done when: endpoint tests cover validation errors, pagination edges, not-found a
 Do: Generate OpenAPI from the routes; export a typed client package that CLI and UI share.
 Done when: a test calls the API through the typed client; CI fails if the generated spec is stale.
 
-### API-6 - Job queue and worker  `[ ]` M - deps: API-1
+### API-6 - Job queue and worker  `[x]` M - deps: API-1
 Do: `jobs` table; `enqueue`, `claim` (`SKIP LOCKED`), `complete`, `fail` with exponential backoff and dead-letter; `apps/api/src/worker.ts` entrypoint with handler registry and graceful stop.
 Done when: a concurrency test with 3 workers and 100 jobs runs each job exactly once; a failing job retries then goes `dead`; `last_error` is redacted.
 

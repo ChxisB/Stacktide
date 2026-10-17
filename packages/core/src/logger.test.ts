@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createLogger } from "./logger";
+import { createLogger, scrubText } from "./logger";
 
 const CANARY = "SECRET-CANARY-9f3a";
 
@@ -83,6 +83,31 @@ describe("createLogger", () => {
     expect(text).not.toContain(CANARY);
     expect(text).toContain("per_page=5");
     expect(text).toContain("gitlab.com/g/p.git");
+  });
+
+  test("scrubs tokens by shape and key=value pairs in free text", () => {
+    const cases = [
+      `clone failed: glpat-${CANARY}-abcdef`,
+      `bad credentials ghp_${CANARY}abcdef`,
+      `aws AKIAABCDEFGHIJKLMNOP denied`,
+      `jwt eyJhbGciOi.eyJzdWIiOi.${CANARY}`,
+      `connect failed password=${CANARY} host=db`,
+      `body {"password":"${CANARY}","user":"x"}`,
+      `env API_TOKEN: ${CANARY}`,
+      `secret = '${CANARY}'`,
+      `Failed query: insert into "t" ("a") values ($1)\nparams: x,${CANARY}`,
+      `body {"password":"ab\\"cd${CANARY}","user":"x"}`, // an escaped quote inside the value
+    ];
+    for (const text of cases) {
+      const out = scrubText(text);
+      expect([text, out.includes(CANARY)]).toEqual([text, false]);
+    }
+    expect(scrubText("password=[x] host=db")).toContain("host=db");
+    expect(scrubText("job 0192f1b4-7c3e-7a31-9d3a-4c1f2b6e8a10 failed")).toContain("0192f1b4-7c3e");
+    expect(scrubText("retry in 5s (token_count=3)")).toContain("5s");
+    expect(scrubText("global_settings_are_loaded task-runner-ready")).toBe(
+      "global_settings_are_loaded task-runner-ready",
+    );
   });
 
   test("scrubbing stays linear on hostile input (no ReDoS)", () => {
