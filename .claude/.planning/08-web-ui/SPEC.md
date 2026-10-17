@@ -1,5 +1,5 @@
 # 08 Web UI - Spec
-Prefix: UI · Milestone: M2 · Status: todo
+Prefix: UI · Milestone: M2 · Status: building
 
 ## Goal
 The "super easy" surface: connect GitLab, pick projects, get a pipeline MR, manage variables per environment, see sync and pipeline health - without reading docs.
