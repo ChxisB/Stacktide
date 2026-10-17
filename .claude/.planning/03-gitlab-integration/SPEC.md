@@ -1,5 +1,5 @@
 # 03 GitLab Integration - Spec
-Prefix: GL · Milestone: M1 · Status: todo
+Prefix: GL · Milestone: M1 · Status: done
 
 ## Goal
 One typed, rate-limit-aware, testable gateway to GitLab, plus project discovery and webhook intake.
