@@ -39,6 +39,8 @@ export interface ListProjectsOptions {
   /** Only projects the token is a member of. Default true. */
   membership?: boolean;
   archived?: boolean;
+  /** Only projects with a larger id: where to pick up a listing that was cut short. */
+  idAfter?: number;
 }
 
 export function projectsApi(client: GitlabClient) {
@@ -53,6 +55,7 @@ export function projectsApi(client: GitlabClient) {
           membership: o.membership ?? true,
           search: o.search,
           archived: o.archived,
+          id_after: o.idAfter,
         };
         for await (const raw of client.paginate("/projects", query)) {
           yield decode(project, raw, "project");

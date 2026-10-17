@@ -1,3 +1,4 @@
+import { PROJECT_TAGS } from "@orch/core";
 import {
   createProject,
   deleteProject,
@@ -31,12 +32,21 @@ import {
   writeErrors,
 } from "./shared";
 
-const projectSchema = z.object({
+const detectedType = z.object({
+  tag: z.enum(PROJECT_TAGS),
+  confidence: z.enum(["high", "medium"]),
+  /** Paths in the repository that suggest the tag. */
+  evidence: z.array(z.string()),
+});
+
+export const projectSchema = z.object({
   id: z.uuid(),
   organizationId: z.uuid(),
   name: z.string(),
   gitlabProjectId: z.number().int().nullable(),
   defaultBranch: z.string(),
+  /** What the repository looks like, as of the last import; empty for a project made by hand. */
+  types: z.array(detectedType),
   ...stamps,
 });
 export const projectDto = (p: typeof projects.$inferSelect): z.infer<typeof projectSchema> => ({
@@ -45,6 +55,7 @@ export const projectDto = (p: typeof projects.$inferSelect): z.infer<typeof proj
   name: p.name,
   gitlabProjectId: p.gitlabProjectId,
   defaultBranch: p.defaultBranch,
+  types: p.detectedTypes,
   createdAt: iso(p.createdAt),
   updatedAt: iso(p.updatedAt),
 });

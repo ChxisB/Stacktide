@@ -58,6 +58,7 @@ const allowed: Record<string, string[]> = {
   "connection.create": ["org admin", "org owner"],
   "connection.read": ["org admin", "org owner"],
   "connection.test": ["org admin", "org owner"],
+  "project.import": ["org admin", "org owner"],
   "connection.delete": ["org admin", "org owner"],
 };
 

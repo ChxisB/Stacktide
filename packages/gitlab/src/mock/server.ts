@@ -429,8 +429,10 @@ export function createMockGitlab(opts: MockOptions = {}) {
       if (req.method === "GET" && rest === "/projects") {
         const search = q("search");
         const archived = q("archived");
+        const after = Number(q("id_after") ?? 0);
         return page(
           projects
+            .filter((p) => p.id > after)
             .filter((p) => !search || p.path.includes(search))
             .filter((p) => archived === undefined || String(p.archived) === archived)
             .map(projectJson),

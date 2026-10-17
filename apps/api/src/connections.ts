@@ -1,4 +1,8 @@
+import { DomainError, type Logger } from "@orch/core";
+import { CryptoError, type KeyProvider } from "@orch/crypto";
+import { type Connection, type Db, openConnection } from "@orch/db";
 import { createGitlab, GitlabError, type GitlabErrorKind } from "@orch/gitlab";
+import { z } from "zod";
 
 /** What a connection test found. A failure is an answer, not an error: `message` is safe to show. */
 export type ConnectionTest =
@@ -13,7 +17,7 @@ export type ConnectionTest =
   | { ok: false; reason: GitlabErrorKind; message: string };
 
 // Fixed texts: GitLab's own error text can name the URL or the path, and a user typed the URL.
-const WHY: Record<GitlabErrorKind, string> = {
+export const WHY: Record<GitlabErrorKind, string> = {
   unauthorized: "GitLab rejected the token: it is wrong, expired or revoked.",
   forbidden:
     "GitLab refused the token: it needs the read_api scope (or api) and an active account.",
@@ -64,4 +68,45 @@ export async function testGitlab(input: {
     if (error instanceof GitlabError) return fail(error.kind);
     throw error;
   }
+}
+
+export const noKeys = () =>
+  new DomainError(
+    "secrets_unavailable",
+    503,
+    "No master key is configured (ORCH_MASTER_KEYS): connections cannot store or use secrets",
+  );
+
+/**
+ * A connection of the organization with its token opened, for talking to the system it belongs to.
+ * Unknown (or another organization's) is a 404; a secret that cannot be opened is an operator's
+ * problem (the master key is gone or the row was altered), logged by code only.
+ */
+export async function openGitlabConnection(
+  deps: { db: Db; keys?: KeyProvider; logger: Logger },
+  orgId: string,
+  connectionId: string,
+  requestId: unknown,
+): Promise<{ connection: Connection; baseUrl: string; token: string }> {
+  if (!deps.keys) throw noKeys();
+  const opened = await openConnection(deps.db, deps.keys, orgId, connectionId).catch((e) => {
+    if (!(e instanceof CryptoError)) throw e;
+    deps.logger.error("connection secret cannot be opened", {
+      request_id: requestId,
+      connection: connectionId,
+      code: e.code,
+    });
+    throw new DomainError(
+      "secret_unreadable",
+      500,
+      "The stored secret cannot be opened: check ORCH_MASTER_KEYS",
+    );
+  });
+  if (!opened) throw new DomainError("not_found", 404, "Connection not found");
+  // The type is free-form: another kind's secret must not be sent to a GitLab URL.
+  if (opened.connection.type !== "gitlab") {
+    throw new DomainError("connection_type", 422, "This is not a GitLab connection");
+  }
+  const { baseUrl } = z.object({ baseUrl: z.string() }).parse(opened.connection.config);
+  return { connection: opened.connection, baseUrl, token: opened.token };
 }

@@ -11,6 +11,7 @@ import { type AuthDeps, authRoutes } from "./routes/auth";
 import { type CiDeps, ciRoutes } from "./routes/ci";
 import { connectionRoutes } from "./routes/connections";
 import { environmentRoutes } from "./routes/environments";
+import { importRoutes } from "./routes/imports";
 import { organizationRoutes } from "./routes/organizations";
 import { projectRoutes } from "./routes/projects";
 import { tokenRoutes } from "./routes/tokens";
@@ -94,6 +95,7 @@ export function createApp(deps: AppDeps) {
     .use(organizationRoutes(deps))
     .use(projectRoutes(deps))
     .use(connectionRoutes(deps))
+    .use(importRoutes(deps))
     .use(environmentRoutes(deps))
     .use(tokenRoutes(deps));
   const open = unguardedRoutes(app, DOCS);

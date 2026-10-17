@@ -24,7 +24,7 @@ Done when: the whole suite is green against the mock; the real-instance run is d
 Do: generic `connections` table; create/test/list/delete for `type='gitlab'`; secret stored via `packages/crypto`; connection test calls `/user` and reports scopes.
 Done when: tests prove the token is encrypted at rest, never returned by any endpoint, and a bad token yields a clear error.
 
-### GL-7 - Project import and type detection  `[ ]` M - deps: GL-2, GL-6
+### GL-7 - Project import and type detection  `[x]` M - deps: GL-2, GL-6
 Do: discover projects the connection can see; import selected ones into `projects`; detect type tags from the repo tree; store them.
 Done when: fixture trees for Bun, Node, Docker, Terraform and mixed repos produce the expected tags; re-import is idempotent.
 

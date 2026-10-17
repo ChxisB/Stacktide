@@ -1,5 +1,5 @@
 import { DomainError, type Logger } from "@orch/core";
-import { CryptoError, type KeyProvider } from "@orch/crypto";
+import type { KeyProvider } from "@orch/crypto";
 import {
   type Connection,
   createConnection,
@@ -7,13 +7,12 @@ import {
   getConnection,
   getOrganization,
   listConnections,
-  openConnection,
 } from "@orch/db";
 import { parseBaseUrl } from "@orch/gitlab";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
-import { type ConnectionTest, testGitlab } from "../connections";
+import { type ConnectionTest, noKeys, openGitlabConnection, testGitlab } from "../connections";
 import { guardPlugin } from "../guard";
 import {
   deleteResponses,
@@ -116,13 +115,6 @@ const audited = (action: string, c: Connection, metadata: Record<string, unknown
   metadata,
 });
 
-const noKeys = () =>
-  new DomainError(
-    "secrets_unavailable",
-    503,
-    "No master key is configured (ORCH_MASTER_KEYS): connections cannot store or use secrets",
-  );
-
 /**
  * Credentials for outside systems, per organization (GL-6). The token is sealed before it is
  * stored and comes back out only to talk to the system it belongs to: no route, log line or audit
@@ -208,24 +200,13 @@ export const connectionRoutes = ({
     .post(
       "/:connectionId/test",
       async ({ params: { orgId, connectionId }, audit, set }): Promise<ConnectionTest> => {
-        if (!keys) throw noKeys();
-        const opened = await openConnection(db, keys, orgId, connectionId).catch((e) => {
-          if (!(e instanceof CryptoError)) throw e;
-          // The master key is gone or the row was altered: an operator's problem, not the caller's.
-          logger.error("connection secret cannot be opened", {
-            request_id: set.headers["x-request-id"],
-            connection: connectionId,
-            code: e.code,
-          });
-          throw new DomainError(
-            "secret_unreadable",
-            500,
-            "The stored secret cannot be opened: check ORCH_MASTER_KEYS",
-          );
-        });
-        if (!opened) throw notFound("Connection");
-        const { baseUrl: url } = z.object({ baseUrl: z.string() }).parse(opened.connection.config);
-        const result = await testGitlab({ baseUrl: url, token: opened.token });
+        const opened = await openGitlabConnection(
+          { db, keys, logger },
+          orgId,
+          connectionId,
+          set.headers["x-request-id"],
+        );
+        const result = await testGitlab({ baseUrl: opened.baseUrl, token: opened.token });
         await db.transaction((tx) =>
           audit(
             tx,

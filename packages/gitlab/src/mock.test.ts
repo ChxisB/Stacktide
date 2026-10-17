@@ -42,6 +42,15 @@ describe("mock server", () => {
     mock.stop();
   });
 
+  test("idAfter resumes a listing after that id, across pages", async () => {
+    const { mock, api } = setup({ maxPerPage: 2 });
+    const ids = [1, 2, 3, 4, 5].map((i) => mock.addProject({ path: `g/p${i}` }).id);
+    const rest = await collect(api.projects.list({ idAfter: ids[1] }));
+    expect(rest.map((p) => p.id)).toEqual(ids.slice(2));
+    expect(await collect(api.projects.list({ idAfter: ids[4] }))).toEqual([]);
+    mock.stop();
+  });
+
   test("filters by archived and search; an empty repository has no default branch", async () => {
     const { mock, api } = setup();
     mock.addProject({ path: "g/live" });

@@ -38,6 +38,8 @@ export const RULES = {
   "connection.read": { org: "admin" },
   "connection.test": { org: "admin" },
   "connection.delete": { org: "admin" },
+  // Reading a connection's GitLab with its token and bringing projects in: the same org admins.
+  "project.import": { org: "admin" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

@@ -169,6 +169,8 @@ describe("coverage", () => {
       [`POST ${O}/:orgId/connections`]: "connection.create",
       [`POST ${O}/:orgId/connections/:connectionId/test`]: "connection.test",
       [`DELETE ${O}/:orgId/connections/:connectionId`]: "connection.delete",
+      [`GET ${O}/:orgId/connections/:connectionId/gitlab-projects`]: "project.import",
+      [`POST ${O}/:orgId/connections/:connectionId/imports`]: "project.import",
     });
   });
 
@@ -208,7 +210,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(22);
+    expect(routes.length).toBe(24);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

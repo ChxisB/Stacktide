@@ -1,5 +1,6 @@
+import type { DetectedType } from "@orch/core";
 import { sql } from "drizzle-orm";
-import { bigint, pgTable, text, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, jsonb, pgTable, text, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { id, timestamps } from "./columns";
 import { organizations } from "./organizations";
 
@@ -15,6 +16,8 @@ export const projects = pgTable(
     // shortcut: number mode loses precision above 2^53; GitLab ids are far below that.
     gitlabProjectId: bigint({ mode: "number" }),
     defaultBranch: text().notNull().default("main"),
+    // What the repository looks like (GL-7), set by an import; never typed in by hand.
+    detectedTypes: jsonb().$type<DetectedType[]>().notNull().default([]),
     ...timestamps(),
   },
   (t) => [
