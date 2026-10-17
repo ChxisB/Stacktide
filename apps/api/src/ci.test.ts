@@ -169,7 +169,7 @@ describe("a valid id_token", () => {
     expect(rest).toEqual({
       type: "Bearer",
       expiresAt: expect.any(String),
-      scopes: ["project.read"],
+      scopes: ["project.read", "run.summary"],
       organizationId: ids.o1,
       projectId: ids.p1,
     });
@@ -187,7 +187,7 @@ describe("a valid id_token", () => {
       gitlabJobId: 777,
       ref: "main",
       refProtected: true,
-      scopes: ["project.read"],
+      scopes: ["project.read", "run.summary"],
     });
     expect(JSON.stringify(row)).not.toContain(token); // only the hash is kept
   });
@@ -536,11 +536,12 @@ describe("the issued token as a credential", () => {
     };
     expect(await as({})).toMatchObject({
       kind: "ci",
+      job: { gitlabJobId: 777, ref: "main" },
       subject: {
         kind: "ci",
         orgRoles: {},
         projectRoles: { [ids.p1]: "reporter" },
-        scopes: ["project.read"],
+        scopes: ["project.read", "run.summary"],
         environmentId: undefined,
       },
     });

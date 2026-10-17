@@ -3,8 +3,21 @@ import { canTransition, RUN_STATES, type RunState } from "@orch/core";
 import { and, eq } from "drizzle-orm";
 import { pgConstraint } from "./pg-error";
 import { createOrganization, createProject, deleteProject } from "./repo";
-import { createRun, getRun, IllegalTransition, listRuns, moveRunStack, type NewRun } from "./runs";
-import { runStacks, runs } from "./schema";
+import {
+  attachRunPipeline,
+  createRun,
+  getPlanResources,
+  getRun,
+  IllegalTransition,
+  listRuns,
+  moveRunStack,
+  type NewRun,
+  type PlanSummary,
+  recordStackJobs,
+  runOfPipeline,
+  storePlanSummary,
+} from "./runs";
+import { runPipelines, runStacks, runs } from "./schema";
 import { createTestDb, type TestDb } from "./testing";
 
 let t: TestDb;
@@ -350,5 +363,261 @@ describe("history", () => {
     expect(await t.db.select().from(runs).where(eq(runs.id, gone.id))).toEqual([]);
     expect(await t.db.select().from(runStacks).where(eq(runStacks.runId, gone.id))).toEqual([]);
     expect(await getRun(t.db, b.org.id, b.project.id, kept.id)).toEqual(kept);
+  });
+});
+
+describe("run pipelines", () => {
+  const attach = (
+    w: Awaited<ReturnType<typeof world>>,
+    runId: string,
+    gitlabPipelineId: number,
+    action: "plan" | "apply" = "plan",
+  ) =>
+    attachRunPipeline(t.db, {
+      organizationId: w.org.id,
+      projectId: w.project.id,
+      runId,
+      gitlabPipelineId,
+      action,
+    });
+
+  test("a pipeline is found with its run and what it does, in that project only", async () => {
+    const w = await world();
+    const other = await world();
+    const run = await createRun(t.db, input(w, ["net", "app"]));
+    await attach(w, run.id, 4001, "plan");
+    await attach(w, run.id, 4002, "apply");
+    const plan = await runOfPipeline(t.db, w.org.id, w.project.id, 4001);
+    expect(plan?.action).toBe("plan");
+    expect(plan?.run).toEqual(run);
+    expect((await runOfPipeline(t.db, w.org.id, w.project.id, 4002))?.action).toBe("apply");
+    expect(await runOfPipeline(t.db, w.org.id, w.project.id, 4003)).toBeUndefined();
+    expect(await runOfPipeline(t.db, other.org.id, w.project.id, 4001)).toBeUndefined();
+    expect(await runOfPipeline(t.db, w.org.id, other.project.id, 4001)).toBeUndefined();
+    expect(await runOfPipeline(t.db, other.org.id, other.project.id, 4001)).toBeUndefined();
+  });
+
+  test("a pipeline belongs to one run, and a run to the project it was made in", async () => {
+    const w = await world();
+    const other = await world();
+    const a = await createRun(t.db, input(w, ["net"]));
+    const b = await createRun(t.db, input(w, ["net"]));
+    const foreign = await createRun(t.db, input(other, ["net"]));
+    await attach(w, a.id, 4100);
+    expect(await refusedBy(attach(w, b.id, 4100))).toBe(
+      "run_pipelines_project_id_gitlab_pipeline_id_pk",
+    );
+    expect(await refusedBy(attach(w, b.id, 4100, "apply"))).toBe(
+      "run_pipelines_project_id_gitlab_pipeline_id_pk",
+    );
+    expect(await refusedBy(attach(w, foreign.id, 4101))).toBe("run_pipelines_run_fk");
+    // the same GitLab number in another project is another pipeline
+    await attach(other, foreign.id, 4100);
+    expect((await runOfPipeline(t.db, w.org.id, w.project.id, 4100))?.run.id).toBe(a.id);
+    expect((await runOfPipeline(t.db, other.org.id, other.project.id, 4100))?.run.id).toBe(
+      foreign.id,
+    );
+  });
+
+  test("the same GitLab number in two projects of one organization finds each project's own run", async () => {
+    const first = await world();
+    const second = {
+      org: first.org,
+      project: await createProject(t.db, { organizationId: first.org.id, name: `p${++n}` }),
+    };
+    const a = await createRun(t.db, input(first, ["net"]));
+    const b = await createRun(t.db, input(second, ["net"]));
+    await attach(first, a.id, 4300);
+    await attach(second, b.id, 4300, "apply");
+    const found = (w: typeof first) => runOfPipeline(t.db, w.org.id, w.project.id, 4300);
+    expect(await found(first)).toMatchObject({ run: { id: a.id }, action: "plan" });
+    expect(await found(second)).toMatchObject({ run: { id: b.id }, action: "apply" });
+  });
+
+  test("the database refuses an action that is not one and an id that is not a pipeline's", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net"]));
+    const bad = (over: object) =>
+      t.db.insert(runPipelines).values({
+        organizationId: w.org.id,
+        projectId: w.project.id,
+        runId: run.id,
+        gitlabPipelineId: 4200,
+        action: "plan",
+        ...over,
+      });
+    expect(await refusedBy(bad({ action: "destroy" }))).toBe("run_pipelines_action_check");
+    expect(await refusedBy(bad({ gitlabPipelineId: 0 }))).toBe("run_pipelines_pipeline_check");
+    expect(await refusedBy(bad({ gitlabPipelineId: -5 }))).toBe("run_pipelines_pipeline_check");
+  });
+
+  test("they go with the run, and with the project", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net"]));
+    await attach(w, run.id, 4300);
+    await deleteProject(t.db, w.org.id, w.project.id);
+    expect(await t.db.select().from(runPipelines).where(eq(runPipelines.runId, run.id))).toEqual(
+      [],
+    );
+  });
+});
+
+describe("recordStackJobs", () => {
+  const scope = (w: Awaited<ReturnType<typeof world>>, runId: string) =>
+    [t.db, w.org.id, w.project.id, runId] as const;
+
+  test("notes the jobs of a stack, only what is given, and the latest wins (a retry is a new job)", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net", "app"]));
+    await recordStackJobs(...scope(w, run.id), "net", { planJobId: 11, summaryJobId: 12 });
+    await recordStackJobs(...scope(w, run.id), "net", { summaryJobId: 22 });
+    await recordStackJobs(...scope(w, run.id), "net", {});
+    await recordStackJobs(...scope(w, run.id), "net", { planJobId: undefined });
+    const got = await getRun(t.db, w.org.id, w.project.id, run.id);
+    expect(got?.stacks.map((s) => [s.stack, s.planJobId, s.summaryJobId])).toEqual([
+      ["app", null, null],
+      ["net", 11, 22],
+    ]);
+  });
+
+  test("an id from another organization, project or run changes nothing, and a bad job id is refused", async () => {
+    const w = await world();
+    const other = await world();
+    const run = await createRun(t.db, input(w, ["net"]));
+    await recordStackJobs(t.db, other.org.id, w.project.id, run.id, "net", { planJobId: 5 });
+    await recordStackJobs(t.db, w.org.id, other.project.id, run.id, "net", { planJobId: 5 });
+    await recordStackJobs(...scope(w, run.id), "web", { planJobId: 5 });
+    expect((await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks[0]?.planJobId).toBeNull();
+    expect(await refusedBy(recordStackJobs(...scope(w, run.id), "net", { summaryJobId: 0 }))).toBe(
+      "run_stacks_jobs_check",
+    );
+  });
+});
+
+describe("plan summaries", () => {
+  const summary: PlanSummary = {
+    add: 2,
+    change: 1,
+    destroy: 3,
+    resources: [
+      { address: "aws_vpc.main", actions: ["create"] },
+      { address: "aws_instance.web[0]", actions: ["delete", "create"] },
+    ],
+  };
+  const store = (
+    w: Awaited<ReturnType<typeof world>>,
+    runId: string,
+    stack: string,
+    s: PlanSummary = summary,
+  ) => storePlanSummary(t.db, w.org.id, w.project.id, runId, stack, s);
+
+  test("stores counts and resources, and a read of the run shows the counts, not the resources", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net", "app"]));
+    const row = await store(w, run.id, "net");
+    expect(row).toMatchObject({ stack: "net", planAdd: 2, planChange: 1, planDestroy: 3 });
+    expect(row?.summarizedAt).toBeInstanceOf(Date);
+    const got = await getRun(t.db, w.org.id, w.project.id, run.id);
+    const net = got?.stacks.find((s) => s.stack === "net");
+    expect(net).toMatchObject({ planAdd: 2, planChange: 1, planDestroy: 3 });
+    expect(got?.stacks.find((s) => s.stack === "app")).toMatchObject({
+      planAdd: null,
+      planChange: null,
+      planDestroy: null,
+      summarizedAt: null,
+    });
+    for (const s of [
+      ...(got?.stacks ?? []),
+      ...(await listRuns(t.db, w.org.id, w.project.id, { limit: 5 })).flatMap((r) => r.stacks),
+      row,
+    ]) {
+      expect(s && "planResources" in s).toBe(false);
+    }
+    expect(await getPlanResources(t.db, w.org.id, w.project.id, run.id, "net")).toEqual(
+      summary.resources,
+    );
+    expect(await getPlanResources(t.db, w.org.id, w.project.id, run.id, "app")).toEqual([]);
+  });
+
+  test("a later summary replaces the first, whether or not it differs", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net"]));
+    await store(w, run.id, "net");
+    await store(w, run.id, "net");
+    await store(w, run.id, "net", { add: 0, change: 0, destroy: 0, resources: [] });
+    const net = (await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks[0];
+    expect([net?.planAdd, net?.planChange, net?.planDestroy]).toEqual([0, 0, 0]);
+    expect(await getPlanResources(t.db, w.org.id, w.project.id, run.id, "net")).toEqual([]);
+  });
+
+  test("only while the stack has no outcome: queued, planning and planned take one, the rest refuse", async () => {
+    const w = await world();
+    for (const status of RUN_STATES) {
+      const run = await createRun(t.db, input(w, ["net"]));
+      await setStatus(run.id, "net", status);
+      const stored = await store(w, run.id, "net");
+      expect(stored !== undefined, status).toBe(["queued", "planning", "planned"].includes(status));
+      if (!stored) {
+        const net = (await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks[0];
+        expect(net?.planAdd, status).toBeNull();
+      }
+    }
+  });
+
+  test("an id from another organization, project or run, or a stack that is not there, stores nothing", async () => {
+    const w = await world();
+    const other = await world();
+    const run = await createRun(t.db, input(w, ["net"]));
+    expect(
+      await storePlanSummary(t.db, other.org.id, w.project.id, run.id, "net", summary),
+    ).toBeUndefined();
+    expect(
+      await storePlanSummary(t.db, w.org.id, other.project.id, run.id, "net", summary),
+    ).toBeUndefined();
+    expect(await store(w, run.id, "web")).toBeUndefined();
+    expect(await getPlanResources(t.db, other.org.id, w.project.id, run.id, "net")).toEqual([]);
+    expect((await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks[0]?.planAdd).toBeNull();
+  });
+
+  test("the database refuses a summary that is partial, negative or too big", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net"]));
+    const write = (set: Partial<typeof runStacks.$inferInsert>) =>
+      t.db
+        .update(runStacks)
+        .set(set)
+        .where(and(eq(runStacks.runId, run.id), eq(runStacks.stack, "net")));
+    const whole = {
+      planAdd: 1,
+      planChange: 0,
+      planDestroy: 0,
+      planResources: [],
+      summarizedAt: new Date(),
+    };
+    expect(await refusedBy(write({ planAdd: 1 }))).toBe("run_stacks_summary_check");
+    expect(await refusedBy(write({ ...whole, planResources: null }))).toBe(
+      "run_stacks_summary_check",
+    );
+    expect(await refusedBy(write({ ...whole, summarizedAt: null }))).toBe(
+      "run_stacks_summary_check",
+    );
+    expect(await refusedBy(write({ ...whole, planChange: -1 }))).toBe("run_stacks_summary_check");
+    expect(await refusedBy(write({ ...whole, planDestroy: -1 }))).toBe("run_stacks_summary_check");
+    // the route limits the list to 500 resources; the database only bounds its size
+    const big = [{ address: "x".repeat(4_000_001), actions: ["create"] }];
+    expect(await refusedBy(write({ ...whole, planResources: big }))).toBe(
+      "run_stacks_summary_check",
+    );
+    const fits = Array.from({ length: 500 }, (_, i) => ({
+      address: `module.m["${"k".repeat(900)}"].r.a${i}`,
+      actions: ["delete", "create"],
+    }));
+    expect(await refusedBy(write({ ...whole, planResources: fits }))).toBeUndefined();
+    // the worst the route lets through: 500 addresses of 1024 characters that all need escaping
+    const worst = Array.from({ length: 500 }, () => ({
+      address: '"'.repeat(1024),
+      actions: ["create", "create", "create", "create"],
+    }));
+    expect(await refusedBy(write({ ...whole, planResources: worst }))).toBeUndefined();
   });
 });

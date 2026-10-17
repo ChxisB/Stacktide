@@ -149,6 +149,32 @@ describe("request media type", () => {
     }
   });
 
+  test("a DomainError thrown by a route's own parser keeps its status; any other parse failure is 400", async () => {
+    const parser = (fail: () => never) =>
+      setup()
+        .app.post("/limited", ({ body }) => body, { parse: fail })
+        .handle(
+          new Request("http://localhost/limited", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: "{}",
+          }),
+        );
+    const tooBig = await parser(() => {
+      throw new DomainError("payload_too_large", 413, "Too large");
+    });
+    expect(tooBig.status).toBe(413);
+    expect(await tooBig.json()).toMatchObject({ code: "payload_too_large" });
+    const other = await parser(() => {
+      throw new Error("boom");
+    });
+    expect(other.status).toBe(400);
+    expect(await other.json()).toMatchObject({
+      code: "bad_request",
+      detail: expect.not.stringContaining("boom"),
+    });
+  });
+
   test("JSON, with or without parameters, passes; so does no body at all", async () => {
     for (const type of [
       "application/json",

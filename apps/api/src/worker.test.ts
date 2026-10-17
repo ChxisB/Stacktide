@@ -3,7 +3,7 @@ import { createLogger } from "@orch/core";
 import { createDb, type Db, enqueue, jobs, schedules, upsertSchedule } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { eq, inArray } from "drizzle-orm";
-import { createWorker, type JobHandler, type Worker } from "./worker";
+import { chain, createWorker, type JobHandler, type Worker } from "./worker";
 
 let t: TestDb;
 beforeAll(async () => {
@@ -324,5 +324,45 @@ describe("worker", () => {
     } finally {
       await t.db.delete(schedules).where(inArray(schedules.queue, ["Not A Queue", other]));
     }
+  });
+});
+
+describe("chain", () => {
+  const ctx = { id: "j", payload: {} } as Parameters<JobHandler>[0];
+
+  test("runs every handler for the job", async () => {
+    const ran: string[] = [];
+    await chain(
+      async () => void ran.push("a"),
+      async () => void ran.push("b"),
+    )(ctx);
+    expect(ran.sort()).toEqual(["a", "b"]);
+  });
+
+  test("a handler that fails does not stop the others, and the job fails", async () => {
+    const ran: string[] = [];
+    const run = chain(
+      async () => {
+        throw new Error("first fails");
+      },
+      async () => {
+        await Bun.sleep(5);
+        ran.push("second");
+      },
+    )(ctx);
+    await expect(run).rejects.toThrow("first fails");
+    expect(ran).toEqual(["second"]);
+  });
+
+  test("the first failure is the one that is raised", async () => {
+    const run = chain(
+      async () => {
+        throw new Error("one");
+      },
+      async () => {
+        throw new Error("two");
+      },
+    )(ctx);
+    await expect(run).rejects.toThrow("one");
   });
 });

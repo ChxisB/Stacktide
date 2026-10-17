@@ -20,7 +20,7 @@ Done when: snapshot tests plus GitLab CI lint on the output (mock) pass; a cycle
 Do: `runs` + `run_stacks` tables; pure transition table; create/list/get API; audit.
 Done when: tests cover every legal transition and reject every illegal one.
 
-### IAC-6 - Ingest: webhooks and plan summaries  `[ ]` M - deps: IAC-5, GL-8, AUTH-6
+### IAC-6 - Ingest: webhooks and plan summaries  `[x]` M - deps: IAC-5, GL-8, AUTH-6
 Do: pipeline/job webhooks move run states; `POST /runs/:id/plan-summary` accepts add/change/destroy counts and a resource list from the job (ci principal must match project, ref and stack).
 Done when: tests cover out-of-order and duplicate events, a mismatched ci principal (403) and size limits.
 

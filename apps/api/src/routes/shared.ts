@@ -120,3 +120,20 @@ export const readErrors = {
 export const writeErrors = { ...readErrors, 409: problemSchema, 415: problemSchema } as const;
 /** Deletes: no body on success; they conflict (409), and 415 if a client sends a non-JSON body. */
 export const deleteResponses = { 204: z.undefined(), ...writeErrors } as const;
+
+/** The body as text, or undefined when it is longer than `max` (the rest is never read). */
+export async function readCapped(request: Request, max: number) {
+  if (Number(request.headers.get("content-length")) > max) return undefined;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = request.body?.getReader();
+  for (let r = await reader?.read(); r && !r.done; r = await reader?.read()) {
+    size += r.value.length;
+    if (size > max) {
+      await reader?.cancel();
+      return undefined;
+    }
+    chunks.push(r.value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}

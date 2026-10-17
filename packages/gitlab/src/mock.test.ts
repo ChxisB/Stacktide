@@ -136,6 +136,26 @@ describe("pipelines", () => {
     mock.stop();
   });
 
+  test("one job can be played on its own, and its id and the pipeline's status are known", async () => {
+    const { mock, api } = ready();
+    const p = await api.pipelines.trigger("g/p", "main");
+    const ids = mock.jobIds(p.id);
+    expect(Object.keys(ids).sort()).toEqual(["build", "test"]);
+    expect(mock.setJobStatus(p.id, "build", "running")).toBe(ids.build as number);
+    mock.setJobStatus(p.id, "test", "failed", "stuck_or_timeout_failure");
+    mock.setPipelineStatus(p.id, "running");
+    const jobs = await collect(api.pipelines.jobs("g/p", p.id));
+    expect(jobs.map((j) => [j.id, j.name, j.status, j.failureReason])).toEqual([
+      [ids.build as number, "build", "running", null],
+      [ids.test as number, "test", "failed", "stuck_or_timeout_failure"],
+    ]);
+    expect((await api.pipelines.get("g/p", p.id)).status).toBe("running");
+    expect(() => mock.setJobStatus(p.id, "deploy", "running")).toThrow("no job deploy");
+    expect(() => mock.jobIds(1)).toThrow("no pipeline 1");
+    expect(() => mock.setPipelineStatus(1, "failed")).toThrow("no pipeline 1");
+    mock.stop();
+  });
+
   test("a failed job says why, and stops saying so once it runs again or passes", async () => {
     const { mock, api } = ready();
     const p = await api.pipelines.trigger("g/p", "main");

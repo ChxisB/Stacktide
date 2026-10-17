@@ -102,6 +102,7 @@ const allowed: Record<string, string[]> = {
   "pipeline.retry": MAINTAINER_UP,
   "run.read": REPORTER_UP,
   "run.create": DEVELOPER_UP,
+  "run.summary": REPORTER_UP,
 };
 
 describe("role x action", () => {
@@ -331,6 +332,16 @@ describe("a subject tied to an environment", () => {
     expect(allowed(res)).toEqual(["project.read"]);
     // another project's environment id does not help: the role is on one project only
     expect(allowed({ ...own, projectId: "project-2" })).toEqual([]);
+  });
+
+  test("a CI job with no environment may read its project and post a plan summary, on that project only", () => {
+    const job = ci({ environmentId: undefined, scopes: ["project.read", "run.summary"] });
+    const allowed = (resource: Resource) =>
+      Object.keys(RULES)
+        .filter((a) => can(job, a, resource))
+        .sort();
+    expect(allowed(res)).toEqual(["project.read", "run.summary"]);
+    expect(allowed({ ...res, projectId: "project-2" })).toEqual([]);
   });
 
   test("roles and scopes still apply on its own environment", () => {

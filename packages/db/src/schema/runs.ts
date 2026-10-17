@@ -1,12 +1,15 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   check,
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   primaryKey,
   text,
+  timestamp,
   unique,
   uniqueIndex,
   uuid,
@@ -65,6 +68,18 @@ export const runStacks = pgTable(
     stack: text().notNull(),
     status: text().notNull().default("queued"),
     error: text(),
+    // The GitLab jobs of the stack's plan and of the job that posts its summary, found from the
+    // pipeline events: the summary route lets only that job post (IAC-6).
+    planJobId: bigint({ mode: "number" }),
+    summaryJobId: bigint({ mode: "number" }),
+    // What the plan would do: counts, and the `{address, actions}` of at most 500 resources (the
+    // route's limit; here only a size); never a value, a plan holds secrets. All set together, by
+    // the summary the plan job posts.
+    planAdd: integer(),
+    planChange: integer(),
+    planDestroy: integer(),
+    planResources: jsonb(),
+    summarizedAt: timestamp({ withTimezone: true }),
     ...timestamps(),
   },
   (t) => [
@@ -84,5 +99,48 @@ export const runStacks = pgTable(
       sql`${t.status} in ('queued', 'planning', 'planned', 'applying', 'applied', 'failed', 'discarded', 'canceled')`,
     ),
     check("run_stacks_error_check", sql`length(${t.error}) <= 500`),
+    check(
+      "run_stacks_jobs_check",
+      sql`coalesce(${t.planJobId}, 1) > 0 and coalesce(${t.summaryJobId}, 1) > 0`,
+    ),
+    // The size bound is for the text of the stored value, which Bun.sql stores as a JSON string (every quote
+    // escaped twice over): 500 addresses of 1024 quote marks come to about 2.3 million characters.
+    check(
+      "run_stacks_summary_check",
+      sql`(${t.planAdd} is null) = (${t.planChange} is null)
+        and (${t.planAdd} is null) = (${t.planDestroy} is null)
+        and (${t.planAdd} is null) = (${t.planResources} is null)
+        and (${t.planAdd} is null) = (${t.summarizedAt} is null)
+        and coalesce(least(${t.planAdd}, ${t.planChange}, ${t.planDestroy}), 0) >= 0
+        and (${t.planResources} is null or length(${t.planResources}::text) <= 4000000)`,
+    ),
+  ],
+);
+
+/**
+ * The GitLab pipelines a run started, by what each does (IAC-6): a pipeline event is matched to its
+ * run here, and one for a pipeline not in this table is not a run's. Written once, when the
+ * pipeline is triggered (IAC-7, IAC-8), and not changed after that.
+ */
+export const runPipelines = pgTable(
+  "run_pipelines",
+  {
+    organizationId: uuid().notNull(),
+    projectId: uuid().notNull(),
+    gitlabPipelineId: bigint({ mode: "number" }).notNull(),
+    runId: uuid().notNull(),
+    action: text().notNull(),
+    ...timestamps(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.projectId, t.gitlabPipelineId] }),
+    index("run_pipelines_run_idx").on(t.runId),
+    foreignKey({
+      name: "run_pipelines_run_fk",
+      columns: [t.runId, t.organizationId, t.projectId],
+      foreignColumns: [runs.id, runs.organizationId, runs.projectId],
+    }).onDelete("cascade"),
+    check("run_pipelines_action_check", sql`${t.action} in ('plan', 'apply')`),
+    check("run_pipelines_pipeline_check", sql`${t.gitlabPipelineId} > 0`),
   ],
 );

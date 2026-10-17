@@ -11,10 +11,11 @@ import {
 } from "@orch/db";
 import { z } from "zod";
 import { pipelineEventHandler, workerGitlab } from "./pipeline-runs";
+import { runEventHandler } from "./run-ingest";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
 import { syncAutoHandler } from "./sync-auto";
 import { driftCheckHandler, driftTickHandler } from "./sync-drift";
-import { createWorker, type JobHandler } from "./worker";
+import { chain, createWorker, type JobHandler } from "./worker";
 
 const config = loadConfig(
   z.object({
@@ -54,10 +55,9 @@ if (keys) {
   handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger });
   handlers[DRIFT_TICK_QUEUE] = driftTickHandler({ db });
   handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger });
-  handlers[WEBHOOK_QUEUE] = pipelineEventHandler({
-    db,
-    gitlab: workerGitlab({ db, keys, logger }),
-  });
+  // one queue, two consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it belongs to (IAC-6)
+  const gitlab = { db, gitlab: workerGitlab({ db, keys, logger }) };
+  handlers[WEBHOOK_QUEUE] = chain(pipelineEventHandler(gitlab), runEventHandler(gitlab));
   // the schedule lives in the database, so every worker states it; the same timing keeps its place
   // shortcut: workers started with different values take turns setting it; give it one owner when that matters.
   await upsertSchedule(db, {

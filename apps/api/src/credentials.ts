@@ -39,7 +39,14 @@ export const bearerPrincipal = (options: SessionOptions): PrincipalResolver => {
     const given = tokenOf(request);
     if (given && isCiToken(given)) {
       const row = await useCiToken(options.db, hashToken(given));
-      return row && { id: row.id, kind: "ci", subject: ciSubject(row) };
+      return (
+        row && {
+          id: row.id,
+          kind: "ci",
+          subject: ciSubject(row),
+          job: { gitlabJobId: row.gitlabJobId, ref: row.ref },
+        }
+      );
     }
     const found = given && (await useApiToken(options.db, hashToken(given)));
     if (!found) return undefined;

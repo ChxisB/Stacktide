@@ -1,9 +1,12 @@
-import { canTransition, isFinishedRun, type RunState } from "@orch/core";
-import { and, desc, eq, inArray, lt } from "drizzle-orm";
+import { canTransition, isFinishedRun, type RunAction, type RunState } from "@orch/core";
+import { and, desc, eq, getTableColumns, inArray, lt } from "drizzle-orm";
 import type { Executor } from "./repo";
-import { runStacks, runs } from "./schema";
+import { runPipelines, runStacks, runs } from "./schema";
 
-export type RunStack = typeof runStacks.$inferSelect;
+// What the plan would do can be 500 resources long and is read by `getPlanResources` only: every
+// other read of a stack leaves it out.
+const { planResources: _resources, ...stackColumns } = getTableColumns(runStacks);
+export type RunStack = Omit<typeof runStacks.$inferSelect, "planResources">;
 export type RunWithStacks = typeof runs.$inferSelect & { stacks: RunStack[] };
 export type NewRun = Pick<
   typeof runs.$inferInsert,
@@ -28,7 +31,7 @@ const byStack = (a: RunStack, b: RunStack) => (a.stack < b.stack ? -1 : a.stack 
 const withStacks = async (db: Executor, rows: (typeof runs.$inferSelect)[]) => {
   if (rows.length === 0) return [];
   const stacks = await db
-    .select()
+    .select(stackColumns)
     .from(runStacks)
     .where(
       inArray(
@@ -57,7 +60,7 @@ export async function createRun(db: Executor, input: NewRun): Promise<RunWithSta
           stack,
         })),
       )
-      .returning();
+      .returning(stackColumns);
     return { ...run, stacks: rows.sort(byStack) };
   });
 }
@@ -130,6 +133,131 @@ export async function moveRunStack(
         eq(runStacks.status, from),
       ),
     )
-    .returning();
+    .returning(stackColumns);
   return row;
+}
+
+export interface NewRunPipeline {
+  organizationId: string;
+  projectId: string;
+  runId: string;
+  /** GitLab's id of the pipeline. */
+  gitlabPipelineId: number;
+  action: RunAction;
+}
+
+/**
+ * Records that a GitLab pipeline belongs to a run, so that its events can be matched to it. A
+ * pipeline belongs to one run; a second claim, or a run of another project, throws.
+ */
+export async function attachRunPipeline(db: Executor, input: NewRunPipeline): Promise<void> {
+  await db.insert(runPipelines).values(input);
+}
+
+/** The run a GitLab pipeline belongs to and what the pipeline does, if it is a run's. */
+export async function runOfPipeline(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  gitlabPipelineId: number,
+): Promise<{ run: RunWithStacks; action: RunAction } | undefined> {
+  const [link] = await db
+    .select()
+    .from(runPipelines)
+    .where(
+      and(
+        eq(runPipelines.organizationId, organizationId),
+        eq(runPipelines.projectId, projectId),
+        eq(runPipelines.gitlabPipelineId, gitlabPipelineId),
+      ),
+    );
+  if (!link) return undefined;
+  const run = await getRun(db, organizationId, projectId, link.runId);
+  return run && { run, action: link.action as RunAction };
+}
+
+const stackOf = (organizationId: string, projectId: string, runId: string, stack: string) =>
+  and(
+    eq(runStacks.runId, runId),
+    eq(runStacks.stack, stack),
+    eq(runStacks.projectId, projectId),
+    eq(runStacks.organizationId, organizationId),
+  );
+
+/**
+ * Notes the GitLab jobs of a stack: the one that plans it and the one that posts its summary. The
+ * latest seen wins, since a retried job is a new job. Only what is given is changed.
+ */
+export async function recordStackJobs(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  runId: string,
+  stack: string,
+  jobs: { planJobId?: number | undefined; summaryJobId?: number | undefined },
+): Promise<void> {
+  const set = {
+    ...(jobs.planJobId === undefined ? {} : { planJobId: jobs.planJobId }),
+    ...(jobs.summaryJobId === undefined ? {} : { summaryJobId: jobs.summaryJobId }),
+  };
+  if (Object.keys(set).length === 0) return;
+  await db
+    .update(runStacks)
+    .set(set)
+    .where(stackOf(organizationId, projectId, runId, stack));
+}
+
+export interface PlanSummary {
+  add: number;
+  change: number;
+  destroy: number;
+  /** At most 500: the counts say how many there are. */
+  resources: readonly { address: string; actions: readonly string[] }[];
+}
+
+/**
+ * Stores what a stack's plan would do, replacing an earlier summary (a job may post twice), while
+ * the stack is still `queued`, `planning` or `planned`. `undefined` when it is not: after that the
+ * plan is applied or gone and the summary is no longer news.
+ */
+export async function storePlanSummary(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  runId: string,
+  stack: string,
+  summary: PlanSummary,
+): Promise<RunStack | undefined> {
+  const [row] = await db
+    .update(runStacks)
+    .set({
+      planAdd: summary.add,
+      planChange: summary.change,
+      planDestroy: summary.destroy,
+      planResources: summary.resources,
+      summarizedAt: new Date(),
+    })
+    .where(
+      and(
+        stackOf(organizationId, projectId, runId, stack),
+        inArray(runStacks.status, ["queued", "planning", "planned"]),
+      ),
+    )
+    .returning(stackColumns);
+  return row;
+}
+
+/** The resources a stack's plan would change, as its summary listed them; empty before there is one. */
+export async function getPlanResources(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  runId: string,
+  stack: string,
+): Promise<PlanSummary["resources"]> {
+  const [row] = await db
+    .select({ resources: runStacks.planResources })
+    .from(runStacks)
+    .where(stackOf(organizationId, projectId, runId, stack));
+  return (row?.resources ?? []) as PlanSummary["resources"];
 }

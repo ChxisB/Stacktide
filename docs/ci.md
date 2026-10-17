@@ -45,12 +45,15 @@ Only this, and only for the job's project and environment:
 | | |
 |---|---|
 | read the project | `project.read` |
+| post the plan summary of an IaC run's stack (a job with no environment) | `run.summary` (audited as the CI job) |
 | read the environment | `environment.read` |
 | read the environment's variables, secrets included | `secret.reveal` (audited as the CI job) |
 
 It cannot list other environments, change anything, or create tokens. A job in a **protected**
 environment (or one GitLab does not say is unprotected) is only signed in from a **protected ref**.
-A job with no `environment:` gets a token for the project only, which cannot read variables.
+A job with no `environment:` gets a token for the project only, which cannot read variables. It can post a
+plan summary (counts and resource addresses, never values) for one stack of one run, and only from the job
+the platform recorded as that stack's summary job, on the run's own ref.
 
 `orch run` does not pass `ORCH_TOKEN` or `ORCH_ID_TOKEN` on to the command it starts (the id_token can be traded for a new token until it expires). An id_token under another name (`--id-token-env`) is not held back.
 

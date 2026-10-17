@@ -17,6 +17,18 @@ export interface JobContext {
 /** Resolve to finish the job, throw to fail it (it is retried with backoff until its attempts run out). */
 export type JobHandler = (ctx: JobContext) => Promise<void>;
 
+/**
+ * Several consumers for one queue: each handler runs for the job and one failing does not stop the
+ * others. If any failed, the job fails and is retried with all of them again, so each must be
+ * idempotent.
+ */
+export const chain =
+  (...handlers: JobHandler[]): JobHandler =>
+  async (ctx) => {
+    const results = await Promise.allSettled(handlers.map((handler) => handler(ctx)));
+    for (const r of results) if (r.status === "rejected") throw r.reason;
+  };
+
 export interface WorkerOptions {
   db: Db;
   logger: Logger;

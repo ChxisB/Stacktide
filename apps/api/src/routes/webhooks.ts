@@ -5,7 +5,7 @@ import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { guardPlugin } from "../guard";
 import { hashToken, randomToken, safeEqual } from "../tokens";
-import { notFound, problemSchema, type RouteDeps, writeErrors } from "./shared";
+import { notFound, problemSchema, type RouteDeps, readCapped, writeErrors } from "./shared";
 
 /** GitLab's `X-Gitlab-Event` -> the name jobs use. Any other event is acknowledged and dropped. */
 const EVENTS = {
@@ -71,23 +71,6 @@ const scalar = (v: unknown) =>
   (typeof v === "string" && v.length <= MAX_VALUE) || (typeof v === "number" && Number.isFinite(v))
     ? v
     : undefined;
-
-/** The body as text, or undefined when it is longer than `max` (the rest is never read). */
-async function readCapped(request: Request, max: number) {
-  if (Number(request.headers.get("content-length")) > max) return undefined;
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  const reader = request.body?.getReader();
-  for (let r = await reader?.read(); r && !r.done; r = await reader?.read()) {
-    size += r.value.length;
-    if (size > max) {
-      await reader?.cancel();
-      return undefined;
-    }
-    chunks.push(r.value);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
 
 const badBody = () => new DomainError("invalid_webhook", 400, "The webhook body is not valid");
 

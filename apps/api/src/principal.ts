@@ -1,13 +1,20 @@
 import type { Subject } from "@orch/core";
 import { Elysia } from "elysia";
 
+/** The GitLab job a CI token was issued to: what a route may check beyond the token's scopes. */
+export interface CiJob {
+  /** Null when the exchange's claims carried no job id. */
+  gitlabJobId: number | null;
+  ref: string;
+}
+
 /**
  * Who is calling. `dev` is the local-development stand-in and may do anything; every other kind
- * is held to its `subject` by the route guards.
+ * is held to its `subject` by the route guards. A `ci` principal also names its `job`.
  */
 export type Principal =
   | { id: string; kind: "dev" }
-  | { id: string; kind: Subject["kind"]; subject: Subject };
+  | { id: string; kind: Subject["kind"]; subject: Subject; job?: CiJob };
 
 /**
  * Resolves the caller: nothing for an anonymous request (a guard turns that into 401), a

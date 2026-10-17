@@ -31,6 +31,9 @@ export const ENVIRONMENT_SCOPES: readonly string[] = [
   "secret.reveal",
 ];
 
+/** A job in no environment reads its project, and posts the plan summary of an IaC run's stack (see `runRoutes`); nothing more. */
+const PROJECT_SCOPES: readonly string[] = ["project.read", "run.summary"];
+
 // GitLab writes every claim as text, booleans and ids included.
 const numeric = z.string().regex(/^[1-9]\d{0,14}$/);
 const flag = z.enum(["true", "false"]);
@@ -57,8 +60,9 @@ const exchanged = z.object({
 
 /**
  * `POST /auth/ci/exchange`: a CI job swaps its GitLab `id_token` for a short-lived token that
- * reads its own project, and reads and reveals the variables of its own environment if it runs in
- * one (`orch run` needs them). The project is the one
+ * reads its own project, posts the plan summary of an IaC run if it runs in no environment (the
+ * route checks that it is the job recorded for that stack), and reads and reveals the variables
+ * of its own environment if it runs in one (`orch run` needs them). The project is the one
  * linked to the token's `project_id`, the environment the one with the token's `environment` as
  * slug; neither is guessed. An environment GitLab calls protected (or does not say) is only
  * reached from a protected ref. The token holds nothing else and cannot mint more tokens. Both
@@ -156,7 +160,7 @@ export const ciRoutes = ({
         }
 
         const fresh = newCiToken();
-        const scopes = environmentId ? ENVIRONMENT_SCOPES : ["project.read"];
+        const scopes = environmentId ? ENVIRONMENT_SCOPES : PROJECT_SCOPES;
         const row = await db.transaction(async (tx) => {
           const row = await createCiToken(tx, {
             organizationId: project.organizationId,

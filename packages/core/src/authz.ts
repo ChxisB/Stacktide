@@ -84,6 +84,8 @@ export const RULES = {
   // Runs of IaC stacks: a plan only reads the project's repository and runs its own CI, as any merge request does, so developers may start one and reporters may read. What a run holds is names, a commit and states.
   "run.read": { project: "reporter" },
   "run.create": { project: "developer" },
+  // The plan summary a plan job posts for its own stack (counts and addresses). A reporter-level rule, as the CI token is a reporter: the route further requires that the caller is the CI job recorded for that stack's summary.
+  "run.summary": { project: "reporter" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

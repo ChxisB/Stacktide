@@ -64,7 +64,7 @@ const EXPIRE_IN = "1 week";
 const MAX_NEEDS = 50;
 // shortcut: the plan wait for the state lock is fixed; upgrade when a stack needs another one.
 const LOCK_TIMEOUT = "5m";
-// shortcut: at most 500 resources are listed in a summary (the counts are whole); upgrade with IAC-6's limit.
+// shortcut: at most 500 resources are listed in a summary (the counts are whole); the plan-summary route refuses more, so raise both together.
 const MAX_LISTED = 500;
 
 /**

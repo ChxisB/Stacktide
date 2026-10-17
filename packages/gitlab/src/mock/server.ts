@@ -1037,6 +1037,28 @@ export function createMockGitlab(opts: MockOptions = {}) {
       }
       p.status = status;
     },
+    /** Plays the runner for one job of a pipeline (a failed one gets `reason`); returns the job's id. */
+    setJobStatus(pipelineId: number, name: string, status: string, reason = "script_failure") {
+      const p = projects.flatMap((x) => x.pipelines).find((x) => x.id === pipelineId);
+      const j = p?.jobs.find((x) => x.name === name);
+      if (!j) throw new Error(`no job ${name} in pipeline ${pipelineId}`);
+      j.status = status;
+      if (status === "failed") j.failure_reason = reason;
+      else delete j.failure_reason;
+      return j.id;
+    },
+    /** The jobs of a pipeline, by name: how a test learns the ids GitLab gave them. */
+    jobIds(pipelineId: number) {
+      const p = projects.flatMap((x) => x.pipelines).find((x) => x.id === pipelineId);
+      if (!p) throw new Error(`no pipeline ${pipelineId}`);
+      return Object.fromEntries(p.jobs.map((j) => [j.name, j.id]));
+    },
+    /** Sets the status of the pipeline itself, as GitLab derives it from the jobs. */
+    setPipelineStatus(pipelineId: number, status: string) {
+      const p = projects.flatMap((x) => x.pipelines).find((x) => x.id === pipelineId);
+      if (!p) throw new Error(`no pipeline ${pipelineId}`);
+      p.status = status;
+    },
     stop: () => server.stop(true),
   };
 }

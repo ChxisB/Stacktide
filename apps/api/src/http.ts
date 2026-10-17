@@ -57,8 +57,13 @@ export const http = (logger: Logger) => {
       .onError({ as: "global" }, ({ code, error, request, set }) => {
         const { id, log } = stateOf(request);
         let response: Response;
-        if (error instanceof DomainError) {
-          response = problem(error.status, error.code, id, error.message);
+        // Elysia wraps whatever a route's own `parse` throws in a PARSE error; a DomainError in it keeps its status.
+        const failure =
+          code === "PARSE" && error instanceof Error && error.cause instanceof DomainError
+            ? error.cause
+            : error;
+        if (failure instanceof DomainError) {
+          response = problem(failure.status, failure.code, id, failure.message);
         } else if (code === "NOT_FOUND") {
           response = problem(404, "not_found", id, "Route not found");
         } else if (code === "VALIDATION") {

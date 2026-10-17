@@ -1,5 +1,13 @@
-import { DomainError, RUN_STATES } from "@orch/core";
-import { createRun, getProject, getRun, listRuns, listStacks, type RunWithStacks } from "@orch/db";
+import { DomainError, type Logger, RUN_STATES } from "@orch/core";
+import {
+  createRun,
+  getProject,
+  getRun,
+  listRuns,
+  listStacks,
+  type RunWithStacks,
+  storePlanSummary,
+} from "@orch/db";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
@@ -10,7 +18,9 @@ import {
   paged,
   pageOf,
   pageQuery,
+  problemSchema,
   type RouteDeps,
+  readCapped,
   readErrors,
   stamps,
   writeErrors,
@@ -87,12 +97,48 @@ const body = z.strictObject({
     .refine((names) => new Set(names).size === names.length, "a stack is named twice"),
 });
 
+/** The cap on a summary's body: 500 resources of at most 1024 characters stay below it. */
+export const MAX_SUMMARY_BYTES = 1024 * 1024;
+// shortcut: a summary lists at most 500 resources (the counts are whole); upgrade when a plan really changes more and a reader needs them all.
+const MAX_LISTED = 500;
+const count = z.number().int().min(0).max(1_000_000);
+
+const summaryBody = z.strictObject({
+  stack: z.string().min(1).max(63),
+  add: count,
+  change: count,
+  destroy: count,
+  resources: z
+    .array(
+      z.strictObject({
+        // what terraform prints for a resource; it is shown to people, so nothing that hides or reorders
+        // text: control and format characters (bidi overrides, zero-width) and line or paragraph separators
+        address: z
+          .string()
+          .min(1)
+          .max(1024)
+          .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+$/u, "not a resource address"),
+        actions: z
+          .array(z.string().regex(/^[a-z][a-z-]{0,19}$/, "not an action"))
+          .min(1)
+          .max(4),
+      }),
+    )
+    .max(MAX_LISTED),
+});
+
+// One message for every way the caller can fail to be the stack's summary job: which of them it was says too much.
+const notTheJob = () =>
+  new DomainError("forbidden", 403, "Not allowed: only the summary job of this stack may post it");
+
 /**
  * The runs of a project's IaC stacks (IAC-5): which stacks, on which commit, and where each one is.
- * Creating one only records it, with every stack `queued`; the states move as the pipeline does
- * (IAC-6 on). Starting one takes `run.create`, reading `run.read`.
+ * Creating one only records it, with every stack `queued`; the states move as the pipeline's events
+ * arrive (`run-ingest.ts`). Starting one takes `run.create`, reading `run.read`. A plan job posts its
+ * stack's counts and resource addresses to `/:runId/plan-summary` (`run.summary`): only the job that
+ * ingest recorded as that stack's summary job, which a CI token's scope alone does not make it.
  */
-export const runRoutes = ({ db, principal }: RouteDeps) =>
+export const runRoutes = ({ db, principal, logger }: RouteDeps & { logger: Logger }) =>
   new Elysia({ prefix: "/organizations/:orgId/projects/:projectId/runs" })
     .use(auditPlugin(principal))
     .use(guardPlugin)
@@ -172,5 +218,77 @@ export const runRoutes = ({ db, principal }: RouteDeps) =>
         params: params.extend({ runId: z.uuid() }),
         response: { 200: runSchema, ...readErrors },
         guard: "run.read",
+      },
+    )
+    .post(
+      "/:runId/plan-summary",
+      async ({ params: { orgId, projectId, runId }, body, principal, audit, set }) => {
+        const run = await getRun(db, orgId, projectId, runId);
+        if (!run) throw notFound("Run");
+        // Only the CI job the platform recorded as this stack's summary job (from the pipeline's
+        // events), on the run's own ref. A token holds `run.summary` for every job without an
+        // environment, so the scope alone would let any job of the project post any stack's summary.
+        const job = principal?.kind === "ci" ? principal.job : undefined;
+        const mine = run.stacks.find((s) => s.stack === body.stack);
+        const why = !job
+          ? "the caller is not a CI job"
+          : !mine
+            ? "the stack is not in the run"
+            : job.ref !== run.ref
+              ? "the job's ref is not the run's"
+              : mine.summaryJobId === null
+                ? "no summary job is recorded for the stack yet"
+                : job.gitlabJobId !== mine.summaryJobId
+                  ? "the job is not the stack's summary job"
+                  : undefined;
+        if (why) {
+          // the caller gets one message; the log says which, for whoever finds a real job refused
+          logger.warn("plan summary refused", {
+            request_id: set.headers["x-request-id"],
+            reason: why,
+          });
+          throw notTheJob();
+        }
+        await db.transaction(async (tx) => {
+          const stored = await storePlanSummary(tx, orgId, projectId, runId, body.stack, body);
+          if (!stored) {
+            throw new DomainError(
+              "stack_closed",
+              409,
+              "This stack's plan is no longer open to a summary",
+            );
+          }
+          await audit(tx, {
+            action: "run.summary",
+            resourceType: "run",
+            resourceId: runId,
+            organizationId: orgId,
+            projectId,
+            // counts only: which resources a plan touches is for the run's readers, not the audit trail
+            metadata: {
+              stack: body.stack,
+              add: body.add,
+              change: body.change,
+              destroy: body.destroy,
+              resources: body.resources.length,
+            },
+          });
+        });
+        set.status = 204;
+      },
+      {
+        params: params.extend({ runId: z.uuid() }),
+        body: summaryBody,
+        // The body is read in full before the guard runs (Elysia parses first), so it is capped here.
+        parse: async ({ request }) => {
+          const text = await readCapped(request, MAX_SUMMARY_BYTES);
+          if (text === undefined) {
+            throw new DomainError("payload_too_large", 413, "The summary is too large");
+          }
+          return JSON.parse(text);
+        },
+        response: { 204: z.undefined(), ...writeErrors, 413: problemSchema },
+        audit: "run.summary",
+        guard: "run.summary",
       },
     );

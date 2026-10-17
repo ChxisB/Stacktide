@@ -117,7 +117,7 @@ export async function retryPipeline(deps: RunDeps, at: RunAt, pipelineId: number
 }
 
 /** Why an event cannot be handled now or later, when it cannot: the job is dropped, not retried. */
-const hopeless = (e: unknown) => {
+export const hopeless = (e: unknown) => {
   if (e instanceof GitlabError) {
     if (e.kind === "not_found") return "GitLab no longer has the pipeline";
     if (e.kind === "unauthorized" || e.kind === "forbidden") return "GitLab refuses the token";
@@ -129,7 +129,7 @@ const hopeless = (e: unknown) => {
   return undefined;
 };
 
-const pipelineEvent = z.looseObject({
+export const pipelineEvent = z.looseObject({
   event: z.literal("pipeline"),
   organizationId: z.uuid(),
   connectionId: z.uuid(),
