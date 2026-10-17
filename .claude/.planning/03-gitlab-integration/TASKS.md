@@ -1,6 +1,6 @@
 # 03 GitLab Integration - Tasks
 
-### GL-1 - Client core  `[ ]` M - deps: FND-4
+### GL-1 - Client core  `[x]` M - deps: FND-4
 Do: `packages/gitlab` fetch wrapper: auth strategies, keyset/offset pagination iterator, retry with `Retry-After`, timeouts, typed errors, token redaction. Check the target GitLab version's API notes.
 Done when: tests (local fake server) cover pagination, 429 backoff, 5xx retry limit, timeout and that no token appears in any error string.
 

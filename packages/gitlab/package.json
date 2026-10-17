@@ -1,0 +1,11 @@
+{
+  "name": "@orch/gitlab",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@orch/core": "workspace:*"
+  }
+}
