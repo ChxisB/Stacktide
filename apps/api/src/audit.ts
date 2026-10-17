@@ -1,4 +1,4 @@
-import { type AuditEvent, type Tx, audit as writeAudit } from "@orch/db";
+import { type AuditContext, type AuditEvent, type Tx, audit as writeAudit } from "@orch/db";
 import { Elysia, StatusMap } from "elysia";
 import { type PrincipalResolver, principalPlugin } from "./principal";
 
@@ -32,12 +32,15 @@ export const auditPlugin = (resolve: PrincipalResolver) =>
       };
       return {
         auditState: state,
-        /** Appends an event in `tx`. Its action must be one the route declared. */
-        async audit(tx: Tx, event: AuditEvent) {
+        /**
+         * Appends an event in `tx`. Its action must be one the route declared. `actor` names who
+         * acted when that is not the request's principal (the sign-in route runs before there is one).
+         */
+        async audit(tx: Tx, event: AuditEvent, actor?: AuditContext["actor"]) {
           if (!state.declared.includes(event.action)) {
             throw new Error(`route did not declare audit action ${event.action}`);
           }
-          await writeAudit(tx, ctx, event);
+          await writeAudit(tx, actor ? { ...ctx, actor } : ctx, event);
           state.written++;
         },
       };

@@ -17,6 +17,16 @@ export interface MockOptions {
   token?: string;
   /** Server-side cap on `per_page` (GitLab's is 100); a small value exercises pagination. */
   maxPerPage?: number;
+  /** Turns on `/oauth/authorize` and `/oauth/token` for this application. */
+  oauth?: { clientId: string; clientSecret?: string; redirectUri: string };
+}
+
+export interface MockUser {
+  id: number;
+  username: string;
+  name: string;
+  /** GitLab's account state; only `active` users can sign in. Default `active`. */
+  state?: string;
 }
 
 interface Branch {
@@ -154,6 +164,11 @@ export function createMockGitlab(opts: MockOptions = {}) {
   const groupVars = new Map<number, MockVar[]>();
   const requests: RecordedRequest[] = [];
   const injections: (Injection & { left: number })[] = [];
+  const users = new Map<number, MockUser>();
+  // OAuth: who the next sign-in belongs to, the codes handed out, the access tokens issued.
+  let approvedUser: number | undefined;
+  const codes = new Map<string, { userId: number; challenge: string; used: boolean }>();
+  const accessTokens = new Map<string, number>();
   let seq = 0;
 
   const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -188,6 +203,80 @@ export function createMockGitlab(opts: MockOptions = {}) {
       }
       const origin = u.origin;
       const bearer = req.headers.get("authorization");
+      const oauth = opts.oauth;
+      if (oauth && u.pathname === "/oauth/authorize" && req.method === "GET") {
+        // Stricter than GitLab on purpose: a client that forgets PKCE or `state` must fail here.
+        const p = u.searchParams;
+        const challenge = p.get("code_challenge");
+        if (
+          p.get("client_id") !== oauth.clientId ||
+          p.get("redirect_uri") !== oauth.redirectUri ||
+          p.get("response_type") !== "code" ||
+          p.get("code_challenge_method") !== "S256" ||
+          !challenge ||
+          !p.get("state")
+        ) {
+          return json({ error: "invalid_request" }, 400);
+        }
+        const back = new URL(oauth.redirectUri);
+        if (approvedUser === undefined) {
+          back.searchParams.set("error", "access_denied");
+        } else {
+          const code = `code-${Bun.randomUUIDv7()}`;
+          codes.set(code, { userId: approvedUser, challenge, used: false });
+          back.searchParams.set("code", code);
+        }
+        back.searchParams.set("state", p.get("state") ?? "");
+        return new Response(null, { status: 302, headers: { location: back.toString() } });
+      }
+      if (oauth && u.pathname === "/oauth/token" && req.method === "POST") {
+        const type = req.headers.get("content-type") ?? "";
+        const form = (
+          type.includes("json")
+            ? await req.json().catch(() => ({}))
+            : Object.fromEntries(new URLSearchParams(await req.text()))
+        ) as Record<string, unknown>;
+        const grant = typeof form.code === "string" ? codes.get(form.code) : undefined;
+        if (
+          form.client_id !== oauth.clientId ||
+          (oauth.clientSecret !== undefined && form.client_secret !== oauth.clientSecret)
+        ) {
+          return json({ error: "invalid_client" }, 401);
+        }
+        const verifier = typeof form.code_verifier === "string" ? form.code_verifier : "";
+        const proof = new Bun.CryptoHasher("sha256").update(verifier).digest("base64url");
+        if (
+          form.grant_type !== "authorization_code" ||
+          !grant ||
+          grant.used ||
+          form.redirect_uri !== oauth.redirectUri ||
+          proof !== grant.challenge
+        ) {
+          return json({ error: "invalid_grant" }, 400);
+        }
+        grant.used = true;
+        const accessToken = Bun.randomUUIDv7().replaceAll("-", "") + sha().slice(0, 32);
+        accessTokens.set(accessToken, grant.userId);
+        return json({
+          access_token: accessToken,
+          token_type: "Bearer",
+          expires_in: 7200,
+          refresh_token: sha(),
+          scope: "read_user",
+          created_at: Math.floor(Date.now() / 1000),
+        });
+      }
+      const oauthUserId = bearer?.startsWith("Bearer ")
+        ? accessTokens.get(bearer.slice("Bearer ".length))
+        : undefined;
+      if (oauthUserId !== undefined) {
+        // An OAuth access token carries `read_user` only: it reaches `/user` and nothing else.
+        const me = users.get(oauthUserId);
+        if (u.pathname !== "/api/v4/user" || req.method !== "GET" || !me) {
+          return fail(403, "403 Forbidden");
+        }
+        return json({ ...me, state: me.state ?? "active" });
+      }
       if (req.headers.get("private-token") !== token && bearer !== `Bearer ${token}`) {
         return fail(401, "401 Unauthorized");
       }
@@ -643,6 +732,17 @@ export function createMockGitlab(opts: MockOptions = {}) {
     url: `http://127.0.0.1:${server.port}`,
     token,
     requests,
+    /** A GitLab account that can sign in. */
+    addUser(u: MockUser) {
+      users.set(u.id, u);
+      return u;
+    },
+    /** Whose account the next `/oauth/authorize` calls sign in; `undefined` denies them. */
+    approveAs(userId: number | undefined) {
+      approvedUser = userId;
+    },
+    /** Access tokens handed out so far, so a test can look for them in places they must not be. */
+    issuedAccessTokens: () => [...accessTokens.keys()],
     addGroup(fullPath: string) {
       const group = { id: ++seq, name: fullPath.split("/").pop() ?? fullPath, full_path: fullPath };
       groups.push(group);

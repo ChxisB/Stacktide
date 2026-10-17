@@ -2,17 +2,20 @@ import { createLogger, loadConfig } from "@orch/core";
 import { createDb, pingDb } from "@orch/db";
 import { z } from "zod";
 import { createApp } from "./app";
+import { authEnv, authFromEnv } from "./auth-config";
 import { devPrincipal } from "./principal";
 
 const config = loadConfig(
-  z.object({
-    DATABASE_URL: z.string().min(1),
-    // Loopback by default: the dev principal trusts every caller that can reach the port.
-    HOST: z.string().min(1).default("127.0.0.1"),
-    PORT: z.coerce.number().int().min(0).max(65535).default(3000),
-    LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
-    NODE_ENV: z.string().default("development"),
-  }),
+  z
+    .object({
+      DATABASE_URL: z.string().min(1),
+      // Loopback by default: the dev principal trusts every caller that can reach the port.
+      HOST: z.string().min(1).default("127.0.0.1"),
+      PORT: z.coerce.number().int().min(0).max(65535).default(3000),
+      LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+      NODE_ENV: z.string().default("development"),
+    })
+    .and(authEnv),
 );
 const logger = createLogger({ level: config.LOG_LEVEL });
 
@@ -33,6 +36,7 @@ const app = createApp({
   db,
   principal: devPrincipal,
   ready: () => pingDb(db),
+  auth: authFromEnv(config),
 }).listen({
   hostname: config.HOST,
   port: config.PORT,

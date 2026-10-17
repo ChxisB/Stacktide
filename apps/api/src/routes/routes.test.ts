@@ -501,9 +501,13 @@ describe("audit coverage", () => {
       .filter(Boolean)
       .sort();
     expect(declared).toEqual(
-      ["organization", "project", "environment"]
-        .flatMap((r) => ["create", "update", "delete"].map((v) => `${r}.${v}`))
-        .sort(),
+      [
+        "auth.login",
+        "auth.logout",
+        ...["organization", "project", "environment"].flatMap((r) =>
+          ["create", "update", "delete"].map((v) => `${r}.${v}`),
+        ),
+      ].sort(),
     );
   });
 });

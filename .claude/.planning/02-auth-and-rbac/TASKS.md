@@ -1,6 +1,6 @@
 # 02 Auth and RBAC - Tasks
 
-### AUTH-1 - GitLab OAuth login and sessions  `[ ]` M - deps: GL-1, API-3
+### AUTH-1 - GitLab OAuth login and sessions  `[x]` M - deps: GL-1, API-3
 Do: Authorization-code + PKCE flow against the configured GitLab; upsert user; server-side session with secure cookie; logout; state/nonce validation.
 Done when: tests against the mock GitLab cover happy path, bad `state`, replayed code and expired session.
 

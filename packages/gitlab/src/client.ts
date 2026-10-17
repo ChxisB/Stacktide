@@ -95,6 +95,26 @@ function redirectHint(location: string | null, from: string): string | undefined
   }
 }
 
+/** Validates the instance URL. Never echoes the input: it may carry credentials. */
+export function parseBaseUrl(baseUrl: string, allowInsecureHttp = false): URL {
+  let base: URL;
+  try {
+    base = new URL(baseUrl);
+  } catch {
+    throw new TypeError("GitLab baseUrl is not a valid URL");
+  }
+  if (base.protocol !== "https:" && base.protocol !== "http:") {
+    throw new TypeError("GitLab baseUrl must be an http(s) URL");
+  }
+  if (base.username || base.password) {
+    throw new TypeError("GitLab baseUrl must not contain credentials");
+  }
+  if (base.protocol === "http:" && !allowInsecureHttp && !LOOPBACK.has(base.hostname)) {
+    throw new TypeError("GitLab baseUrl must use https (allowInsecureHttp overrides)");
+  }
+  return base;
+}
+
 export function createGitlabClient(opts: ClientOptions): GitlabClient {
   const {
     auth,
@@ -108,22 +128,7 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
   // Redaction is a substring replace: a very short token would mangle messages and hide little.
   if (auth.token.length < 8) throw new TypeError("GitLab token is missing or too short");
 
-  // Never echo the input: it may carry credentials.
-  let base: URL;
-  try {
-    base = new URL(opts.baseUrl);
-  } catch {
-    throw new TypeError("GitLab baseUrl is not a valid URL");
-  }
-  if (base.protocol !== "https:" && base.protocol !== "http:") {
-    throw new TypeError("GitLab baseUrl must be an http(s) URL");
-  }
-  if (base.username || base.password) {
-    throw new TypeError("GitLab baseUrl must not contain credentials");
-  }
-  if (base.protocol === "http:" && !opts.allowInsecureHttp && !LOOPBACK.has(base.hostname)) {
-    throw new TypeError("GitLab baseUrl must use https (allowInsecureHttp overrides)");
-  }
+  const base = parseBaseUrl(opts.baseUrl, opts.allowInsecureHttp);
   const apiRoot = `${base.origin}${base.pathname.replace(/\/+$/, "")}/api/v4`;
 
   const headers: Record<string, string> = {

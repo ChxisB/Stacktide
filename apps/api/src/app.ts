@@ -5,6 +5,7 @@ import { auditPlugin } from "./audit";
 import { http } from "./http";
 import { openapiPlugin } from "./openapi";
 import type { PrincipalResolver } from "./principal";
+import { type AuthDeps, authRoutes } from "./routes/auth";
 import { environmentRoutes } from "./routes/environments";
 import { organizationRoutes } from "./routes/organizations";
 import { projectRoutes } from "./routes/projects";
@@ -18,6 +19,8 @@ export interface AppDeps {
   /** Resolves when dependencies (the database) are usable; rejects otherwise. */
   ready: () => Promise<unknown>;
   readyTimeoutMs?: number;
+  /** GitLab sign-in and sessions (see `AuthDeps`). */
+  auth?: AuthDeps;
 }
 
 /**
@@ -65,6 +68,7 @@ export function createApp(deps: AppDeps) {
       }
     })
     .use(auditPlugin(principal))
+    .use(authRoutes(deps))
     .use(organizationRoutes(deps))
     .use(projectRoutes(deps))
     .use(environmentRoutes(deps));

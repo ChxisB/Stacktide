@@ -2,6 +2,7 @@ export * from "./client";
 export * from "./errors";
 export * from "./gitlab";
 export type { CreateMergeRequest, MergeRequest, Note, UpdateMergeRequest } from "./merge-requests";
+export * from "./oauth";
 export type { Job, LintResult, Pipeline, PipelineStatus, PipelineVariable } from "./pipelines";
 export { isFinished } from "./pipelines";
 export type { Group, ListProjectsOptions, Project, ProjectRef } from "./projects";

@@ -40,6 +40,19 @@ function setup() {
         }),
       { audit: "thing.create" },
     )
+    // A route that learns who the caller is while handling the request (sign-in) names them itself.
+    .post(
+      "/as-someone",
+      ({ audit }) =>
+        t.db.transaction((tx) =>
+          audit(
+            tx,
+            { action: "thing.one", resourceType: "thing" },
+            { kind: "dev", id: "someone-else" },
+          ),
+        ),
+      { audit: "thing.one" },
+    )
     .post(
       "/multi",
       ({ audit }) =>
@@ -123,6 +136,16 @@ describe("declared audit", () => {
       requestId: "req-audit-1",
       ip: null, // no socket when called through app.handle
     });
+  });
+
+  test("a route may name the actor itself; the request's principal is the default", async () => {
+    const { call } = setup();
+    expect((await call("POST", "/as-someone", { "x-request-id": "req-actor" })).status).toBe(200);
+    const [row] = await t.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.requestId, "req-actor"));
+    expect(row).toMatchObject({ actorKind: "dev", actorId: "someone-else" });
   });
 
   test("a route may declare several actions and write each", async () => {

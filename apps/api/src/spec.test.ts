@@ -12,7 +12,7 @@ test("every API operation documents its audit action and the problems it can ans
     paths: Record<string, Record<string, Record<string, unknown>>>;
   };
   const ops = Object.entries(spec.paths)
-    .filter(([path]) => path !== "/health" && path !== "/ready")
+    .filter(([path]) => !["/health", "/ready"].includes(path) && !path.startsWith("/auth/"))
     .flatMap(([path, item]) =>
       Object.entries(item).map(([method, op]) => ({
         id: `${method.toUpperCase()} ${path}`,
@@ -30,6 +30,28 @@ test("every API operation documents its audit action and the problems it can ans
     expect([id, codes.some((c) => c.startsWith("2"))]).toEqual([id, true]);
     expect([id, writes ? Boolean(op["x-audit"]) : true]).toEqual([id, true]);
   }
+});
+
+test("the sign-in operations document their answers and audit actions", async () => {
+  const spec = JSON.parse(await buildSpec()) as {
+    paths: Record<string, Record<string, Record<string, unknown>>>;
+  };
+  const answers = (path: string, method: string) =>
+    Object.keys((spec.paths[path]?.[method]?.responses ?? {}) as object).sort();
+  expect(answers("/auth/login", "get")).toEqual(["302", "422", "503"]);
+  expect(answers("/auth/callback", "get")).toEqual([
+    "302",
+    "400",
+    "401",
+    "403",
+    "422",
+    "502",
+    "503",
+  ]);
+  expect(answers("/auth/me", "get")).toEqual(["200", "401"]);
+  expect(answers("/auth/logout", "post")).toEqual(["204", "401", "415"]);
+  expect(spec.paths["/auth/callback"]?.get?.["x-audit"]).toEqual(["auth.login"]);
+  expect(spec.paths["/auth/logout"]?.post?.["x-audit"]).toEqual(["auth.logout"]);
 });
 
 test("the document is served as JSON, and the docs UI (which loads CDN scripts) is off", async () => {
