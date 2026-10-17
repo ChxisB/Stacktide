@@ -1,5 +1,5 @@
 # 04 Secrets and Variables - Spec
-Prefix: VAR · Milestone: M1 · Status: todo
+Prefix: VAR · Milestone: M1 · Status: done
 
 ## Goal
 One source of truth for configuration and secrets, per project and environment, encrypted, versioned and recoverable.

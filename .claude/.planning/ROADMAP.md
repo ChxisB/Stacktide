@@ -30,7 +30,7 @@ Status: `todo` / `building` / `done`. The factory updates this table.
 | 01 | [core-api-and-db](01-core-api-and-db/) | API | M1 | 00 | done |
 | 02 | [auth-and-rbac](02-auth-and-rbac/) | AUTH | M1 | 01, 03 | done |
 | 03 | [gitlab-integration](03-gitlab-integration/) | GL | M1 | 01, VAR-1 (GL-6 only) | done |
-| 04 | [secrets-and-variables](04-secrets-and-variables/) | VAR | M1 | 01, 02 | todo |
+| 04 | [secrets-and-variables](04-secrets-and-variables/) | VAR | M1 | 01, 02 | done |
 | 05 | [sync-engine](05-sync-engine/) | SYNC | M1 | 03, 04 | todo |
 | 06 | [pipeline-catalog](06-pipeline-catalog/) | PIPE | M2 | 03, 04 | todo |
 | 07 | [cli](07-cli/) | CLI | M2 | 02, 04 | todo |
