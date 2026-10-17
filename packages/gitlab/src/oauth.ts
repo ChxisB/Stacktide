@@ -14,7 +14,7 @@ export interface OAuthApp {
   timeoutMs?: number;
 }
 
-const user = z
+export const gitlabUser = z
   .object({
     id: z.number().int().positive(),
     username: z.string(),
@@ -27,7 +27,7 @@ const user = z
     name: u.name,
     active: u.state === "active",
   }));
-export type GitlabUser = z.output<typeof user>;
+export type GitlabUser = z.output<typeof gitlabUser>;
 
 const tokenResponse = z.object({ access_token: z.string().min(8) });
 // An OAuth error code (`invalid_grant`): the only part of GitLab's reply worth keeping.
@@ -123,7 +123,7 @@ export function gitlabOAuth(app: OAuthApp) {
         timeoutMs,
         maxRetries: 1,
       });
-      return decode(user, await client.request("GET", "/user"), "user");
+      return decode(gitlabUser, await client.request("GET", "/user"), "user");
     },
   };
 }

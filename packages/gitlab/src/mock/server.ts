@@ -76,6 +76,11 @@ interface MockVar {
   environment_scope: string;
   description: string | null;
 }
+/** A membership as GitLab stores it: the level, and whether an invite still awaits approval. */
+interface Membership {
+  level: number;
+  state: string;
+}
 interface Proj {
   id: number;
   path: string;
@@ -85,6 +90,7 @@ interface Proj {
   mrs: Mr[];
   pipelines: Pipe[];
   variables: MockVar[];
+  members: Map<number, Membership>;
 }
 
 /**
@@ -162,6 +168,9 @@ export function createMockGitlab(opts: MockOptions = {}) {
   const projects: Proj[] = [];
   const groups: { id: number; name: string; full_path: string }[] = [];
   const groupVars = new Map<number, MockVar[]>();
+  const groupMembers = new Map<number, Map<number, Membership>>();
+  // The account the private token belongs to (`GET /user`).
+  const tokenUser = { id: 7_777_777, username: "mock-token-user", name: "Mock token user" };
   const requests: RecordedRequest[] = [];
   const injections: (Injection & { left: number })[] = [];
   const users = new Map<number, MockUser>();
@@ -283,6 +292,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
       if (!u.pathname.startsWith("/api/v4/")) return fail(404, "404 Not Found");
       const rest = u.pathname.slice("/api/v4".length);
       const q = (k: string) => u.searchParams.get(k) ?? undefined;
+      if (req.method === "GET" && rest === "/user") return json({ ...tokenUser, state: "active" });
       const body = (req.method === "GET" ? {} : await req.json().catch(() => ({}))) as Record<
         string,
         unknown
@@ -411,6 +421,40 @@ export function createMockGitlab(opts: MockOptions = {}) {
       if (req.method === "GET" && rest === "/groups") {
         return page(groups.map((g) => ({ ...g, web_url: `${origin}/${g.full_path}` })));
       }
+      /** `/members/all/:id`: direct membership or the best one inherited from an ancestor group. */
+      const memberRoute = (path: string, direct: Membership | undefined, ancestors: string) => {
+        const mm = /^\/members\/all\/(\d+)$/.exec(path);
+        if (!mm || req.method !== "GET") return undefined;
+        const uid = Number(mm[1]);
+        const inherited = groups
+          .filter((x) => ancestors.startsWith(`${x.full_path}/`))
+          .map((x) => groupMembers.get(x.id)?.get(uid));
+        const best = [direct, ...inherited]
+          .filter((x): x is Membership => x !== undefined)
+          .sort((a, b) => b.level - a.level)[0];
+        if (!best) return fail(404, "404 Not found");
+        const account: Partial<MockUser> | undefined =
+          users.get(uid) ?? (uid === tokenUser.id ? tokenUser : undefined);
+        return json({
+          id: uid,
+          username: account?.username ?? `user${uid}`,
+          name: account?.name ?? `User ${uid}`,
+          state: account?.state ?? "active",
+          access_level: best.level,
+          membership_state: best.state,
+        });
+      };
+      const gm = /^\/groups\/([^/]+)(\/members\/all\/\d+)$/.exec(rest);
+      if (gm) {
+        const ref = decodeURIComponent(gm[1] ?? "");
+        const hit = groups.find((x) => String(x.id) === ref || x.full_path === ref);
+        if (!hit) return fail(404, "404 Group Not Found");
+        const uid = Number(/\d+$/.exec(gm[2] ?? "")?.[0]);
+        return (
+          memberRoute(gm[2] ?? "", groupMembers.get(hit.id)?.get(uid), hit.full_path) ??
+          fail(405, "405 Method Not Allowed")
+        );
+      }
       const g = /^\/groups\/([^/]+)$/.exec(rest);
       if (g && req.method === "GET") {
         const ref = decodeURIComponent(g[1] ?? "");
@@ -428,6 +472,12 @@ export function createMockGitlab(opts: MockOptions = {}) {
       if (req.method === "GET" && sub === "") return json(projectJson(proj));
       const pv = variablesRoute(proj.variables, sub);
       if (pv) return pv;
+      const pmem = /\d+$/.exec(sub);
+      if (pmem) {
+        const direct = proj.members.get(Number(pmem[0]));
+        const hit = memberRoute(sub, direct, proj.path);
+        if (hit) return hit;
+      }
 
       const branchOf = (name: string | undefined) =>
         proj.branches.get(name ?? proj.defaultBranch ?? "");
@@ -747,7 +797,36 @@ export function createMockGitlab(opts: MockOptions = {}) {
       const group = { id: ++seq, name: fullPath.split("/").pop() ?? fullPath, full_path: fullPath };
       groups.push(group);
       groupVars.set(group.id, []);
+      groupMembers.set(group.id, new Map());
       return group;
+    },
+    /** The account the private token belongs to. */
+    tokenUser,
+    /**
+     * Makes a user a member of a group or project at a GitLab access level (10 Guest .. 50 Owner).
+     * Membership is inherited down the group tree, as in GitLab. `state: "awaiting"` is an invite
+     * not yet approved.
+     */
+    addMember(
+      of: { group: number } | { project: number },
+      userId: number,
+      level: number,
+      state = "active",
+    ) {
+      const store =
+        "group" in of
+          ? groupMembers.get(of.group)
+          : projects.find((p) => p.id === of.project)?.members;
+      if (!store) throw new Error(`no such ${"group" in of ? "group" : "project"}`);
+      store.set(userId, { level, state });
+    },
+    /** Removes the membership (not any inherited one). */
+    removeMember(of: { group: number } | { project: number }, userId: number) {
+      const store =
+        "group" in of
+          ? groupMembers.get(of.group)
+          : projects.find((p) => p.id === of.project)?.members;
+      store?.delete(userId);
     },
     addProject(input: MockProjectInput) {
       const defaultBranch = input.defaultBranch === undefined ? "main" : input.defaultBranch;
@@ -767,6 +846,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
         mrs: [],
         pipelines: [],
         variables: [],
+        members: new Map(),
       };
       projects.push(proj);
       return { id: proj.id, path: proj.path };

@@ -511,3 +511,135 @@ describe("response validation", () => {
     mock.stop();
   });
 });
+
+describe("members", () => {
+  const level = (
+    api: ReturnType<typeof setup>["api"],
+    of: Parameters<ReturnType<typeof setup>["api"]["members"]["accessLevel"]>[0],
+    user: number,
+  ) => api.members.accessLevel(of, user);
+
+  test("a direct membership is its level; a non-member is 0", async () => {
+    const { mock, api } = setup();
+    const group = mock.addGroup("acme");
+    const project = mock.addProject({ path: "acme/web" });
+    mock.addMember({ group: group.id }, 11, 30);
+    mock.addMember({ project: project.id }, 12, 20);
+    expect(await level(api, { group: group.id }, 11)).toBe(30);
+    expect(await level(api, { group: "acme" }, 11)).toBe(30);
+    expect(await level(api, { project: project.id }, 12)).toBe(20);
+    expect(await level(api, { project: "acme/web" }, 12)).toBe(20);
+    expect(await level(api, { group: group.id }, 12)).toBe(0);
+    expect(await level(api, { project: project.id }, 99)).toBe(0);
+    mock.stop();
+  });
+
+  test("a project inherits the best level from its ancestor groups, nested ones included", async () => {
+    const { mock, api } = setup();
+    const top = mock.addGroup("acme");
+    const sub = mock.addGroup("acme/platform");
+    mock.addGroup("acmeish"); // a name that merely starts the same is no ancestor
+    const project = mock.addProject({ path: "acme/platform/api" });
+    const other = mock.addProject({ path: "acmeish/web" });
+    mock.addMember({ group: top.id }, 21, 20);
+    mock.addMember({ group: sub.id }, 22, 40);
+    mock.addMember({ group: top.id }, 23, 50);
+    mock.addMember({ project: project.id }, 23, 30);
+    expect(await level(api, { project: project.id }, 21)).toBe(20);
+    expect(await level(api, { group: sub.id }, 21)).toBe(20);
+    expect(await level(api, { project: project.id }, 22)).toBe(40);
+    expect(await level(api, { group: top.id }, 22)).toBe(0); // downwards only
+    expect(await level(api, { project: project.id }, 23)).toBe(50); // the better of the two
+    expect(await level(api, { project: other.id }, 21)).toBe(0);
+    mock.removeMember({ group: top.id }, 21);
+    expect(await level(api, { project: project.id }, 21)).toBe(0);
+    mock.stop();
+  });
+
+  test("an invite awaiting approval, or a blocked account, holds nothing", async () => {
+    const { mock, api } = setup();
+    const group = mock.addGroup("acme");
+    mock.addUser({ id: 31, username: "ann", name: "Ann" });
+    mock.addUser({ id: 32, username: "bob", name: "Bob", state: "blocked" });
+    mock.addUser({ id: 33, username: "cy", name: "Cy", state: "deactivated" });
+    mock.addMember({ group: group.id }, 31, 40);
+    mock.addMember({ group: group.id }, 32, 40);
+    mock.addMember({ group: group.id }, 33, 40);
+    mock.addMember({ group: group.id }, 34, 40, "awaiting");
+    expect(await level(api, { group: group.id }, 31)).toBe(40);
+    expect(await level(api, { group: group.id }, 32)).toBe(0);
+    expect(await level(api, { group: group.id }, 33)).toBe(0);
+    expect(await level(api, { group: group.id }, 34)).toBe(0);
+    mock.stop();
+  });
+
+  test("an answer that does not say the account is active grants nothing", async () => {
+    const { mock, api } = setup();
+    const group = mock.addGroup("acme");
+    mock.addMember({ group: group.id }, 41, 40);
+    const real = globalThis.fetch;
+    // GitLab leaving `state` out must not read as "active".
+    globalThis.fetch = (async (input: Request | string | URL, init?: RequestInit) => {
+      const res = await real(input, init);
+      if (!String(input instanceof Request ? input.url : input).includes("/members/all/"))
+        return res;
+      const { state: _state, ...rest } = (await res.json()) as Record<string, unknown>;
+      return Response.json(rest);
+    }) as typeof fetch;
+    try {
+      expect(await level(api, { group: group.id }, 41)).toBe(0);
+    } finally {
+      globalThis.fetch = real;
+      mock.stop();
+    }
+  });
+
+  test("a lookup that fails is an error, never 'no access'", async () => {
+    const { mock, api } = setup();
+    const group = mock.addGroup("acme");
+    mock.addMember({ group: group.id }, 51, 40);
+    for (const [status, kind] of [
+      [500, "server"],
+      [403, "forbidden"],
+      [401, "unauthorized"],
+      [429, "rate_limited"],
+    ] as const) {
+      mock.inject({ path: /members\/all/, status });
+      const error = await level(api, { group: group.id }, 51).catch((e) => e);
+      expect(error).toBeInstanceOf(GitlabError);
+      expect((error as GitlabError).kind).toBe(kind);
+    }
+    expect(await level(api, { group: group.id }, 51)).toBe(40);
+    mock.stop();
+  });
+
+  test("a malformed answer is an error", async () => {
+    const { mock, api } = setup();
+    const group = mock.addGroup("acme");
+    mock.addMember({ group: group.id }, 61, 40);
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (input: Request | string | URL, init?: RequestInit) => {
+      const res = await real(input, init);
+      if (!String(input instanceof Request ? input.url : input).includes("/members/all/"))
+        return res;
+      return Response.json({ access_level: "40", state: "active" });
+    }) as typeof fetch;
+    try {
+      await expect(level(api, { group: group.id }, 61)).rejects.toThrow(GitlabError);
+    } finally {
+      globalThis.fetch = real;
+      mock.stop();
+    }
+  });
+
+  test("the token's own user comes from /user", async () => {
+    const { mock, api } = setup();
+    expect(await api.users.current()).toEqual({
+      gitlabId: mock.tokenUser.id,
+      username: "mock-token-user",
+      name: "Mock token user",
+      active: true,
+    });
+    mock.stop();
+  });
+});

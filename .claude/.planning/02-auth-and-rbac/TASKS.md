@@ -16,7 +16,7 @@ Done when: a test enumerates every registered route and fails if any lacks a gua
 Do: `api_tokens` table; create (shown once), list, revoke; hashed storage with lookup prefix; scopes; expiry; `last_used_at`.
 Done when: tests prove the plaintext is never stored or logged, expired/revoked tokens fail, and scopes narrow access.
 
-### AUTH-5 - GitLab membership to role mapping  `[ ]` M - deps: AUTH-3, GL-2
+### AUTH-5 - GitLab membership to role mapping  `[x]` M - deps: AUTH-3, GL-2
 Do: Map GitLab group/project access levels to platform roles; cache with TTL; fail closed when GitLab is unreachable.
 Done when: tests cover each access level, cache expiry and the fail-closed path.
 

@@ -1,6 +1,7 @@
 export * from "./client";
 export * from "./errors";
 export * from "./gitlab";
+export type { MemberOwner } from "./members";
 export type { CreateMergeRequest, MergeRequest, Note, UpdateMergeRequest } from "./merge-requests";
 export * from "./oauth";
 export type { Job, LintResult, Pipeline, PipelineStatus, PipelineVariable } from "./pipelines";

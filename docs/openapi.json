@@ -826,6 +826,14 @@
                           "name": {
                             "type": "string"
                           },
+                          "gitlabGroupId": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
                           "createdAt": {
                             "type": "string",
                             "format": "date-time"
@@ -839,6 +847,7 @@
                           "id",
                           "slug",
                           "name",
+                          "gitlabGroupId",
                           "createdAt",
                           "updatedAt"
                         ]
@@ -1168,6 +1177,11 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100
+                  },
+                  "gitlabGroupId": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
                   }
                 },
                 "required": [
@@ -1198,6 +1212,14 @@
                     "name": {
                       "type": "string"
                     },
+                    "gitlabGroupId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time"
@@ -1211,6 +1233,7 @@
                     "id",
                     "slug",
                     "name",
+                    "gitlabGroupId",
                     "createdAt",
                     "updatedAt"
                   ]
@@ -1653,6 +1676,14 @@
                     "name": {
                       "type": "string"
                     },
+                    "gitlabGroupId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time"
@@ -1666,6 +1697,7 @@
                     "id",
                     "slug",
                     "name",
+                    "gitlabGroupId",
                     "createdAt",
                     "updatedAt"
                   ]
@@ -2013,6 +2045,14 @@
                     "name": {
                       "type": "string"
                     },
+                    "gitlabGroupId": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time"
@@ -2026,6 +2066,7 @@
                     "id",
                     "slug",
                     "name",
+                    "gitlabGroupId",
                     "createdAt",
                     "updatedAt"
                   ]

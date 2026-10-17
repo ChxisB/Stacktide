@@ -7,6 +7,8 @@ gitlabContract("in-process mock", async () => {
   const group = mock.addGroup("platform");
   mock.addProject({ path: "platform/other", files: { "package.json": "{}" } });
   const project = mock.addProject({ path: "platform/api" });
+  mock.addMember({ group: group.id }, mock.tokenUser.id, 40);
+  mock.addMember({ project: project.id }, mock.tokenUser.id, 30);
   const api = createGitlab({
     baseUrl: mock.url,
     auth: { type: "private-token", token: mock.token },

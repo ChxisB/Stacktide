@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
 import type { BunSQLQueryResultHKT } from "drizzle-orm/bun-sql";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import type * as schema from "./schema";
@@ -176,4 +176,29 @@ export function listEnvironments(
     )
     .orderBy(asc(environments.sortOrder), asc(environments.slug));
   return page?.limit === undefined ? query : query.limit(page.limit);
+}
+
+/**
+ * What AUTH-5 asks GitLab about: every organization linked to a GitLab group and every project
+ * linked to a GitLab project, with the platform ids that roles are keyed by.
+ */
+export async function gitlabLinks(db: Executor) {
+  const orgs = await db
+    .select({ organizationId: organizations.id, gitlabGroupId: organizations.gitlabGroupId })
+    .from(organizations)
+    .where(isNotNull(organizations.gitlabGroupId))
+    .orderBy(asc(organizations.id));
+  const projs = await db
+    .select({ projectId: projects.id, gitlabProjectId: projects.gitlabProjectId })
+    .from(projects)
+    .where(isNotNull(projects.gitlabProjectId))
+    .orderBy(asc(projects.id));
+  return {
+    groups: orgs.flatMap((o) =>
+      o.gitlabGroupId === null ? [] : [{ ...o, gitlabGroupId: o.gitlabGroupId }],
+    ),
+    projects: projs.flatMap((p) =>
+      p.gitlabProjectId === null ? [] : [{ ...p, gitlabProjectId: p.gitlabProjectId }],
+    ),
+  };
 }

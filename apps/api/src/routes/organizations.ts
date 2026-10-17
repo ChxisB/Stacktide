@@ -15,6 +15,7 @@ import { guardPlugin } from "../guard";
 import {
   atLeastOne,
   deleteResponses,
+  gitlabId,
   iso,
   mapDbError,
   name,
@@ -31,17 +32,26 @@ import {
   writeErrors,
 } from "./shared";
 
-const orgSchema = z.object({ id: z.uuid(), slug: z.string(), name: z.string(), ...stamps });
+const orgSchema = z.object({
+  id: z.uuid(),
+  slug: z.string(),
+  name: z.string(),
+  gitlabGroupId: z.number().int().nullable(),
+  ...stamps,
+});
 const orgDto = (o: typeof organizations.$inferSelect): z.infer<typeof orgSchema> => ({
   id: o.id,
   slug: o.slug,
   name: o.name,
+  gitlabGroupId: o.gitlabGroupId,
   createdAt: iso(o.createdAt),
   updatedAt: iso(o.updatedAt),
 });
 
 const params = z.object({ orgId: z.uuid() });
-const create = z.strictObject({ slug, name });
+// The GitLab group's members hold this organization's roles (AUTH-5). Like the slug it cannot change:
+// whoever could relink it to a group they control would make themselves its owner.
+const create = z.strictObject({ slug, name, gitlabGroupId: gitlabId.optional() });
 // The slug is the organization's identifier in other systems: it cannot change.
 const patch = z.strictObject({ name: name.optional() }).refine(nonEmpty, atLeastOne);
 
@@ -95,10 +105,21 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
         const org = await db
           .transaction(async (tx) => {
             const org = await createOrganization(tx, body);
-            await audit(tx, audited("organization.create", org, { name: org.name }));
+            await audit(
+              tx,
+              audited("organization.create", org, {
+                name: org.name,
+                gitlabGroupId: org.gitlabGroupId,
+              }),
+            );
             return org;
           })
-          .catch(mapDbError({ organizations_slug_key: taken("slug_taken", "The slug") }));
+          .catch(
+            mapDbError({
+              organizations_slug_key: taken("slug_taken", "The slug"),
+              organizations_gitlab_group_key: taken("gitlab_group_linked", "The GitLab group"),
+            }),
+          );
         set.status = 201;
         return orgDto(org);
       },

@@ -25,6 +25,8 @@ export const taken = (code: string, what: string) =>
 // ---- input schemas
 
 export const name = z.string().trim().min(1).max(100);
+/** A GitLab group, project or user id. */
+export const gitlabId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 /** Lower-case words joined by single dashes: safe in a URL and as an identifier. */
 export const slug = z
   .string()

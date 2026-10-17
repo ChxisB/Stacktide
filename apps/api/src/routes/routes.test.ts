@@ -111,6 +111,51 @@ describe("organizations", () => {
     expect(await auditCount()).toBe(before);
   });
 
+  test("an organization can be created linked to a GitLab group, once, and never relinked", async () => {
+    const group = 6_000_000_000 + Math.floor(Math.random() * 1e6);
+    const r = await call("POST", "/organizations", {
+      slug: `l-${uniq()}`,
+      name: "L",
+      gitlabGroupId: group,
+    });
+    expect(r.status).toBe(201);
+    expect(r.json.gitlabGroupId).toBe(group);
+    expect((await call("GET", `/organizations/${r.json.id}`)).json.gitlabGroupId).toBe(group);
+    expect((await auditFor("organization.create", r.json.id))[0]?.metadata).toMatchObject({
+      gitlabGroupId: group,
+    });
+    const plain = await call("POST", "/organizations", { slug: `p-${uniq()}`, name: "P" });
+    expect(plain.json.gitlabGroupId).toBeNull();
+    // A group belongs to one organization.
+    const before = await auditCount();
+    const again = await call("POST", "/organizations", {
+      slug: `l-${uniq()}`,
+      name: "M",
+      gitlabGroupId: group,
+    });
+    expect(again.status).toBe(409);
+    expect(again.json.code).toBe("gitlab_group_linked");
+    expect(again.text).not.toMatch(/_key|constraint|violates|SQL/i);
+    expect(await auditCount()).toBe(before);
+    // Fixed at creation: an update cannot move it.
+    for (const patch of [
+      { gitlabGroupId: group + 1 },
+      { gitlabGroupId: null },
+      { name: "x", gitlabGroupId: 5 },
+    ]) {
+      expect((await call("PATCH", `/organizations/${r.json.id}`, patch)).status).toBe(422);
+    }
+    expect((await call("GET", `/organizations/${r.json.id}`)).json.gitlabGroupId).toBe(group);
+    for (const bad of [0, -1, 1.5, "5", null, Number.MAX_SAFE_INTEGER + 2]) {
+      const res = await call("POST", "/organizations", {
+        slug: `l-${uniq()}`,
+        name: "x",
+        gitlabGroupId: bad,
+      });
+      expect([bad, res.status]).toEqual([bad, 422]);
+    }
+  });
+
   test("bad input is a 422 that lists paths and rules, never the submitted value", async () => {
     const canary = "Canary_VALUE-77";
     for (const body of [

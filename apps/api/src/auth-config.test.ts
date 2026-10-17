@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigError, loadConfig } from "@orch/core";
+import { ConfigError, createLogger, loadConfig } from "@orch/core";
+import { createOrganization, upsertUser } from "@orch/db";
+import { createTestDb } from "@orch/db/testing";
+import { createMockGitlab } from "@orch/gitlab/mock";
 import { z } from "zod";
-import { accessEnv, authEnv, authFromEnv } from "./auth-config";
+import { accessEnv, authEnv, authFromEnv, rolesFromEnv } from "./auth-config";
 
 const SECRET = "client-secret-CANARY-8812";
 const full = {
@@ -84,5 +87,71 @@ describe("access config", () => {
     expect(access({ ORCH_PLATFORM_ADMIN_GITLAB_IDS: "" }).ORCH_PLATFORM_ADMIN_GITLAB_IDS).toEqual(
       [],
     );
+  });
+});
+
+describe("membership token", () => {
+  const TOKEN = "membership-token-CANARY-4417";
+  const logger = createLogger({ write: () => {} });
+
+  test("without a token, or without a GitLab, there is no role source", async () => {
+    const t = await createTestDb();
+    try {
+      expect(rolesFromEnv(loadConfig(authEnv, {}), t.db, logger)).toBeUndefined();
+      expect(rolesFromEnv(loadConfig(authEnv, full), t.db, logger)).toBeUndefined();
+    } finally {
+      await t.drop();
+    }
+  });
+
+  test("a token without the sign-in settings is refused by key, without echoing it", () => {
+    try {
+      loadConfig(authEnv, { GITLAB_MEMBERSHIP_TOKEN: TOKEN });
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as ConfigError).keys).toEqual(Object.keys(full));
+      expect((e as ConfigError).message).not.toContain(TOKEN);
+    }
+    expect(loadConfig(authEnv, { ...full, GITLAB_MEMBERSHIP_TOKEN: TOKEN })).toMatchObject({
+      GITLAB_MEMBERSHIP_TOKEN: TOKEN,
+    });
+    expect(() => loadConfig(authEnv, { ...full, GITLAB_MEMBERSHIP_TOKEN: "" })).toThrow(
+      ConfigError,
+    );
+  });
+
+  test("with a token, roles are read from that GitLab with it", async () => {
+    const t = await createTestDb();
+    const mock = createMockGitlab();
+    try {
+      const group = mock.addGroup("acme");
+      const org = await createOrganization(t.db, {
+        slug: "acme",
+        name: "A",
+        gitlabGroupId: group.id,
+      });
+      const user = await upsertUser(t.db, { gitlabId: 4242, username: "u", name: "U" });
+      mock.addMember({ group: group.id }, user.gitlabId, 50);
+      const roles = rolesFromEnv(
+        loadConfig(authEnv, { ...full, GITLAB_URL: mock.url, GITLAB_MEMBERSHIP_TOKEN: mock.token }),
+        t.db,
+        logger,
+      );
+      expect((await roles?.(user))?.orgRoles).toEqual({ [org.id]: "owner" });
+      const wrong = rolesFromEnv(
+        loadConfig(authEnv, {
+          ...full,
+          GITLAB_URL: mock.url,
+          GITLAB_MEMBERSHIP_TOKEN: "not-the-token-1234",
+        }),
+        t.db,
+        logger,
+      );
+      await expect(wrong?.(user)).rejects.toMatchObject({ status: 503 });
+    } finally {
+      mock.stop();
+      await t.drop();
+    }
   });
 });

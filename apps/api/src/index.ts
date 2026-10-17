@@ -2,7 +2,7 @@ import { createLogger, loadConfig } from "@orch/core";
 import { createDb, pingDb } from "@orch/db";
 import { z } from "zod";
 import { createApp } from "./app";
-import { accessEnv, authEnv, authFromEnv } from "./auth-config";
+import { accessEnv, authEnv, authFromEnv, rolesFromEnv } from "./auth-config";
 import { callerPrincipal } from "./credentials";
 import { devPrincipal } from "./principal";
 
@@ -36,12 +36,21 @@ if (devAuth && !LOOPBACK.includes(config.HOST)) {
 if (devAuth) logger.warn("authentication is off: every caller is the dev principal");
 
 const db = createDb(config.DATABASE_URL, 5);
+if (!devAuth && !config.GITLAB_MEMBERSHIP_TOKEN) {
+  logger.warn(
+    "GITLAB_MEMBERSHIP_TOKEN is not set: nobody holds a role in any organization or project",
+  );
+}
 const app = createApp({
   logger,
   db,
   principal: devAuth
     ? devPrincipal
-    : callerPrincipal({ db, platformAdmins: config.ORCH_PLATFORM_ADMIN_GITLAB_IDS }),
+    : callerPrincipal({
+        db,
+        platformAdmins: config.ORCH_PLATFORM_ADMIN_GITLAB_IDS,
+        roles: rolesFromEnv(config, db, logger),
+      }),
   ready: () => pingDb(db),
   auth: authFromEnv(config),
 }).listen({

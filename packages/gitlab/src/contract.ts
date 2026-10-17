@@ -426,6 +426,36 @@ export function gitlabContract(
       });
     });
 
+    describe("members", () => {
+      test("the token's user is an active member of the project and the group", async () => {
+        const me = await t.api.users.current();
+        expect(me.active).toBe(true);
+        // The project is one the token writes to: Developer or better.
+        expect(
+          await t.api.members.accessLevel({ project: t.project }, me.gitlabId),
+        ).toBeGreaterThanOrEqual(30);
+        expect(await t.api.members.accessLevel({ group: t.group.id }, me.gitlabId)).toBeGreaterThan(
+          0,
+        );
+        expect(
+          await t.api.members.accessLevel({ group: t.group.path }, me.gitlabId),
+        ).toBeGreaterThan(0);
+      });
+
+      test("a user who is not a member, and a project or group that is not there, hold nothing", async () => {
+        const nobody = 2_000_000_000;
+        expect(await t.api.members.accessLevel({ project: t.project }, nobody)).toBe(0);
+        expect(await t.api.members.accessLevel({ group: t.group.id }, nobody)).toBe(0);
+        const me = await t.api.users.current();
+        expect(
+          await t.api.members.accessLevel({ project: "no-such-group/none" }, me.gitlabId),
+        ).toBe(0);
+        expect(await t.api.members.accessLevel({ group: "no-such-group-orch" }, me.gitlabId)).toBe(
+          0,
+        );
+      });
+    });
+
     describe("merge requests", () => {
       test("opens, reads, edits, closes and reopens a merge request; one open MR per branch", async () => {
         const branch = await newBranch();

@@ -15,6 +15,7 @@ import {
   atLeastOne,
   defaultBranch,
   deleteResponses,
+  gitlabId,
   iso,
   mapDbError,
   name,
@@ -50,7 +51,7 @@ export const projectDto = (p: typeof projects.$inferSelect): z.infer<typeof proj
 
 const params = z.object({ orgId: z.uuid() });
 const itemParams = params.extend({ projectId: z.uuid() });
-const gitlabProjectId = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const gitlabProjectId = gitlabId;
 const create = z.strictObject({
   name,
   gitlabProjectId: gitlabProjectId.optional(),

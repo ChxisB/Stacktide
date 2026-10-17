@@ -11,6 +11,7 @@ import {
   getEnvironment,
   getOrganization,
   getProject,
+  gitlabLinks,
   listEnvironments,
   listOrganizations,
   listProjects,
@@ -139,6 +140,23 @@ describe("unique constraints", () => {
     await createProject(t.db, { organizationId: b.id, name: "one", gitlabProjectId: 42 });
     await createProject(t.db, { organizationId: a.id, name: "n1" });
     await createProject(t.db, { organizationId: a.id, name: "n2" });
+  });
+
+  test("a GitLab group links to one organization; unlinked organizations do not collide", async () => {
+    const group = 9_000_000_000 + Math.floor(Math.random() * 1e6); // beyond 32 bits
+    const org = await createOrganization(t.db, {
+      slug: `org-${uniq()}`,
+      name: "A",
+      gitlabGroupId: group,
+    });
+    expect(org.gitlabGroupId).toBe(group);
+    expect(
+      await code(
+        createOrganization(t.db, { slug: `org-${uniq()}`, name: "B", gitlabGroupId: group }),
+      ),
+    ).toBe("23505");
+    expect((await newOrg()).gitlabGroupId).toBeNull();
+    await newOrg();
   });
 
   test("environment slug is unique per project, not globally", async () => {
@@ -380,5 +398,34 @@ describe("schema conventions", () => {
              WHERE c.table_schema = 'public' AND c.table_name = t.table_name
                AND c.column_name IN ('created_at', 'updated_at')) < 2`);
     expect(rows.map((r) => r.name)).toEqual([]);
+  });
+});
+
+describe("gitlabLinks", () => {
+  test("lists exactly the linked organizations and projects, with their platform ids", async () => {
+    const group = 8_000_000_000 + Math.floor(Math.random() * 1e6);
+    const gitlabProject = 7_000_000_000 + Math.floor(Math.random() * 1e6);
+    const linked = await createOrganization(t.db, {
+      slug: `org-${uniq()}`,
+      name: "L",
+      gitlabGroupId: group,
+    });
+    const plain = await newOrg();
+    const p1 = await createProject(t.db, {
+      organizationId: plain.id,
+      name: "a",
+      gitlabProjectId: gitlabProject,
+    });
+    await createProject(t.db, { organizationId: plain.id, name: "b" });
+    const links = await gitlabLinks(t.db);
+    expect(links.groups).toContainEqual({ organizationId: linked.id, gitlabGroupId: group });
+    expect(links.groups.map((g) => g.organizationId)).not.toContain(plain.id);
+    expect(links.projects).toContainEqual({ projectId: p1.id, gitlabProjectId: gitlabProject });
+    expect(
+      links.projects.filter((p) => p.projectId !== p1.id && p.gitlabProjectId === gitlabProject),
+    ).toEqual([]);
+    // Unlinking removes it again.
+    await updateProject(t.db, plain.id, p1.id, { gitlabProjectId: null });
+    expect((await gitlabLinks(t.db)).projects.map((p) => p.projectId)).not.toContain(p1.id);
   });
 });
