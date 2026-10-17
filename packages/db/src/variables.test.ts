@@ -15,6 +15,7 @@ import { variableKeys, variables, variableVersions } from "./schema";
 import { createTestDb, type TestDb } from "./testing";
 import {
   bulkLevel,
+  chainKeys,
   createVariable,
   deleteVariable,
   getVariable,
@@ -594,6 +595,31 @@ describe("the chain an environment resolves from", () => {
     await make(w.at.project);
     const other = envKeyProvider(`k9:${key(9)}`);
     await expect(openChain(t.db, other, w.at.env)).rejects.toBeInstanceOf(CryptoError);
+  });
+
+  test("chainKeys names what applies to an environment, once each, without opening a value", async () => {
+    const w = await world();
+    const w2 = await world();
+    await make(w.at.org, { key: "ORG", kind: "plain" });
+    await make(w.at.org, { key: "SHARED" });
+    await make(w.at.project, { key: "SHARED" });
+    await make(w.at.project, { key: "PROJ" });
+    await make(w.at.env, { key: "ENV" });
+    await make({ ...w.at.env, environmentId: w.other.id }, { key: "OTHER_ENV" });
+    await make(w2.at.project, { key: "OTHER_PROJECT" });
+    await make(w2.at.org, { key: "OTHER_ORG" });
+    const gone = await make(w.at.project, { key: "GONE" });
+    await deleteVariable(t.db, w.at.project, gone.id);
+
+    expect(await chainKeys(t.db, w.at.env)).toEqual(["ENV", "ORG", "PROJ", "SHARED"]);
+    expect(await chainKeys(t.db, { ...w.at.env, environmentId: w.other.id })).toEqual([
+      "ORG",
+      "OTHER_ENV",
+      "PROJ",
+      "SHARED",
+    ]);
+    // a project with no environment named: the organization's and the project's own
+    expect(await chainKeys(t.db, w.at.project)).toEqual(["ORG", "PROJ", "SHARED"]);
   });
 });
 

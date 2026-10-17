@@ -69,8 +69,8 @@ describe("mock server", () => {
 
 describe("pipelines", () => {
   const CI = 'build:\n  stage: build\n  script:\n    - "true"\ntest:\n  script:\n    - "true"\n';
-  const ready = () => {
-    const s = setup();
+  const ready = (opts: Parameters<typeof setup>[0] = {}) => {
+    const s = setup(opts);
     s.mock.addProject({ path: "g/p", files: { ".gitlab-ci.yml": CI } });
     return s;
   };
@@ -185,6 +185,16 @@ describe("pipelines", () => {
       expect(r.mergedYaml).toBeNull();
     }
     expect(await api.ci.lint("g/p", CI)).toMatchObject({ valid: true, errors: [] });
+    mock.stop();
+  });
+
+  test("lint gives the configured warnings to valid config only", async () => {
+    const { mock, api } = ready({ lintWarnings: ["jobs:build may allow multiple pipelines"] });
+    expect(await api.ci.lint("g/p", CI)).toMatchObject({
+      valid: true,
+      warnings: ["jobs:build may allow multiple pipelines"],
+    });
+    expect((await api.ci.lint("g/p", "job:\n  stage: x\n")).warnings).toEqual([]);
     mock.stop();
   });
 });

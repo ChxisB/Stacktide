@@ -16,7 +16,7 @@ Done when: tests prove precedence of layers, list replacement, that a param cont
 Do: map project type tags to templates with a confidence and reason.
 Done when: fixture projects (Bun, Node, Docker-only, Terraform, empty) get the expected ranked recommendations.
 
-### PIPE-5 - Validation  `[ ]` M - deps: PIPE-3, GL-3, VAR-4
+### PIPE-5 - Validation  `[x]` M - deps: PIPE-3, GL-3, VAR-4
 Do: lint the rendered YAML via GitLab CI lint; check `requiresVariables` exist in the platform for the target environments and report the missing ones.
 Done when: tests with the mock cover lint errors, warnings and missing-variable reports.
 

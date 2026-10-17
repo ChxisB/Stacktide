@@ -388,6 +388,39 @@ export async function revealVariable(
   return { variable: info(row), version: row.version, value };
 }
 
+/** The live variables of the organization, the project and (if named) the environment: what resolves for the environment. */
+const inChain = (scope: Required<Pick<Scope, "projectId">> & Scope) =>
+  and(
+    eq(variables.organizationId, scope.organizationId),
+    isNull(variables.deletedAt),
+    or(
+      isNull(variables.projectId),
+      and(
+        eq(variables.projectId, scope.projectId),
+        scope.environmentId === undefined
+          ? isNull(variables.environmentId)
+          : or(isNull(variables.environmentId), eq(variables.environmentId, scope.environmentId)),
+      ),
+    ),
+  );
+
+/**
+ * The names (sorted, once each) of the variables that apply to an environment, or to a project
+ * without `environmentId`. Opens nothing, so it needs no master key and cannot leak a value: it
+ * answers "is it set there?" and no more.
+ */
+export async function chainKeys(
+  db: Executor,
+  scope: Required<Pick<Scope, "projectId">> & Scope,
+): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ key: variables.key })
+    .from(variables)
+    .where(inChain(scope))
+    .orderBy(asc(variables.key));
+  return rows.map((r) => r.key);
+}
+
 /** What `resolveVariables` in `@orch/core` takes: the types are one, so they cannot drift apart. */
 export type ChainLevel = VariableLevel;
 /** The version is there to tell, later, that a variable has changed since: it is not part of the resolution. */
@@ -409,24 +442,7 @@ export async function openChain(
     .select(sealedColumns)
     .from(variables)
     .innerJoin(variableVersions, currentVersion)
-    .where(
-      and(
-        eq(variables.organizationId, scope.organizationId),
-        isNull(variables.deletedAt),
-        or(
-          isNull(variables.projectId),
-          and(
-            eq(variables.projectId, scope.projectId),
-            scope.environmentId === undefined
-              ? isNull(variables.environmentId)
-              : or(
-                  isNull(variables.environmentId),
-                  eq(variables.environmentId, scope.environmentId),
-                ),
-          ),
-        ),
-      ),
-    )
+    .where(inChain(scope))
     .orderBy(asc(variables.id));
   const values = await unseal(db, keys, rows, () => true);
   return rows.map((row, i) => ({

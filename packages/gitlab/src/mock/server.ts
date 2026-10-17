@@ -23,6 +23,8 @@ export interface MockOptions {
   maxPerPage?: number;
   /** Turns on `/oauth/authorize` and `/oauth/token` for this application. */
   oauth?: { clientId: string; clientSecret?: string; redirectUri: string };
+  /** Warnings the CI lint endpoint gives a valid config (GitLab's come from its own linter; the mock has none). */
+  lintWarnings?: string[];
 }
 
 export interface MockUser {
@@ -581,7 +583,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
         return json({
           valid: errors.length === 0,
           errors,
-          warnings: [],
+          warnings: errors.length === 0 ? (opts.lintWarnings ?? []) : [],
           merged_yaml: errors.length === 0 ? body.content : null,
         });
       }

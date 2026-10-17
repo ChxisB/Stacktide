@@ -11,6 +11,7 @@
     "@orch/crypto": "workspace:*",
     "@orch/db": "workspace:*",
     "@orch/gitlab": "workspace:*",
+    "@orch/pipelines": "workspace:*",
     "@orch/sync": "workspace:*",
     "elysia": "1.4.30",
     "zod": "4.6.7"
