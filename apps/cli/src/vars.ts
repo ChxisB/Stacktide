@@ -1,7 +1,7 @@
 import { open, rename, rm } from "node:fs/promises";
 import { resolve } from "node:path";
-import { call, clientFor, resolveApi } from "./api";
-import { CliError, type Command, type Context, parse, say } from "./cli";
+import { call, session } from "./api";
+import { CliError, type Command, type Context, noExtra, parse, say } from "./cli";
 import { FORMATS, type Format, formatVariables } from "./format";
 import { resolveEnvironment, type TargetFlags } from "./target";
 
@@ -19,15 +19,6 @@ const oneOf = <T extends string>(what: string, given: string, allowed: readonly 
   if (!hit) throw new CliError(`unknown ${what} '${given}'; use ${allowed.join(", ")}`, 2);
   return hit;
 };
-const noExtra = (positionals: string[]) => {
-  if (positionals.length > 0) throw new CliError("unexpected argument; run 'orch --help'", 2);
-};
-
-async function session(ctx: Context, flag: string | undefined) {
-  const { apiUrl, token } = await resolveApi(ctx, flag);
-  if (!token) throw new CliError("not signed in; run: orch login");
-  return { apiUrl, client: clientFor(apiUrl, token) };
-}
 
 type EnvironmentFlags = TargetFlags & {
   "api-url"?: string | undefined;

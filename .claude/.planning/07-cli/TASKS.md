@@ -20,7 +20,7 @@ Done when: tests cover exit-code passthrough, SIGTERM forwarding and that nothin
 Do: `orch ci login` reads the job's `id_token`, exchanges it, keeps the short-lived token in memory/env for the job.
 Done when: tests cover success and wrong-audience failure; docs snippet for `.gitlab-ci.yml` `id_tokens`.
 
-### CLI-6 - Sync and pipeline commands  `[ ]` S - deps: CLI-2, SYNC-6, PIPE-6
+### CLI-6 - Sync and pipeline commands  `[x]` S - deps: CLI-2, SYNC-6, PIPE-6
 Do: `orch sync plan|apply`, `orch pipeline detect|setup <template>` as thin wrappers.
 Done when: golden-output tests with the typed client stubbed.
 

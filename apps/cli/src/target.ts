@@ -24,17 +24,17 @@ export interface EnvironmentTarget {
 const MAX_PAGES = 20;
 const SHOWN = 10;
 
-interface Named {
+export interface Named {
   id: string;
   name: string;
   slug?: string;
 }
-interface Page<T> {
+export interface Page<T> {
   items: T[];
   nextCursor: string | null;
 }
 
-async function every<T>(
+export async function every<T>(
   apiUrl: string,
   page: (
     cursor: string | undefined,
@@ -55,7 +55,7 @@ async function every<T>(
  * The id for `ref`: itself when it is an id (the API answers 404 if it is wrong), else the one item
  * whose name or slug it is. Zero or several matches are errors that list what is known, never a guess.
  */
-async function idOf<T extends Named>(
+export async function idOf<T extends Named>(
   what: string,
   ref: string,
   list: () => Promise<T[]>,
@@ -80,27 +80,43 @@ async function idOf<T extends Named>(
 }
 
 /**
- * The environment a command is about: `--org`, `--project` and `--env`, else `ORCH_ORG`, `ORCH_PROJECT`
- * and `ORCH_ENV` (what `orch ci login` prints), else the nearest `.orch.json`, one field at a time.
- * Names are looked up through the list endpoints, which a project-only member (or a CI token) cannot
- * read, so they can always give ids.
+ * `idOf` for something that may be left out: `ref` when given, else the only one there is. With none
+ * or several, an error that says what to pass, never a guess.
  */
-export async function resolveEnvironment(
-  ctx: Context,
-  apiUrl: string,
-  client: Api,
-  flags: TargetFlags,
-): Promise<EnvironmentTarget> {
-  const file = (await findProjectFile(ctx.cwd))?.config;
-  const org = flags.org ?? (ctx.env.ORCH_ORG || undefined) ?? file?.organization;
-  const project = flags.project ?? (ctx.env.ORCH_PROJECT || undefined) ?? file?.project;
-  const env = flags.env ?? (ctx.env.ORCH_ENV || undefined) ?? file?.environment;
-  const missing = (what: string, flag: string, variable: string) =>
-    new CliError(`no ${what}: pass ${flag}, set ${variable} or put it in .orch.json`, 2);
-  if (!org) throw missing("organization", "--org", "ORCH_ORG");
-  if (!project) throw missing("project", "--project", "ORCH_PROJECT");
-  if (!env) throw missing("environment", "--env", "ORCH_ENV");
+export async function onlyOrNamed<T extends Named>(
+  what: string,
+  flag: string,
+  ref: string | undefined,
+  list: () => Promise<T[]>,
+): Promise<string> {
+  if (ref) return idOf(what, ref, list);
+  const items = await list();
+  const [only] = items;
+  if (only && items.length === 1) return only.id;
+  if (items.length === 0) throw new CliError(`no ${what} here`, 2);
+  const names = items.map((i) => i.slug ?? i.name);
+  throw new CliError(
+    `${items.length} ${what}s: pass ${flag}; known: ${names.slice(0, SHOWN).join(", ")}${names.length > SHOWN ? ", ..." : ""}`,
+    2,
+  );
+}
 
+/**
+ * What the user named, one field at a time: `--org`, `--project` and `--env`, else `ORCH_ORG`,
+ * `ORCH_PROJECT` and `ORCH_ENV` (what `orch ci login` prints), else the nearest `.orch.json`.
+ */
+async function named(ctx: Context, flags: TargetFlags) {
+  const file = (await findProjectFile(ctx.cwd))?.config;
+  return {
+    org: flags.org ?? (ctx.env.ORCH_ORG || undefined) ?? file?.organization,
+    project: flags.project ?? (ctx.env.ORCH_PROJECT || undefined) ?? file?.project,
+    env: flags.env ?? (ctx.env.ORCH_ENV || undefined) ?? file?.environment,
+  };
+}
+const missing = (what: string, flag: string, variable: string) =>
+  new CliError(`no ${what}: pass ${flag}, set ${variable} or put it in .orch.json`, 2);
+
+async function projectOf(apiUrl: string, client: Api, org: string, project: string) {
   const orgId = await idOf("organization", org, () =>
     every(apiUrl, (cursor) => client.organizations.get({ query: { limit: 100, cursor } })),
   );
@@ -109,6 +125,45 @@ export async function resolveEnvironment(
       client.organizations({ orgId }).projects.get({ query: { limit: 100, cursor } }),
     ),
   );
+  return { orgId, projectId };
+}
+
+export interface ProjectTarget {
+  orgId: string;
+  projectId: string;
+  /** How the user named it, for messages: `acme/web`. */
+  label: string;
+}
+
+/**
+ * The project a command is about (see `named`). Names are looked up through the list endpoints, which
+ * a project-only member (or a CI token) cannot read, so they can always give ids.
+ */
+export async function resolveProject(
+  ctx: Context,
+  apiUrl: string,
+  client: Api,
+  flags: Pick<TargetFlags, "org" | "project">,
+): Promise<ProjectTarget> {
+  const { org, project } = await named(ctx, flags);
+  if (!org) throw missing("organization", "--org", "ORCH_ORG");
+  if (!project) throw missing("project", "--project", "ORCH_PROJECT");
+  return { ...(await projectOf(apiUrl, client, org, project)), label: `${org}/${project}` };
+}
+
+/** The environment a command is about: the project (see `resolveProject`) and `--env`. */
+export async function resolveEnvironment(
+  ctx: Context,
+  apiUrl: string,
+  client: Api,
+  flags: TargetFlags,
+): Promise<EnvironmentTarget> {
+  const { org, project, env } = await named(ctx, flags);
+  if (!org) throw missing("organization", "--org", "ORCH_ORG");
+  if (!project) throw missing("project", "--project", "ORCH_PROJECT");
+  if (!env) throw missing("environment", "--env", "ORCH_ENV");
+
+  const { orgId, projectId } = await projectOf(apiUrl, client, org, project);
   const envId = await idOf("environment", env, () =>
     every(apiUrl, (cursor) =>
       client

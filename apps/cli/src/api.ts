@@ -85,3 +85,10 @@ export async function call<T>(
     throw new CliError(`${apiUrl} does not look like an orch API`);
   return res.data as T;
 }
+
+/** The API to talk to and a client signed in as the user; no token is an error before anything is sent. */
+export async function session(ctx: Context, flag: string | undefined) {
+  const { apiUrl, token } = await resolveApi(ctx, flag);
+  if (!token) throw new CliError("not signed in; run: orch login");
+  return { apiUrl, client: clientFor(apiUrl, token) };
+}

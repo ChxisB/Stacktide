@@ -6,7 +6,9 @@
     ".": "./src/app.ts",
     "./credentials": "./src/credentials.ts",
     "./jwt-testing": "./src/jwt-testing.ts",
-    "./tokens": "./src/tokens.ts"
+    "./sync-apply": "./src/sync-apply.ts",
+    "./tokens": "./src/tokens.ts",
+    "./worker": "./src/worker.ts"
   },
   "dependencies": {
     "@elysiajs/openapi": "1.4.16",

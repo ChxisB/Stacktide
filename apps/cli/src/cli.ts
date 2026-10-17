@@ -11,6 +11,11 @@ export class CliError extends Error {
   }
 }
 
+/** A command that takes no words besides its options. */
+export const noExtra = (positionals: string[]) => {
+  if (positionals.length > 0) throw new CliError("unexpected argument; run 'orch --help'", 2);
+};
+
 export interface Io {
   out: (line: string) => void;
   err: (line: string) => void;
