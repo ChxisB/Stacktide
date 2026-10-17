@@ -7,6 +7,7 @@ export * from "./organizations";
 export * from "./pipeline-configs";
 export * from "./pipeline-runs";
 export * from "./projects";
+export * from "./runs";
 export * from "./schedules";
 export * from "./stacks";
 export * from "./sync-drift";

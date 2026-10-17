@@ -19,6 +19,7 @@ import { pipelineRoutes } from "./routes/pipeline";
 import { pipelineFleetRoutes } from "./routes/pipeline-fleet";
 import { pipelineRunRoutes } from "./routes/pipeline-runs";
 import { projectRoutes } from "./routes/projects";
+import { runRoutes } from "./routes/runs";
 import { syncRunRoutes } from "./routes/sync-runs";
 import { syncTargetRoutes } from "./routes/sync-targets";
 import { tokenRoutes } from "./routes/tokens";
@@ -115,6 +116,7 @@ export function createApp(deps: AppDeps) {
     .use(pipelineRoutes(deps))
     .use(pipelineFleetRoutes(deps))
     .use(pipelineRunRoutes(deps))
+    .use(runRoutes(deps))
     .use(tokenRoutes(deps))
     .use(variableRoutes(deps));
   const open = unguardedRoutes(app, DOCS);

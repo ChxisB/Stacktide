@@ -566,6 +566,7 @@ describe("audit coverage", () => {
         "pipeline.upgrade",
         "pipeline.apply", // the same row, written for each project of an upgrade
         "pipeline.retry",
+        "run.create", // a run of IaC stacks
         // the environment's resolved set with its values: a row for each secret revealed, and one for the request
         "variable.reveal",
         "variable.export",

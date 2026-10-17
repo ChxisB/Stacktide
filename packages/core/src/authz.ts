@@ -81,6 +81,9 @@ export const RULES = {
   "pipeline.upgrade": { org: "admin" },
   // Retrying runs the failed jobs of a pipeline again: the same commit and the same jobs, so no new code, only the project's runners and CI variables once more.
   "pipeline.retry": { project: "maintainer" },
+  // Runs of IaC stacks: a plan only reads the project's repository and runs its own CI, as any merge request does, so developers may start one and reporters may read. What a run holds is names, a commit and states.
+  "run.read": { project: "reporter" },
+  "run.create": { project: "developer" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

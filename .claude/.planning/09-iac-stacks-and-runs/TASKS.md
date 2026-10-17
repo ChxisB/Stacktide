@@ -16,7 +16,7 @@ Done when: tests cover module-path changes, deleted files, renamed files and no-
 Do: generate pipeline YAML for a set of stack actions: per-stack jobs, `needs` by wave, `resource_group`, tool setup by version, `id_tokens`, plan artifact, summary post step.
 Done when: snapshot tests plus GitLab CI lint on the output (mock) pass; a cycle or missing tool version fails generation loudly.
 
-### IAC-5 - Run model and state machine  `[ ]` M - deps: IAC-1, API-6
+### IAC-5 - Run model and state machine  `[x]` M - deps: IAC-1, API-6
 Do: `runs` + `run_stacks` tables; pure transition table; create/list/get API; audit.
 Done when: tests cover every legal transition and reject every illegal one.
 

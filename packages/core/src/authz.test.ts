@@ -40,6 +40,14 @@ const holders: Record<string, Subject> = {
 };
 const ORG_ALL = ["org viewer", "org member", "org admin", "org owner"];
 const REPORTER_UP = [...ORG_ALL, "project reporter", "project developer", "project maintainer"];
+// an org member is a developer on every project of the org
+const DEVELOPER_UP = [
+  "org member",
+  "org admin",
+  "org owner",
+  "project developer",
+  "project maintainer",
+];
 const MAINTAINER_UP = ["org admin", "org owner", "project maintainer"];
 
 // Who may do what: the whole table, one list per action.
@@ -92,6 +100,8 @@ const allowed: Record<string, string[]> = {
   "pipeline.apply": ["org admin", "org owner"],
   "pipeline.upgrade": ["org admin", "org owner"],
   "pipeline.retry": MAINTAINER_UP,
+  "run.read": REPORTER_UP,
+  "run.create": DEVELOPER_UP,
 };
 
 describe("role x action", () => {

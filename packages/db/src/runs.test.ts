@@ -1,0 +1,354 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { canTransition, RUN_STATES, type RunState } from "@orch/core";
+import { and, eq } from "drizzle-orm";
+import { pgConstraint } from "./pg-error";
+import { createOrganization, createProject, deleteProject } from "./repo";
+import { createRun, getRun, IllegalTransition, listRuns, moveRunStack, type NewRun } from "./runs";
+import { runStacks, runs } from "./schema";
+import { createTestDb, type TestDb } from "./testing";
+
+let t: TestDb;
+beforeAll(async () => {
+  t = await createTestDb();
+});
+afterAll(async () => {
+  await t.drop();
+});
+
+let n = 0;
+async function world() {
+  const org = await createOrganization(t.db, { slug: `o${++n}`, name: "O" });
+  const project = await createProject(t.db, { organizationId: org.id, name: `p${++n}` });
+  return { org, project };
+}
+
+const SHA = "a".repeat(40);
+const input = (
+  w: Awaited<ReturnType<typeof world>>,
+  stacks: string[],
+  extra: Partial<NewRun> = {},
+): NewRun => ({
+  organizationId: w.org.id,
+  projectId: w.project.id,
+  ref: "feature/net",
+  sha: SHA,
+  stacks,
+  ...extra,
+});
+
+/** The constraint a failed statement names, or the error itself when it is not a database's. */
+const refusedBy = async (p: Promise<unknown>) => {
+  try {
+    await p;
+  } catch (e) {
+    return pgConstraint(e) ?? e;
+  }
+  return undefined;
+};
+
+const setStatus = (runId: string, stack: string, status: RunState) =>
+  t.db
+    .update(runStacks)
+    .set({ status })
+    .where(and(eq(runStacks.runId, runId), eq(runStacks.stack, stack)));
+
+describe("createRun", () => {
+  test("stores the run and queues each stack, listed by name", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net", "app", "db"], { mergeRequestIid: 12 }));
+    expect(run).toMatchObject({
+      organizationId: w.org.id,
+      projectId: w.project.id,
+      ref: "feature/net",
+      sha: SHA,
+      mergeRequestIid: 12,
+    });
+    expect(run.stacks.map((s) => [s.stack, s.status, s.error])).toEqual([
+      ["app", "queued", null],
+      ["db", "queued", null],
+      ["net", "queued", null],
+    ]);
+    expect(await getRun(t.db, w.org.id, w.project.id, run.id)).toEqual(run);
+  });
+
+  test("the stacks come in the same order made as read, by code point, not by collation", async () => {
+    const w = await world();
+    // an en_US-style collation ignores the hyphen and would put `ab` before `a-b`
+    const run = await createRun(t.db, input(w, ["ab", "a0", "a-b"]));
+    const order = ["a-b", "a0", "ab"];
+    expect(run.stacks.map((s) => s.stack)).toEqual(order);
+    const read = await getRun(t.db, w.org.id, w.project.id, run.id);
+    expect(read?.stacks.map((s) => s.stack)).toEqual(order);
+    const listed = await listRuns(t.db, w.org.id, w.project.id, { limit: 5 });
+    expect(listed[0]?.stacks.map((s) => s.stack)).toEqual(order);
+  });
+
+  test("a run with no merge request says so", async () => {
+    const w = await world();
+    expect((await createRun(t.db, input(w, ["net"]))).mergeRequestIid).toBeNull();
+  });
+
+  test("a run of no stacks is refused, and so is one that names a stack twice, leaving nothing", async () => {
+    const w = await world();
+    await expect(createRun(t.db, input(w, []))).rejects.toThrow("at least one stack");
+    expect(await refusedBy(createRun(t.db, input(w, ["net", "net"])))).toBe(
+      "run_stacks_run_id_stack_pk",
+    );
+    expect(await listRuns(t.db, w.org.id, w.project.id, { limit: 10 })).toEqual([]);
+  });
+
+  test("the database refuses what is not a commit, a stack name, a ref or a merge request", async () => {
+    const w = await world();
+    const bad: [string, Partial<NewRun>, string][] = [
+      ["short sha", { sha: "abc123" }, "runs_sha_check"],
+      ["upper-case sha", { sha: "A".repeat(40) }, "runs_sha_check"],
+      ["sha with a suffix", { sha: `${SHA}0` }, "runs_sha_check"],
+      ["empty ref", { ref: "" }, "runs_ref_check"],
+      ["long ref", { ref: "r".repeat(256) }, "runs_ref_check"],
+      ["merge request 0", { mergeRequestIid: 0 }, "runs_mr_check"],
+      ["stack with a space", { stacks: ["a b"] }, "run_stacks_stack_check"],
+      ["stack in capitals", { stacks: ["Net"] }, "run_stacks_stack_check"],
+    ];
+    for (const [what, extra, constraint] of bad) {
+      expect(await refusedBy(createRun(t.db, input(w, ["net"], extra))), what).toBe(constraint);
+    }
+    // both lengths of a git object id are fine
+    await createRun(t.db, input(w, ["net"], { sha: "b".repeat(64) }));
+    await createRun(t.db, input(w, ["net"], { ref: "r".repeat(255) }));
+    expect(await listRuns(t.db, w.org.id, w.project.id, { limit: 10 })).toHaveLength(2);
+  });
+
+  test("the database refuses a state that is not one of the eight, whoever writes it", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net"]));
+    const set = (status: string) =>
+      t.db.update(runStacks).set({ status }).where(eq(runStacks.runId, run.id));
+    for (const status of ["Queued", "done", "", "applying "]) {
+      expect(await refusedBy(set(status)), status).toBe("run_stacks_status_check");
+    }
+    for (const status of RUN_STATES) await set(status);
+  });
+
+  test("a project of another organization is not accepted", async () => {
+    const a = await world();
+    const b = await world();
+    const crossed = { ...input(a, ["net"]), projectId: b.project.id };
+    expect(await refusedBy(createRun(t.db, crossed))).toBe("runs_project_org_fk");
+  });
+});
+
+describe("getRun and listRuns", () => {
+  test("every lookup repeats the organization and the project", async () => {
+    const a = await world();
+    const b = await world();
+    const run = await createRun(t.db, input(a, ["net"]));
+    expect(await getRun(t.db, b.org.id, a.project.id, run.id)).toBeUndefined();
+    expect(await getRun(t.db, a.org.id, b.project.id, run.id)).toBeUndefined();
+    expect(await getRun(t.db, a.org.id, a.project.id, run.id)).toEqual(run);
+    expect(await listRuns(t.db, b.org.id, b.project.id, { limit: 10 })).toEqual([]);
+    expect(await listRuns(t.db, b.org.id, a.project.id, { limit: 10 })).toEqual([]);
+  });
+
+  test("newest first, with its stacks, a page at a time", async () => {
+    const w = await world();
+    const made = [];
+    for (const name of ["one", "two", "three", "four", "five"]) {
+      made.push(await createRun(t.db, input(w, [name, "shared"])));
+    }
+    await createRun(t.db, input(await world(), ["elsewhere"]));
+    const newest = [...made].reverse();
+
+    // one of several in the project is found by its own id
+    expect(await getRun(t.db, w.org.id, w.project.id, made[2]?.id ?? "")).toEqual(made[2]);
+
+    const first = await listRuns(t.db, w.org.id, w.project.id, { limit: 2 });
+    expect(first.map((r) => r.id)).toEqual(newest.slice(0, 2).map((r) => r.id));
+    expect(first[0]).toEqual(newest[0]);
+
+    const second = await listRuns(t.db, w.org.id, w.project.id, {
+      limit: 2,
+      before: first[1]?.id,
+    });
+    expect(second.map((r) => r.id)).toEqual(newest.slice(2, 4).map((r) => r.id));
+    const last = await listRuns(t.db, w.org.id, w.project.id, { limit: 2, before: second[1]?.id });
+    expect(last.map((r) => r.id)).toEqual(newest.slice(4).map((r) => r.id));
+    expect(last[0]?.stacks.map((s) => s.stack)).toEqual(["one", "shared"]);
+  });
+});
+
+describe("moveRunStack", () => {
+  const move = (
+    w: Awaited<ReturnType<typeof world>>,
+    runId: string,
+    stack: string,
+    a: string,
+    b: string,
+    error?: string,
+  ) =>
+    moveRunStack(t.db, w.org.id, w.project.id, runId, stack, a as RunState, b as RunState, error);
+
+  test("moves a stack along its lifecycle and leaves the others where they are", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["a", "b"]));
+    for (const [from, to] of [
+      ["queued", "planning"],
+      ["planning", "planned"],
+      ["planned", "applying"],
+      ["applying", "applied"],
+    ] as const) {
+      expect(await move(w, run.id, "a", from, to)).toMatchObject({ stack: "a", status: to });
+    }
+    const now = await getRun(t.db, w.org.id, w.project.id, run.id);
+    expect(now?.stacks.map((s) => [s.stack, s.status])).toEqual([
+      ["a", "applied"],
+      ["b", "queued"],
+    ]);
+  });
+
+  test("a failure keeps its reason, a longer one than 500 characters is refused", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["a", "b"]));
+    const row = await move(w, run.id, "a", "queued", "failed", "the pipeline could not be created");
+    expect(row).toMatchObject({ status: "failed", error: "the pipeline could not be created" });
+    expect(await move(w, run.id, "b", "queued", "canceled")).toMatchObject({ error: null });
+    expect(await refusedBy(move(w, run.id, "b", "canceled", "canceled", "x"))).toBeInstanceOf(
+      IllegalTransition,
+    );
+    const c = await createRun(t.db, input(w, ["c"]));
+    expect(await refusedBy(move(w, c.id, "c", "queued", "failed", "x".repeat(501)))).toBe(
+      "run_stacks_error_check",
+    );
+    expect(await move(w, c.id, "c", "queued", "failed", "x".repeat(500))).toBeDefined();
+  });
+
+  test("only a move into a finished state keeps a reason", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["a", "b"]));
+    expect(await move(w, run.id, "a", "queued", "planning", "stray")).toMatchObject({
+      status: "planning",
+      error: null,
+    });
+    expect(await move(w, run.id, "a", "planning", "planned", "stray")).toMatchObject({
+      error: null,
+    });
+    expect(await move(w, run.id, "b", "queued", "canceled", "superseded")).toMatchObject({
+      error: "superseded",
+    });
+  });
+
+  test("a stack that is not where the caller thinks is left alone (a repeated or late event)", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["a"]));
+    expect(await move(w, run.id, "a", "queued", "planning")).toBeDefined();
+    // the same event again, and one that arrives after the stack has gone on
+    expect(await move(w, run.id, "a", "queued", "planning")).toBeUndefined();
+    expect(await move(w, run.id, "a", "queued", "canceled")).toBeUndefined();
+    expect(await move(w, run.id, "nope", "queued", "planning")).toBeUndefined();
+    const now = await getRun(t.db, w.org.id, w.project.id, run.id);
+    expect(now?.stacks[0]?.status).toBe("planning");
+  });
+
+  test("every pair of states, against the database: legal ones move, the rest throw and change nothing", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["a"]));
+    let moved = 0;
+    for (const from of RUN_STATES) {
+      for (const to of RUN_STATES) {
+        await setStatus(run.id, "a", from);
+        const outcome = await refusedBy(move(w, run.id, "a", from, to));
+        const stored = (await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks[0]?.status;
+        if (canTransition(from, to)) {
+          expect(outcome, `${from} -> ${to}`).toBeUndefined();
+          expect(stored).toBe(to);
+          moved++;
+        } else {
+          expect(outcome, `${from} -> ${to}`).toBeInstanceOf(IllegalTransition);
+          expect(stored).toBe(from);
+        }
+      }
+    }
+    expect(moved).toBe(10);
+  });
+
+  test("the state a caller names must be one: not a typo or an inherited name", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["a"]));
+    for (const bad of ["Queued", "constructor", ""]) {
+      expect(await refusedBy(move(w, run.id, "a", bad, "planning"))).toBeInstanceOf(
+        IllegalTransition,
+      );
+      expect(await refusedBy(move(w, run.id, "a", "queued", bad))).toBeInstanceOf(
+        IllegalTransition,
+      );
+    }
+  });
+
+  test("an id from another organization or project moves nothing", async () => {
+    const a = await world();
+    const b = await world();
+    const run = await createRun(t.db, input(a, ["a"]));
+    const other = (org: string, project: string) =>
+      moveRunStack(t.db, org, project, run.id, "a", "queued", "planning");
+    expect(await other(b.org.id, a.project.id)).toBeUndefined();
+    expect(await other(a.org.id, b.project.id)).toBeUndefined();
+    expect((await getRun(t.db, a.org.id, a.project.id, run.id))?.stacks[0]?.status).toBe("queued");
+  });
+});
+
+describe("the apply mutex", () => {
+  const ready = async (w: Awaited<ReturnType<typeof world>>, stack: string) => {
+    const run = await createRun(t.db, input(w, [stack]));
+    await setStatus(run.id, stack, "planned");
+    return run;
+  };
+  const apply = (w: Awaited<ReturnType<typeof world>>, id: string, stack: string) =>
+    moveRunStack(t.db, w.org.id, w.project.id, id, stack, "planned", "applying");
+
+  test("one run at a time applies a stack, until it is done", async () => {
+    const w = await world();
+    const first = await ready(w, "net");
+    const second = await ready(w, "net");
+    const other = await ready(w, "app");
+    expect(await apply(w, first.id, "net")).toBeDefined();
+    expect(await refusedBy(apply(w, second.id, "net"))).toBe("run_stacks_one_applying");
+    // another stack is free, and the refused one is still planned
+    expect(await apply(w, other.id, "app")).toBeDefined();
+    expect((await getRun(t.db, w.org.id, w.project.id, second.id))?.stacks[0]?.status).toBe(
+      "planned",
+    );
+
+    expect(
+      await moveRunStack(
+        t.db,
+        w.org.id,
+        w.project.id,
+        first.id,
+        "net",
+        "applying",
+        "failed",
+        "the apply failed",
+      ),
+    ).toBeDefined();
+    expect(await apply(w, second.id, "net")).toBeDefined();
+  });
+
+  test("the same stack name in another project is another stack", async () => {
+    const a = await world();
+    const b = await world();
+    expect(await apply(a, (await ready(a, "net")).id, "net")).toBeDefined();
+    expect(await apply(b, (await ready(b, "net")).id, "net")).toBeDefined();
+  });
+});
+
+describe("history", () => {
+  test("deleting the project deletes its runs and their stacks, and nobody else's", async () => {
+    const a = await world();
+    const b = await world();
+    const gone = await createRun(t.db, input(a, ["net"]));
+    const kept = await createRun(t.db, input(b, ["net"]));
+    await deleteProject(t.db, a.org.id, a.project.id);
+    expect(await t.db.select().from(runs).where(eq(runs.id, gone.id))).toEqual([]);
+    expect(await t.db.select().from(runStacks).where(eq(runStacks.runId, gone.id))).toEqual([]);
+    expect(await getRun(t.db, b.org.id, b.project.id, kept.id)).toEqual(kept);
+  });
+});
