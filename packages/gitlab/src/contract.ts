@@ -211,6 +211,58 @@ export function gitlabContract(
       });
     });
 
+    describe("pipelines and CI lint", () => {
+      // Manual jobs: the pipeline exists but no runner picks anything up.
+      const CI = 'contract:\n  stage: test\n  when: manual\n  script:\n    - "true"\n';
+      const ciBranch = async () => {
+        const branch = await newBranch();
+        const commit = await t.api.repository.commitFiles(
+          t.project,
+          { branch, message: "contract: ci" },
+          [{ action: "create", path: ".gitlab-ci.yml", content: CI }],
+        );
+        return { branch, sha: commit.id };
+      };
+
+      test("triggers a pipeline with variables, reads it and its jobs, cancels and retries it", async () => {
+        const { branch, sha } = await ciBranch();
+        const p = await t.api.pipelines.trigger(t.project, branch, [
+          { key: "CONTRACT_VAR", value: "contract-secret-value-1" },
+        ]);
+        expect(p).toMatchObject({ ref: branch, sha });
+        expect(p.status).not.toBe("unknown");
+        expect(JSON.stringify(p)).not.toContain("contract-secret-value-1");
+
+        expect(await t.api.pipelines.get(t.project, p.id)).toMatchObject({ id: p.id, ref: branch });
+        const jobs = await collect(t.api.pipelines.jobs(t.project, p.id));
+        expect(jobs.map((j) => `${j.stage}:${j.name}`)).toEqual(["test:contract"]);
+
+        expect((await t.api.pipelines.cancel(t.project, p.id)).id).toBe(p.id);
+        expect((await t.api.pipelines.retry(t.project, p.id)).id).toBe(p.id);
+        await t.api.pipelines.cancel(t.project, p.id);
+      });
+
+      test("an unknown ref is invalid, an unknown pipeline is not_found", async () => {
+        await failsWith("invalid", t.api.pipelines.trigger(t.project, "orch-no-such-ref"));
+        await failsWith("not_found", t.api.pipelines.get(t.project, 2_000_000_000));
+      });
+
+      test("lint reports valid config, and errors as a result rather than an exception", async () => {
+        const ok = await t.api.ci.lint(t.project, CI);
+        expect(ok).toMatchObject({ valid: true, errors: [] });
+        expect(ok.mergedYaml).toContain("contract");
+
+        const noScript = await t.api.ci.lint(t.project, "contract:\n  stage: test\n");
+        expect(noScript.valid).toBe(false);
+        expect(noScript.errors.join("\n")).toContain("contract");
+        expect(noScript.mergedYaml).toBeNull();
+
+        const broken = await t.api.ci.lint(t.project, "contract: [unclosed\n");
+        expect(broken.valid).toBe(false);
+        expect(broken.errors.length).toBeGreaterThan(0);
+      });
+    });
+
     describe("merge requests", () => {
       test("opens, reads, edits, closes and reopens a merge request; one open MR per branch", async () => {
         const branch = await newBranch();

@@ -456,6 +456,44 @@ describe("the token never leaks", () => {
     expect(out.join("\n")).toContain("[REDACTED]");
   });
 
+  test("values named in `redact` are scrubbed from errors, short ones are left alone", async () => {
+    const SECRET = "hunter2-VALUE-canary";
+    const { client, lines } = setup(() =>
+      json({ message: `invalid ${SECRET}, also ab` }, { status: 400 }),
+    );
+    const err = await caught(
+      client.request("POST", "/x", { body: { v: SECRET }, redact: [SECRET, "ab"] }),
+    );
+    expect(err.message).not.toContain(SECRET);
+    expect(err.message).toContain("invalid [REDACTED], also ab");
+    expect(lines.join("\n")).not.toContain(SECRET);
+
+    const net = setup(() => json({}), { maxRetries: 0 });
+    net.server.stop(true);
+    const down = await caught(net.client.request("POST", "/x", { redact: [SECRET] }));
+    expect(down.kind).toBe("network");
+  });
+
+  test("a secret is hidden whole even when it spans the truncation point, is JSON-escaped, or overlaps the fixed text", async () => {
+    const CERT = `-----BEGIN-----\n${"A".repeat(190)}\n-----END-----`;
+    const cut = setup(() => json({ message: `${"x".repeat(150)}${CERT}` }, { status: 400 }));
+    const e1 = await caught(cut.client.request("POST", "/x", { redact: [CERT] }));
+    expect(e1.message).not.toContain("AAAA");
+
+    // An object reason is re-serialised, so the newline arrives as the two characters \n.
+    const escaped = setup(() => json({ message: { base: [CERT] } }, { status: 400 }));
+    const e2 = await caught(escaped.client.request("POST", "/x", { redact: [CERT] }));
+    expect(e2.message).not.toContain("AAAA");
+    expect(e2.message).toContain("[REDACTED]");
+
+    // Secrets that look like the fixed text or the marker do not mangle either.
+    const odd = setup(() => json({ message: "POST failed DACT true" }, { status: 400 }));
+    const e3 = await caught(odd.client.request("POST", "/x", { redact: ["POST", "DACT", "true"] }));
+    expect(e3.message).toBe(
+      "GitLab POST /api/v4/x failed (400): [REDACTED] failed [REDACTED] [REDACTED]",
+    );
+  });
+
   test("a retry is logged without the token or the query string", async () => {
     const { client, lines } = setup((_req, n) =>
       n === 1 ? new Response("", { status: 503 }) : json({}),

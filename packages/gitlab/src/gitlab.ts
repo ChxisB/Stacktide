@@ -1,5 +1,6 @@
 import { type ClientOptions, createGitlabClient, type GitlabClient } from "./client";
 import { mergeRequestsApi } from "./merge-requests";
+import { pipelinesApi } from "./pipelines";
 import { projectsApi } from "./projects";
 import { repositoryApi } from "./repository";
 
@@ -10,6 +11,7 @@ export function gitlabApi(client: GitlabClient) {
     ...projects,
     ...repositoryApi(client, projects.projects.get),
     ...mergeRequestsApi(client),
+    ...pipelinesApi(client),
   };
 }
 

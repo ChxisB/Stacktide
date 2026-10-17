@@ -38,6 +38,23 @@ interface Mr {
   target_branch: string;
   notes: Note[];
 }
+interface MockJob {
+  id: number;
+  name: string;
+  stage: string;
+  status: string;
+  allow_failure: boolean;
+}
+interface Pipe {
+  id: number;
+  iid: number;
+  ref: string;
+  sha: string;
+  status: string;
+  jobs: MockJob[];
+  /** Kept for tests; GitLab never returns trigger variables, and neither does the mock. */
+  variables: { key: string; value: string }[];
+}
 interface Proj {
   id: number;
   path: string;
@@ -45,12 +62,55 @@ interface Proj {
   archived: boolean;
   branches: Map<string, Branch>;
   mrs: Mr[];
+  pipelines: Pipe[];
 }
 
 export interface RecordedRequest {
   method: string;
   /** Path without the query string. */
   path: string;
+}
+
+const NOT_JOBS = new Set([
+  "stages",
+  "variables",
+  "default",
+  "workflow",
+  "include",
+  "image",
+  "services",
+  "cache",
+  "before_script",
+  "after_script",
+]);
+
+/** The few CI rules the platform relies on: a mapping, and every visible job has a script. */
+function checkCi(content: string) {
+  let doc: unknown;
+  try {
+    doc = Bun.YAML.parse(content);
+  } catch {
+    return { jobs: [], errors: ["Invalid configuration format"] };
+  }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
+    return { jobs: [], errors: ["Invalid configuration format"] };
+  }
+  const jobs: { name: string; stage: string; manual: boolean }[] = [];
+  const errors: string[] = [];
+  for (const [name, def] of Object.entries(doc)) {
+    if (NOT_JOBS.has(name) || name.startsWith(".")) continue;
+    const j = (def && typeof def === "object" ? def : {}) as Record<string, unknown>;
+    if (!("script" in j) && !("trigger" in j)) {
+      errors.push(`jobs:${name} config should implement the script:, run:, or trigger: keyword`);
+    }
+    jobs.push({
+      name,
+      stage: typeof j.stage === "string" ? j.stage : "test",
+      manual: j.when === "manual",
+    });
+  }
+  if (jobs.length === 0 && errors.length === 0) errors.push("No stages / jobs for this pipeline.");
+  return { jobs, errors };
 }
 
 const sha = () => Bun.randomUUIDv7().replaceAll("-", "").padEnd(40, "0").slice(0, 40);
@@ -170,6 +230,88 @@ export function createMockGitlab(opts: MockOptions = {}) {
               mode: type === "tree" ? "040000" : "100644",
             })),
         );
+      }
+
+      const pipeJson = (p: Pipe) => ({
+        id: p.id,
+        iid: p.iid,
+        status: p.status,
+        ref: p.ref,
+        sha: p.sha,
+        web_url: `${origin}/${proj.path}/-/pipelines/${p.id}`,
+      });
+      const derive = (jobs: MockJob[]) =>
+        jobs.length > 0 && jobs.every((j) => j.status === "manual") ? "manual" : "pending";
+
+      if (req.method === "POST" && sub === "/pipeline") {
+        const b = branchOf(String(body.ref ?? ""));
+        if (!b) return json({ message: { base: ["Reference not found"] } }, 400);
+        const vars = body.variables ?? [];
+        if (
+          !Array.isArray(vars) ||
+          vars.some((v) => typeof v?.key !== "string" || !v.key || typeof v.value !== "string")
+        ) {
+          return fail(400, "variables is invalid");
+        }
+        const ci = b.files.get(".gitlab-ci.yml");
+        if (ci === undefined) return json({ message: { base: ["Missing CI config file"] } }, 400);
+        const checked = checkCi(ci);
+        if (checked.errors.length) return json({ message: { base: checked.errors } }, 400);
+        const jobs = checked.jobs.map((j) => ({
+          id: ++seq,
+          name: j.name,
+          stage: j.stage,
+          status: j.manual ? "manual" : "pending",
+          allow_failure: j.manual,
+        }));
+        const p: Pipe = {
+          id: ++seq,
+          iid: proj.pipelines.length + 1,
+          ref: String(body.ref),
+          sha: b.head,
+          status: derive(jobs),
+          jobs,
+          variables: vars.map((v) => ({ key: v.key, value: v.value })),
+        };
+        proj.pipelines.push(p);
+        return json(pipeJson(p), 201);
+      }
+
+      if (req.method === "POST" && sub === "/ci/lint") {
+        if (typeof body.content !== "string") return fail(400, "content is missing");
+        const { errors } = checkCi(body.content);
+        return json({
+          valid: errors.length === 0,
+          errors,
+          warnings: [],
+          merged_yaml: errors.length === 0 ? body.content : null,
+        });
+      }
+
+      const pm = /^\/pipelines\/(\d+)(\/jobs|\/retry|\/cancel)?$/.exec(sub);
+      if (pm) {
+        const p = proj.pipelines.find((x) => x.id === Number(pm[1]));
+        if (!p) return fail(404, "404 Pipeline Not Found");
+        if (!pm[2] && req.method === "GET") return json(pipeJson(p));
+        if (pm[2] === "/jobs" && req.method === "GET") {
+          return page(
+            p.jobs.map((j) => ({ ...j, web_url: `${origin}/${proj.path}/-/jobs/${j.id}` })),
+          );
+        }
+        if (pm[2] === "/retry" && req.method === "POST") {
+          const again = p.jobs.filter((j) => ["failed", "canceled"].includes(j.status));
+          for (const j of again) j.status = "pending";
+          if (again.length) p.status = derive(p.jobs);
+          return json(pipeJson(p));
+        }
+        if (pm[2] === "/cancel" && req.method === "POST") {
+          const live = p.jobs.filter((j) =>
+            ["pending", "running", "manual", "created"].includes(j.status),
+          );
+          for (const j of live) j.status = "canceled";
+          if (live.length) p.status = "canceled"; // a finished pipeline stays as it is
+          return json(pipeJson(p));
+        }
       }
 
       const f = /^\/repository\/files\/(.+)$/.exec(sub);
@@ -373,9 +515,20 @@ export function createMockGitlab(opts: MockOptions = {}) {
         archived: input.archived ?? false,
         branches,
         mrs: [],
+        pipelines: [],
       };
       projects.push(proj);
       return { id: proj.id, path: proj.path };
+    },
+    /** What a pipeline was triggered with (GitLab itself never shows these back). */
+    pipelineVariables: (id: number) =>
+      projects.flatMap((p) => p.pipelines).find((p) => p.id === id)?.variables,
+    /** Plays the runner: every job of the pipeline ends in `status`. */
+    finishPipeline(id: number, status: "success" | "failed") {
+      const p = projects.flatMap((x) => x.pipelines).find((x) => x.id === id);
+      if (!p) throw new Error(`no pipeline ${id}`);
+      for (const j of p.jobs) j.status = status;
+      p.status = status;
     },
     stop: () => server.stop(true),
   };

@@ -30,6 +30,11 @@ export type Query = Record<string, string | number | boolean | undefined>;
 export interface RequestOptions {
   query?: Query;
   body?: unknown;
+  /**
+   * Values in the body that are secrets: scrubbed from any error text, in case GitLab echoes them.
+   * Values shorter than 4 characters are ignored (replacing them would mangle the message).
+   */
+  redact?: string[];
 }
 
 export interface GitlabClient {
@@ -65,6 +70,18 @@ function reasonOf(text: string): string | undefined {
     if (r && typeof r === "object") return JSON.stringify(r);
   } catch {}
   return undefined;
+}
+
+/**
+ * Hides every secret (and its JSON-escaped spelling, as it appears inside a re-serialised reason)
+ * in one pass, longest first, so a short secret cannot match inside an earlier replacement.
+ */
+function redactor(secrets: string[]): (s: string) => string {
+  const spellings = secrets.flatMap((s) => [s, JSON.stringify(s).slice(1, -1)]);
+  const list = [...new Set(spellings)].filter(Boolean).sort((a, b) => b.length - a.length);
+  if (list.length === 0) return (s) => s;
+  const re = new RegExp(list.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g");
+  return (s) => s.replace(re, REDACTED);
 }
 
 /** Where a redirect points (origin and path only), so a wrong baseUrl is easy to spot. */
@@ -109,7 +126,6 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
   }
   const apiRoot = `${base.origin}${base.pathname.replace(/\/+$/, "")}/api/v4`;
 
-  const scrub = (s: string) => s.replaceAll(auth.token, REDACTED);
   const headers: Record<string, string> = {
     accept: "application/json",
     "user-agent": "orch-control-plane",
@@ -131,6 +147,8 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
     return `${apiRoot}${path}${q ? `?${q}` : ""}`;
   }
 
+  const scrub = redactor([auth.token]);
+
   function failure(
     kind: GitlabErrorKind,
     method: string,
@@ -142,7 +160,9 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
     return new GitlabError(kind, scrub(`GitLab ${method} ${where} ${what}`), status, wait);
   }
 
-  async function send(method: string, url: string, body?: unknown) {
+  async function send(method: string, url: string, body?: unknown, redact: string[] = []) {
+    // Only GitLab's own words are scrubbed (before truncation, so a cut value cannot slip through).
+    const hide = redactor([auth.token, ...redact.filter((v) => v.length >= 4)]);
     const where = new URL(url).pathname; // no query string: filters can be private
     for (let attempt = 0; ; attempt++) {
       let err: GitlabError;
@@ -157,10 +177,11 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
         });
         const text = await res.text();
         if (res.ok) return { status: res.status, headers: res.headers, text };
-        const reason =
+        const said =
           res.status >= 300 && res.status < 400
             ? redirectHint(res.headers.get("location"), url)
-            : reasonOf(text)?.slice(0, DETAIL_MAX);
+            : reasonOf(text);
+        const reason = said === undefined ? undefined : hide(said).slice(0, DETAIL_MAX);
         err = failure(
           kindOfStatus(res.status),
           method,
@@ -171,7 +192,8 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
         );
       } catch (e) {
         const timedOut = e instanceof Error && e.name === "TimeoutError";
-        const detail = !timedOut && e instanceof Error ? `: ${e.message.slice(0, DETAIL_MAX)}` : "";
+        const detail =
+          !timedOut && e instanceof Error ? `: ${hide(e.message).slice(0, DETAIL_MAX)}` : "";
         err = failure(
           timedOut ? "timeout" : "network",
           method,
@@ -219,7 +241,7 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
     async request<T>(method: string, path: string, o: RequestOptions = {}) {
       const m = method.toUpperCase();
       const url = urlFor(path, o.query);
-      return parse(m, url, await send(m, url, o.body)) as T;
+      return parse(m, url, await send(m, url, o.body, o.redact)) as T;
     },
 
     async *paginate<T>(path: string, query: Query = {}) {

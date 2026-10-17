@@ -8,7 +8,7 @@ Done when: tests (local fake server) cover pagination, 429 backoff, 5xx retry li
 Do: list/get projects and groups; repository tree (recursive, keyset); get file; compare refs; create branch; commit files (commits API with actions); create/get/update MR; MR notes (create/update).
 Done when: each method has a contract test (shared with GL-5 mock).
 
-### GL-3 - Pipelines and CI lint methods  `[ ]` S - deps: GL-1
+### GL-3 - Pipelines and CI lint methods  `[x]` S - deps: GL-1
 Do: trigger pipeline (with variables), get pipeline/jobs, retry/cancel; project CI lint (content, dry-run).
 Done when: contract tests pass, including lint error mapping to a typed result.
 

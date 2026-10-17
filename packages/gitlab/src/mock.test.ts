@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createGitlab, GitlabError } from "./index";
+import { createGitlab, GitlabError, isFinished } from "./index";
 import { createMockGitlab } from "./mock/server";
 
 function setup(opts: Parameters<typeof createMockGitlab>[0] = {}) {
@@ -54,6 +54,128 @@ describe("mock server", () => {
       "g/live",
     ]);
     expect((await api.projects.get("g/empty")).defaultBranch).toBeNull();
+    mock.stop();
+  });
+});
+
+describe("pipelines", () => {
+  const CI = 'build:\n  stage: build\n  script:\n    - "true"\ntest:\n  script:\n    - "true"\n';
+  const ready = () => {
+    const s = setup();
+    s.mock.addProject({ path: "g/p", files: { ".gitlab-ci.yml": CI } });
+    return s;
+  };
+
+  test("trigger variables reach GitLab but never come back or leak into errors", async () => {
+    const { mock, api } = ready();
+    const p = await api.pipelines.trigger("g/p", "main", [
+      { key: "TOKEN", value: "super-secret-value" },
+      { key: "CERT", value: "-----BEGIN-----", type: "file" },
+    ]);
+    expect(mock.pipelineVariables(p.id)).toEqual([
+      { key: "TOKEN", value: "super-secret-value" },
+      { key: "CERT", value: "-----BEGIN-----" },
+    ]);
+    const shown = JSON.stringify([
+      p,
+      await api.pipelines.get("g/p", p.id),
+      await collect(api.pipelines.jobs("g/p", p.id)),
+    ]);
+    expect(shown).not.toContain("super-secret-value");
+    mock.stop();
+  });
+
+  test("an error that echoes a trigger variable is scrubbed", async () => {
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => Response.json({ message: "invalid value super-secret-value" }, { status: 400 }),
+    });
+    const api = createGitlab({
+      baseUrl: `http://127.0.0.1:${server.port}`,
+      auth: { type: "private-token", token: "glpat-0123456789" },
+      maxRetries: 0,
+    });
+    const err = await api.pipelines
+      .trigger("g/p", "main", [{ key: "TOKEN", value: "super-secret-value" }])
+      .catch((e) => e);
+    expect(err.kind).toBe("invalid");
+    expect(err.message).not.toContain("super-secret-value");
+    server.stop(true);
+  });
+
+  test("jobs follow the CI file; retry restarts failed jobs, cancel stops unfinished ones", async () => {
+    const { mock, api } = ready();
+    const p = await api.pipelines.trigger("g/p", "main");
+    expect(p.status).toBe("pending");
+    expect((await collect(api.pipelines.jobs("g/p", p.id))).map((j) => j.stage)).toEqual([
+      "build",
+      "test",
+    ]);
+
+    mock.finishPipeline(p.id, "failed");
+    expect((await api.pipelines.get("g/p", p.id)).status).toBe("failed");
+    expect(isFinished((await api.pipelines.get("g/p", p.id)).status)).toBe(true);
+    expect((await api.pipelines.retry("g/p", p.id)).status).toBe("pending");
+    expect((await api.pipelines.cancel("g/p", p.id)).status).toBe("canceled");
+    const jobs = await collect(api.pipelines.jobs("g/p", p.id));
+    expect(jobs.every((j) => j.status === "canceled")).toBe(true);
+
+    mock.finishPipeline(p.id, "success");
+    expect((await api.pipelines.cancel("g/p", p.id)).status).toBe("success");
+    expect((await api.pipelines.retry("g/p", p.id)).status).toBe("success");
+    mock.stop();
+  });
+
+  test("a status GitLab adds later reads as unknown instead of failing", async () => {
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () =>
+        Response.json({
+          id: 1,
+          iid: 1,
+          status: "frobnicating",
+          ref: "main",
+          sha: "a",
+          web_url: "u",
+        }),
+    });
+    const api = createGitlab({
+      baseUrl: `http://127.0.0.1:${server.port}`,
+      auth: { type: "private-token", token: "glpat-0123456789" },
+      maxRetries: 0,
+    });
+    const p = await api.pipelines.get("g/p", 1);
+    expect(p.status).toBe("unknown");
+    expect(isFinished(p.status)).toBe(false);
+    server.stop(true);
+  });
+
+  test("a project without a CI file, or with a broken one, cannot start a pipeline", async () => {
+    const { mock, api } = setup();
+    mock.addProject({ path: "g/none" });
+    mock.addProject({ path: "g/broken", files: { ".gitlab-ci.yml": "job:\n  stage: x\n" } });
+    expect((await api.pipelines.trigger("g/none", "main").catch((e) => e)).kind).toBe("invalid");
+    expect((await api.pipelines.trigger("g/broken", "main").catch((e) => e)).kind).toBe("invalid");
+    mock.stop();
+  });
+
+  test("lint maps every kind of problem to a result with errors, never a throw", async () => {
+    const { mock, api } = ready();
+    for (const bad of [
+      "",
+      "- just\n- a list\n",
+      "job: [unclosed\n",
+      "job:\n  stage: x\n",
+      "stages: [a]\n",
+    ]) {
+      const r = await api.ci.lint("g/p", bad);
+      expect(r.valid).toBe(false);
+      expect(r.errors.length).toBeGreaterThan(0);
+      expect(r.mergedYaml).toBeNull();
+    }
+    expect(await api.ci.lint("g/p", CI)).toMatchObject({ valid: true, errors: [] });
     mock.stop();
   });
 });
