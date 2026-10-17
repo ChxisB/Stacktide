@@ -110,6 +110,37 @@ describe("stack.yml", () => {
     ]);
   });
 
+  test("a watch pattern that could never match is refused, not left to fail silently", () => {
+    const refused = [
+      "!modules/**",
+      "./modules/**",
+      "modules/",
+      "a//b",
+      "a/./b",
+      "m/[ab",
+      "m/{a,b",
+      "m/{a,{b,c}",
+      "m/[]",
+      "m/[!]",
+      "m/[^]/x",
+      "m/[ab]/[]",
+    ];
+    for (const w of refused) {
+      expect(bad(`name: a\ntool: tofu\nwatch: [${JSON.stringify(w)}]\n`)[0]).toContain("watch.0");
+    }
+    // closed classes and braces, nested ones, and a lone closer (a literal) are fine
+    const fine = [
+      "m/[ab]/**",
+      "m/[!a]/**",
+      "m/{a,b}/**",
+      "m/{a,{b,c}}/**",
+      "m/a}",
+      "m/[{]/x",
+      "modules/vpc",
+    ];
+    expect(ok(`name: a\ntool: tofu\nwatch: ${JSON.stringify(fine)}\n`).watch).toEqual(fine);
+  });
+
   test("apply_on is merge or command", () => {
     expect(bad("name: a\ntool: tofu\napply_on: always\n")[0]).toContain("apply_on");
   });

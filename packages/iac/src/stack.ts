@@ -29,15 +29,46 @@ const isControl = (c: string) => {
   return n < 0x20 || n === 0x7f;
 };
 
-// A path in the repository, possibly a glob: relative, forward slashes, nothing that climbs out.
+// An opener with no closer, or an empty class, is not an error to a glob matcher: the pattern just
+// never matches, and a stack whose shared module is watched through it would silently never be planned.
+const closed = (p: string) => {
+  let braces = 0;
+  let inClass = false;
+  let size = 0; // characters in the class so far; a leading ! or ^ negates and is not one
+  for (const c of p) {
+    if (inClass) {
+      if (c === "]") {
+        if (size === 0) return false; // an empty class matches nothing
+        inClass = false;
+      } else if (size > 0 || (c !== "!" && c !== "^")) size++;
+    } else if (c === "[") {
+      inClass = true;
+      size = 0;
+    } else if (c === "{") braces++;
+    else if (c === "}" && braces > 0) braces--;
+  }
+  return !inClass && braces === 0;
+};
+
+// A path in the repository, possibly a glob: relative to the repository root, forward slashes,
+// nothing that climbs out. Whatever could never match is refused here, because a watch that matches
+// nothing fails silently: a leading `./`, a trailing `/`, an empty segment, a leading `!`.
 const watchPath = z
   .string()
   .min(1)
   .max(200)
-  .refine((p) => !p.startsWith("/") && !p.includes("\\") && !Array.from(p).some(isControl), {
-    message: "must be a relative path with forward slashes",
+  .refine(
+    (p) =>
+      !p.startsWith("/") &&
+      !p.startsWith("!") &&
+      !p.includes("\\") &&
+      !Array.from(p).some(isControl),
+    { message: "must be a relative path with forward slashes, not starting with !" },
+  )
+  .refine((p) => p.split("/").every((s) => s !== "" && s !== "." && s !== ".."), {
+    message: 'must not have empty, "." or ".." segments (no leading ./ or trailing /)',
   })
-  .refine((p) => !p.split("/").includes(".."), { message: 'must not contain ".."' });
+  .refine(closed, { message: "has an empty or unclosed [ class, or a { that is never closed" });
 
 /**
  * What `stack.yml` says. Strict: a misspelt key (`depend_on`) must be an error, not a stack that

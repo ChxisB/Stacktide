@@ -1,7 +1,7 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { createGitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
-import { gitlabSource } from "./gitlab-source";
+import { detectChanges, gitlabSource } from "./gitlab-source";
 import { scanStacks } from "./scan";
 
 const HTTP = 'terraform {\n  backend "http" {}\n}\n';
@@ -77,4 +77,123 @@ test("scanning a repository on GitLab, across pages of the tree", async () => {
     ["app", "app", "terraform", ["net"]],
     ["net", "net", "tofu", []],
   ]);
+});
+
+describe("detectChanges", () => {
+  const repo = {
+    "net/stack.yml": "name: net\ntool: tofu\n",
+    "net/main.tf": HTTP,
+    "app/stack.yml": "name: app\ntool: terraform\ndepends_on: [net]\nwatch: [modules/**]\n",
+    "app/main.tf": HTTP,
+    "db/stack.yml": "name: db\ntool: tofu\n",
+    "db/old.tf": HTTP,
+    "modules/a/main.tf": "x",
+    "README.md": "x",
+  };
+  const scanMain = async (gitlab: ReturnType<typeof setup>["gitlab"], id: number) =>
+    (await scanStacks(gitlabSource(gitlab, id, "main"))).stacks;
+
+  test("a branch that edits, adds and deletes files touches the stacks they belong to", async () => {
+    const { project, gitlab } = setup(repo);
+    const stacks = await scanMain(gitlab, project.id);
+    await gitlab.repository.commitFiles(
+      project.id,
+      { branch: "change", message: "m", startBranch: "main" },
+      [
+        { action: "update", path: "net/main.tf", content: "changed" },
+        { action: "create", path: "net/new.tf", content: "x" },
+        { action: "delete", path: "db/old.tf" },
+        { action: "update", path: "README.md", content: "changed" },
+      ],
+    );
+    expect(await detectChanges(gitlab, project.id, "main", "change", stacks)).toEqual({
+      changed: ["db", "net"],
+      incomplete: false,
+    });
+  });
+
+  test("a shared module that a stack watches touches that stack", async () => {
+    const { project, gitlab } = setup(repo);
+    const stacks = await scanMain(gitlab, project.id);
+    await gitlab.repository.commitFiles(
+      project.id,
+      { branch: "mod", message: "m", startBranch: "main" },
+      [{ action: "update", path: "modules/a/main.tf", content: "changed" }],
+    );
+    expect(await detectChanges(gitlab, project.id, "main", "mod", stacks)).toEqual({
+      changed: ["app"],
+      incomplete: false,
+    });
+  });
+
+  test("a branch with nothing new, and a ref against itself, touch nothing", async () => {
+    const { project, gitlab } = setup(repo);
+    const stacks = await scanMain(gitlab, project.id);
+    await gitlab.repository.createBranch(project.id, "same", "main");
+    const none = { changed: [], incomplete: false };
+    expect(await detectChanges(gitlab, project.id, "main", "same", stacks)).toEqual(none);
+    expect(await detectChanges(gitlab, project.id, "main", "main", stacks)).toEqual(none);
+  });
+
+  test("a ref that is not there is an error, not an empty answer", async () => {
+    const { project, gitlab } = setup(repo);
+    const stacks = await scanMain(gitlab, project.id);
+    await expect(detectChanges(gitlab, project.id, "main", "gone", stacks)).rejects.toMatchObject({
+      name: "GitlabError",
+      kind: "not_found",
+    });
+  });
+
+  // the mock cannot report a renamed file or a diff GitLab gave up on, so these are told to it
+  const told = (files: { oldPath: string; newPath: string }[], timedOut = false) =>
+    ({
+      repository: { compare: async () => ({ commits: [], files, timedOut, sameRef: false }) },
+    }) as unknown as Parameters<typeof detectChanges>[0];
+  const stacks = [
+    { name: "a", path: "a", watch: [] },
+    { name: "b", path: "b", watch: [] },
+  ];
+
+  test("a renamed file touches the stack it left and the stack it joined", async () => {
+    const gitlab = told([{ oldPath: "a/x.tf", newPath: "b/x.tf" }]);
+    expect(await detectChanges(gitlab, 1, "main", "mr", stacks)).toEqual({
+      changed: ["a", "b"],
+      incomplete: false,
+    });
+  });
+
+  test("the target is compared with the merge request's head, in that order", async () => {
+    const calls: unknown[][] = [];
+    const gitlab = {
+      repository: {
+        compare: async (...args: unknown[]) => {
+          calls.push(args);
+          return { commits: [], files: [], timedOut: false, sameRef: false };
+        },
+      },
+    } as unknown as Parameters<typeof detectChanges>[0];
+    await detectChanges(gitlab, 7, "target-sha", "head-sha", stacks);
+    expect(calls).toEqual([[7, "target-sha", "head-sha"]]);
+  });
+
+  test("a diff GitLab gave up on touches every stack, and says so", async () => {
+    const gitlab = told([{ oldPath: "a/x.tf", newPath: "a/x.tf" }], true);
+    expect(await detectChanges(gitlab, 1, "main", "mr", stacks)).toEqual({
+      changed: ["a", "b"],
+      incomplete: true,
+    });
+  });
+
+  test("a list as long as a diff list gets cut touches every stack; one short of it does not", async () => {
+    const files = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ oldPath: `a/${i}.tf`, newPath: `a/${i}.tf` }));
+    expect(await detectChanges(told(files(1000)), 1, "main", "mr", stacks)).toEqual({
+      changed: ["a", "b"],
+      incomplete: true,
+    });
+    expect(await detectChanges(told(files(999)), 1, "main", "mr", stacks)).toEqual({
+      changed: ["a"],
+      incomplete: false,
+    });
+  });
 });

@@ -8,7 +8,7 @@ Done when: fixture trees cover valid, invalid, duplicate-name and nested stacks.
 Do: pure graph build, cycle detection with readable path, topological waves, `affected(changed)` with transitive dependents.
 Done when: table + property tests (random DAGs) prove wave order, cycle errors and dependent closure.
 
-### IAC-3 - Change detection  `[ ]` S - deps: IAC-1, IAC-2, GL-2
+### IAC-3 - Change detection  `[x]` S - deps: IAC-1, IAC-2, GL-2
 Do: from MR source/target SHAs use the compare API -> changed paths -> affected stacks (dir match + `watch` globs).
 Done when: tests cover module-path changes, deleted files, renamed files and no-op MRs.
 
