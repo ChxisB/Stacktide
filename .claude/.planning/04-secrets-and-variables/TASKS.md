@@ -1,6 +1,6 @@
 # 04 Secrets and Variables - Tasks
 
-### VAR-1 - Crypto package  `[ ]` M - deps: FND-4
+### VAR-1 - Crypto package  `[x]` M - deps: FND-4
 Do: `packages/crypto`: `KeyProvider` (env-backed), DEK generate/wrap/unwrap with key id, `encrypt/decrypt(value, aad)`, `rewrap(oldKey, newKey)`.
 Done when: tests cover round-trip, tamper detection (ciphertext and AAD), wrong key, rotation via rewrap, and that nonces never repeat in 10k encryptions. **Human gate + `/security-review`.**
 

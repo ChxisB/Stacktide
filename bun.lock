@@ -25,6 +25,9 @@
         "zod": "4.6.7",
       },
     },
+    "packages/crypto": {
+      "name": "@orch/crypto",
+    },
     "packages/db": {
       "name": "@orch/db",
       "dependencies": {
@@ -126,6 +129,8 @@
     "@orch/api": ["@orch/api@workspace:apps/api"],
 
     "@orch/core": ["@orch/core@workspace:packages/core"],
+
+    "@orch/crypto": ["@orch/crypto@workspace:packages/crypto"],
 
     "@orch/db": ["@orch/db@workspace:packages/db"],
 
