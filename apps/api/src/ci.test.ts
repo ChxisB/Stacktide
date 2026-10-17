@@ -141,7 +141,15 @@ const exchange = (id_token: string, target = app) =>
 const exchangeOk = async (over: Record<string, unknown> = {}) => {
   const res = await exchange(await idToken(over));
   expect(res.status).toBe(201);
-  return res.json as { token: string; type: string; expiresAt: string; scopes: string[] };
+  return res.json as {
+    token: string;
+    type: string;
+    expiresAt: string;
+    scopes: string[];
+    organizationId: string;
+    projectId: string;
+    environmentId?: string;
+  };
 };
 const tokenRows = async () => (await t.db.select({ n: count() }).from(ciTokens))[0]?.n;
 const exchangeEvents = () =>
@@ -158,7 +166,13 @@ describe("a valid id_token", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const { token, ...rest } = res.json;
     expect(isCiToken(token)).toBe(true);
-    expect(rest).toMatchObject({ type: "Bearer", scopes: ["project.read"] });
+    expect(rest).toEqual({
+      type: "Bearer",
+      expiresAt: expect.any(String),
+      scopes: ["project.read"],
+      organizationId: ids.o1,
+      projectId: ids.p1,
+    });
     expect(await tokenRows()).toBe((before ?? 0) + 1);
 
     const [row] = await t.db
@@ -275,8 +289,13 @@ describe("what an environment token may do", () => {
   };
 
   test("read its environment, not the others, and not a list of them", async () => {
-    const { token, scopes } = await exchangeOk(staging);
-    expect(scopes).toEqual(["project.read", "environment.read"]);
+    const { token, scopes, ...named } = await exchangeOk(staging);
+    expect(scopes).toEqual(["project.read", "environment.read", "secret.reveal"]);
+    expect(named).toMatchObject({
+      organizationId: ids.o1,
+      projectId: ids.p1,
+      environmentId: ids.stagingP1,
+    });
     const as = { bearer: token };
     expect((await send(project(), "GET", as)).status).toBe(200);
     expect((await send(envPath(ids.stagingP1), "GET", as)).status).toBe(200);
@@ -506,7 +525,7 @@ describe("the issued token as a credential", () => {
     expect((await send(project(), "GET", { bearer: token })).status).toBe(401);
   });
 
-  test("is the CI job: a reporter on its project, tied to its environment, and nobody else", async () => {
+  test("is the CI job: tied to its project and environment, with the reveal only an environment brings", async () => {
     const resolve = callerPrincipal({ db: t.db });
     const as = async (over: Record<string, unknown>) => {
       const { token } = await exchangeOk(over);
@@ -527,8 +546,9 @@ describe("the issued token as a credential", () => {
     });
     expect(await as({ environment: "staging", environment_protected: "false" })).toMatchObject({
       subject: {
-        projectRoles: { [ids.p1]: "reporter" },
-        scopes: ["project.read", "environment.read"],
+        // `secret.reveal` needs a maintainer; the scopes are what hold it to that one action
+        projectRoles: { [ids.p1]: "maintainer" },
+        scopes: ["project.read", "environment.read", "secret.reveal"],
         environmentId: ids.stagingP1,
       },
     });

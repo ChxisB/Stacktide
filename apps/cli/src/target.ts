@@ -6,7 +6,7 @@ import { findProjectFile } from "./project";
 
 type Api = ReturnType<typeof clientFor>;
 
-/** What the user named: flags first, then `.orch.json`. Each is an id, or a name/slug the API knows. */
+/** What the user named: flags first, then `ORCH_ORG`/`ORCH_PROJECT`/`ORCH_ENV`, then `.orch.json`. Each is an id, or a name/slug the API knows. */
 export interface TargetFlags {
   org?: string | undefined;
   project?: string | undefined;
@@ -80,9 +80,10 @@ async function idOf<T extends Named>(
 }
 
 /**
- * The environment a command is about: `--org`, `--project` and `--env`, else the nearest `.orch.json`.
- * Names are looked up through the list endpoints, which a project-only member cannot read, so they
- * can always give ids.
+ * The environment a command is about: `--org`, `--project` and `--env`, else `ORCH_ORG`, `ORCH_PROJECT`
+ * and `ORCH_ENV` (what `orch ci login` prints), else the nearest `.orch.json`, one field at a time.
+ * Names are looked up through the list endpoints, which a project-only member (or a CI token) cannot
+ * read, so they can always give ids.
  */
 export async function resolveEnvironment(
   ctx: Context,
@@ -91,14 +92,14 @@ export async function resolveEnvironment(
   flags: TargetFlags,
 ): Promise<EnvironmentTarget> {
   const file = (await findProjectFile(ctx.cwd))?.config;
-  const org = flags.org ?? file?.organization;
-  const project = flags.project ?? file?.project;
-  const env = flags.env ?? file?.environment;
-  const missing = (what: string, flag: string) =>
-    new CliError(`no ${what}: pass ${flag} or set it in .orch.json`, 2);
-  if (!org) throw missing("organization", "--org");
-  if (!project) throw missing("project", "--project");
-  if (!env) throw missing("environment", "--env");
+  const org = flags.org ?? (ctx.env.ORCH_ORG || undefined) ?? file?.organization;
+  const project = flags.project ?? (ctx.env.ORCH_PROJECT || undefined) ?? file?.project;
+  const env = flags.env ?? (ctx.env.ORCH_ENV || undefined) ?? file?.environment;
+  const missing = (what: string, flag: string, variable: string) =>
+    new CliError(`no ${what}: pass ${flag}, set ${variable} or put it in .orch.json`, 2);
+  if (!org) throw missing("organization", "--org", "ORCH_ORG");
+  if (!project) throw missing("project", "--project", "ORCH_PROJECT");
+  if (!env) throw missing("environment", "--env", "ORCH_ENV");
 
   const orgId = await idOf("organization", org, () =>
     every(apiUrl, (cursor) => client.organizations.get({ query: { limit: 100, cursor } })),

@@ -24,6 +24,13 @@ export interface CiDeps {
 
 export const DEFAULT_CI_TTL_MS = 15 * 60_000;
 
+/** A job in an environment reads it and its project, and reveals the environment's values; nothing more. */
+export const ENVIRONMENT_SCOPES: readonly string[] = [
+  "project.read",
+  "environment.read",
+  "secret.reveal",
+];
+
 // GitLab writes every claim as text, booleans and ids included.
 const numeric = z.string().regex(/^[1-9]\d{0,14}$/);
 const flag = z.enum(["true", "false"]);
@@ -42,14 +49,20 @@ const exchanged = z.object({
   type: z.literal("Bearer"),
   expiresAt: z.iso.datetime(),
   scopes: z.array(z.string()),
+  /** What the token is for, so a client can name it without the list endpoints it may not call. */
+  organizationId: z.uuid(),
+  projectId: z.uuid(),
+  environmentId: z.uuid().optional(),
 });
 
 /**
  * `POST /auth/ci/exchange`: a CI job swaps its GitLab `id_token` for a short-lived token that
- * reads its own project, and its own environment if it runs in one. The project is the one
+ * reads its own project, and reads and reveals the variables of its own environment if it runs in
+ * one (`orch run` needs them). The project is the one
  * linked to the token's `project_id`, the environment the one with the token's `environment` as
  * slug; neither is guessed. An environment GitLab calls protected (or does not say) is only
- * reached from a protected ref. The token holds nothing else and cannot mint more tokens.
+ * reached from a protected ref. The token holds nothing else and cannot mint more tokens. Both
+ * `scopes` and the role in `ciSubject` hold it to those actions, on that environment alone.
  */
 export const ciRoutes = ({
   db,
@@ -143,7 +156,7 @@ export const ciRoutes = ({
         }
 
         const fresh = newCiToken();
-        const scopes = environmentId ? ["project.read", "environment.read"] : ["project.read"];
+        const scopes = environmentId ? ENVIRONMENT_SCOPES : ["project.read"];
         const row = await db.transaction(async (tx) => {
           const row = await createCiToken(tx, {
             organizationId: project.organizationId,
@@ -188,6 +201,9 @@ export const ciRoutes = ({
           type: "Bearer" as const,
           expiresAt: iso(row.expiresAt),
           scopes,
+          organizationId: row.organizationId,
+          projectId: row.projectId,
+          environmentId,
         };
       },
       {

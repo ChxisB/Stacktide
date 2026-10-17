@@ -5,6 +5,7 @@ import {
   isScope,
   type OrgRole,
   type ProjectRole,
+  type Resource,
   RULES,
   type Subject,
   visibleOrganizations,
@@ -304,6 +305,20 @@ describe("a subject tied to an environment", () => {
       expect([action, can(ci(), action, res)]).toEqual([action, false]);
     }
     expect(can(ci(), "secret.reveal", { ...res, environmentId: "env-2" })).toBe(false);
+  });
+
+  test("a CI job's own grant is reading its project and revealing its environment, and nothing else", () => {
+    const job = ci({ scopes: ["project.read", "environment.read", "secret.reveal"] });
+    const own = { ...res, environmentId: ENV };
+    const allowed = (resource: Resource) =>
+      Object.keys(RULES)
+        .filter((a) => can(job, a, resource))
+        .sort();
+    expect(allowed(own)).toEqual(["environment.read", "project.read", "secret.reveal"]);
+    expect(allowed({ ...own, environmentId: "env-2" })).toEqual(["project.read"]);
+    expect(allowed(res)).toEqual(["project.read"]);
+    // another project's environment id does not help: the role is on one project only
+    expect(allowed({ ...own, projectId: "project-2" })).toEqual([]);
   });
 
   test("roles and scopes still apply on its own environment", () => {

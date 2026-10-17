@@ -5,6 +5,7 @@
   "exports": {
     ".": "./src/app.ts",
     "./credentials": "./src/credentials.ts",
+    "./jwt-testing": "./src/jwt-testing.ts",
     "./tokens": "./src/tokens.ts"
   },
   "dependencies": {

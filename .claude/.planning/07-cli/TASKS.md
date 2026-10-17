@@ -16,7 +16,7 @@ Done when: tests cover each format's quoting/escaping edge cases and that `push`
 Do: spawn the command with the resolved environment, forward signals, return its exit code.
 Done when: tests cover exit-code passthrough, SIGTERM forwarding and that nothing is written to disk.
 
-### CLI-5 - CI mode  `[ ]` S - deps: CLI-4, AUTH-6
+### CLI-5 - CI mode  `[x]` S - deps: CLI-4, AUTH-6
 Do: `orch ci login` reads the job's `id_token`, exchanges it, keeps the short-lived token in memory/env for the job.
 Done when: tests cover success and wrong-audience failure; docs snippet for `.gitlab-ci.yml` `id_tokens`.
 

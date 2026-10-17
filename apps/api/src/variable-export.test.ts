@@ -5,6 +5,7 @@ import { envKeyProvider } from "@orch/crypto";
 import {
   auditEvents,
   createApiToken,
+  createCiToken,
   createEnvironment,
   createOrganization,
   createProject,
@@ -15,7 +16,7 @@ import { createTestDb, type TestDb } from "@orch/db/testing";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app";
 import { callerPrincipal } from "./credentials";
-import { hashToken, newApiToken, randomToken } from "./tokens";
+import { hashToken, newApiToken, newCiToken, randomToken } from "./tokens";
 
 const keys = envKeyProvider(`k1:${Buffer.alloc(32, 1).toString("base64")}`);
 type Roles = Pick<Subject, "orgRoles" | "projectRoles">;
@@ -257,6 +258,63 @@ describe("GET .../resolved-variables/values", () => {
     expect((await get(await bearer(["project.read", "variable.*"]))).status).toBe(403);
     expect((await get(await bearer(["variable.read"]))).status).toBe(404);
     expect((await get(await bearer(["secret.reveal"]))).status).toBe(200);
+  });
+
+  describe("for a CI job", () => {
+    /** The token the exchange issues (see `ci.ts`), for the project `p1`, in `environmentId` if given. */
+    const job = async (environmentId: string | undefined, scopes: string[]) => {
+      const fresh = newCiToken();
+      const row = await createCiToken(t.db, {
+        organizationId: ids.org,
+        projectId: ids.p1,
+        environmentId,
+        tokenHash: fresh.tokenHash,
+        scopes,
+        gitlabProjectId: 5001,
+        ref: "main",
+        refProtected: true,
+        ttlMs: 60_000,
+      });
+      return { row, headers: { authorization: `Bearer ${fresh.token}` } };
+    };
+    const reveal = ["project.read", "environment.read", "secret.reveal"];
+    const get = (headers: Record<string, string>, path = valuesPath()) =>
+      call(undefined, "GET", path, undefined, app, headers);
+
+    test("its own environment's values come, audited as the job; no other environment's does", async () => {
+      const { row, headers } = await job(ids.dev, reveal);
+      const before = (await auditRows()).length;
+      const res = await get(headers);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.json.variables).toHaveLength(7);
+      const rows = (await auditRows()).slice(before);
+      expect(rows.filter((r) => r.action === "variable.reveal")).toHaveLength(4);
+      for (const r of rows) expect([r.actorKind, r.actorId]).toEqual(["ci", row.id]);
+
+      const after = (await auditRows()).length;
+      for (const path of [valuesPath(ids.prod), valuesPath(ids.other, ids.p2)]) {
+        const refused = await get(headers, path);
+        expect([path, refused.status >= 400, refused.text.includes(dbPassword)]).toEqual([
+          path,
+          true,
+          false,
+        ]);
+      }
+      expect((await get(headers, valuesPath(ids.prod))).status).toBe(403);
+      expect(await auditRows()).toHaveLength(after);
+    });
+
+    test("a token for the project alone, or without the reveal, gets nothing", async () => {
+      for (const given of [
+        await job(undefined, ["project.read"]),
+        await job(ids.dev, ["project.read", "environment.read"]),
+      ]) {
+        const res = await get(given.headers);
+        expect(res.status).toBe(403);
+        expect(res.text).not.toContain(dbPassword);
+      }
+    });
   });
 
   test("a key that cannot be resolved is left out and explained by name, the rest comes", async () => {

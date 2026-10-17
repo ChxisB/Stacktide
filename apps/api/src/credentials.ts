@@ -12,11 +12,18 @@ const tokenOf = (request: Request) => {
   return given && (isApiToken(given) || isCiToken(given)) ? given : undefined;
 };
 
-/** A CI job's token: read access to its project, and to its environment if it has one, nothing else. */
+/**
+ * A CI job's token: read access to its project, and to its environment if it has one, nothing else.
+ * Revealing the environment's values (`secret.reveal`) is a maintainer's right, so a token that
+ * carries that scope is a maintainer on its one project: the scopes allow three actions, the
+ * environment tie limits two of them to one environment, and no other action is open to it.
+ */
 const ciSubject = (row: CiToken): Subject => ({
   kind: "ci",
   orgRoles: {},
-  projectRoles: { [row.projectId]: "reporter" },
+  projectRoles: {
+    [row.projectId]: row.scopes.includes("secret.reveal") ? "maintainer" : "reporter",
+  },
   scopes: row.scopes,
   environmentId: row.environmentId ?? undefined,
 });

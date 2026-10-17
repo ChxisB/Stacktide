@@ -293,6 +293,8 @@ const push: Command = {
 };
 
 const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+/** What `orch` holds for itself: the token it calls the API with, and the id_token that gets one. */
+const WITHHELD = ["ORCH_TOKEN", "ORCH_ID_TOKEN"];
 
 const runCommand: Command = {
   summary:
@@ -316,8 +318,10 @@ const runCommand: Command = {
       throw new CliError(`${nul.key} holds a NUL character, which an environment cannot carry`);
     // fromEntries, not assignment: a variable called `__proto__` must stay a variable. The token that
     // fetched them is not handed on: a command (and what it runs) has no need to call the API as the user.
+    // Nor is the job's id_token, which can be traded for a new token until it expires. shortcut: only the
+    // default name, not one given to `orch ci login --id-token-env`; upgrade if that gets common.
     const env = Object.fromEntries([
-      ...Object.entries(ctx.env).filter(([name]) => name !== "ORCH_TOKEN"),
+      ...Object.entries(ctx.env).filter(([name]) => !WITHHELD.includes(name)),
       ...pairs.map(({ key, value }) => [key, value] as const),
     ]);
 

@@ -54,10 +54,12 @@ export const clientFor = (apiUrl: string, token?: string) =>
 /**
  * The data of a typed client call, or the `CliError` for what went wrong. Messages hold the API's
  * origin and the problem the API reports, never the request (its headers hold the token).
+ * `unauthorized` says what a 401 means when it is not about the user's own token.
  */
 export async function call<T>(
   apiUrl: string,
   request: () => Promise<{ data: T | null; error: unknown; status: number }>,
+  unauthorized = "your token is invalid or has expired; run: orch login",
 ): Promise<T> {
   let res: Awaited<ReturnType<typeof request>>;
   try {
@@ -70,9 +72,7 @@ export async function call<T>(
     if ((res.error as { value?: unknown }).value instanceof Error) {
       throw new CliError(`cannot reach ${apiUrl}`);
     }
-    if (res.status === 401) {
-      throw new CliError("your token is invalid or has expired; run: orch login");
-    }
+    if (res.status === 401) throw new CliError(unauthorized);
     const problem = problemOf(res as { error: unknown });
     throw new CliError(
       typeof problem?.code === "string" && typeof problem.title === "string"

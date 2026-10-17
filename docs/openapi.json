@@ -1736,13 +1736,27 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "organizationId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "projectId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "environmentId": {
+                      "type": "string",
+                      "format": "uuid"
                     }
                   },
                   "required": [
                     "token",
                     "type",
                     "expiresAt",
-                    "scopes"
+                    "scopes",
+                    "organizationId",
+                    "projectId"
                   ]
                 }
               }

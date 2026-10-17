@@ -754,7 +754,13 @@ describe("run", () => {
   test("the command gets the resolved variables over its own environment, and its exit code is ours", async () => {
     const got = file("run-env.json");
     const res = await orch(["run", ...dev(), "--", bun, "-e", `${dumpEnv}; process.exit(7)`], {
-      env: { GOT: got, KEEP: "mine", REGION: "from-the-parent", UNSET: undefined },
+      env: {
+        GOT: got,
+        KEEP: "mine",
+        REGION: "from-the-parent",
+        UNSET: undefined,
+        ORCH_ID_TOKEN: "header.payload.signature",
+      },
     });
     // the command writes its own output; orch adds nothing
     expect(res).toEqual({ code: 7, out: [], err: [] });
@@ -763,6 +769,8 @@ describe("run", () => {
     expect(seen.KEEP).toBe("mine");
     // the token that fetched the variables stays with orch; the API address is not a secret
     expect(seen).not.toHaveProperty("ORCH_TOKEN");
+    // nor the job's id_token, which can be traded for a token until it expires
+    expect(seen).not.toHaveProperty("ORCH_ID_TOKEN");
     expect(seen.ORCH_API_URL).toBe(api);
     // a name the parent has unset is not handed on as the text "undefined"
     expect(seen).not.toHaveProperty("UNSET");
