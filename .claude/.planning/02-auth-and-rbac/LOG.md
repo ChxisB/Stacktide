@@ -24,3 +24,20 @@
   - Sessions per user are unbounded until they expire.
   - OAuth is mock-tested only. Fidelity against a real GitLab is unverified (it needs a browser; the opt-in contract run cannot cover it).
 - No new dependencies (`@orch/gitlab` added to the API package as a workspace link).
+
+## 2026-10-17 AUTH-2 (REVIEW: role model, permission table)
+
+- `packages/core/src/authz.ts`: pure, total `can(subject, action, resource)`, plus `RULES` (the one table), `isAction`, `ORG_ROLES`, `PROJECT_ROLES`, the `Subject` and `Resource` types. In `core`, with no dependencies, so the API, CLI and UI can all use it. Code, not DB tables (task text).
+- **Model, as the SPEC says:** org roles `viewer < member < admin < owner`; project roles `reporter < developer < maintainer`. An org role confers a project role on every project of that org (viewer -> reporter, member -> developer, admin/owner -> maintainer); a direct project role adds to that (the higher wins). Secret reveal needs project `maintainer`. Unknown action, unknown kind, unknown role name, missing ids: all deny.
+- **Decisions the SPEC left open (please check):**
+  - `organization.create` needs `platformAdmin` (no org exists to hold a role); it grants nothing else, and is ignored for CI principals. Where the flag comes from is AUTH-3's call (config).
+  - `project.create` and `project.delete` need **org admin** (a project maintainer can change a project and its environments, not create or remove it); `organization.update` admin, `organization.delete` owner.
+  - A project-only member (no org role) cannot read the org record.
+  - Scopes (tokens and CI jobs: required, none or empty means nothing; users: optional) are an action, `resource.*` or `*`. They only narrow the roles, never widen them.
+  - `developer` is not required by any action yet; later features add their actions to `RULES` (variable read/write, sync, tokens, ...) and the hand-written matrix in the test must grow with them.
+- Gate: `bun run check` green, 415 pass + 1 skip. The test writes the expected matrix out by hand (13 actions x 9 kinds of holder, both directions, not derived from `RULES`), plus cross-org and cross-project, ids/actions that exist on every object (`__proto__`, `constructor`), unknown role names and kinds, scopes (narrow, never widen, wildcard, not a pattern, malformed input never throws).
+- **Mutations, 22 run, 20 killed**: rank `>`/`>=` for org and project, each inherited role, direct role ignored, inherited ignored, `in` instead of `hasOwn` for actions, scopes ignored/any/loose prefix, token without scopes, kind unchecked (survived first; test added), CI platform admin, truthy platform flag, project ids optional, `project.delete` / `secret.reveal` / `organization.read` rules loosened, no array guard, no string guard. Two survivors are equivalent for now: viewer inheriting `developer` (no action needs the developer rank yet, so nothing can observe it) and the plain lookup instead of `hasOwn` in `own` (a prototype value is never a role name, so the later rank check rejects it; `hasOwn` stays as belt and braces).
+- `/code-review` (medium) found 6. Fixed: malformed `scopes` (null, a string, non-strings) made `can` throw, against its "total" promise; a test assertion that passed for the wrong reason. Dismissed: project roles are keyed by project id alone (the resource's ids must come from the stored row, as the `Resource` doc says; **AUTH-3's guard must build it that way, never from path parameters alone**); an own `__proto__` key from `JSON.parse` (needs attacker-chosen role-map keys and ids); an `assertCan` that maps a denial to 403/404 (AUTH-3's guard); typed resources per rule kind (a wrong shape fails closed).
+- Security (inline): no I/O, no secrets, no state. Fails closed on every path I could find. The risk is in what feeds it: whoever builds the `Subject` (AUTH-3/5/6) and the `Resource`.
+- Follow-ups for AUTH-3: list routes need filtering by the subject's roles (`can` answers per resource); a `platformAdmin` source; the 403-or-404 rule.
+- No new dependencies.

@@ -4,7 +4,7 @@
 Do: Authorization-code + PKCE flow against the configured GitLab; upsert user; server-side session with secure cookie; logout; state/nonce validation.
 Done when: tests against the mock GitLab cover happy path, bad `state`, replayed code and expired session.
 
-### AUTH-2 - Role model and `can()`  `[ ]` S - deps: API-2
+### AUTH-2 - Role model and `can()`  `[x]` S - deps: API-2
 Do: Role/permission tables in code (not DB) and a pure `can(principal, action, resource)`.
 Done when: a table-driven test covers every role x action pair; unknown action denies.
 
