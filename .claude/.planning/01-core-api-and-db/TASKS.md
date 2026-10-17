@@ -4,7 +4,7 @@
 Do: `packages/db` with Drizzle on `Bun.sql`; `db:migrate` / `db:generate` scripts; test helper that gives each test file an isolated database and drops it after.
 Done when: a test runs a migration against a fresh DB and two test files run in parallel without interfering.
 
-### API-2 - Base schema  `[ ]` S - deps: API-1
+### API-2 - Base schema  `[x]` S - deps: API-1
 Do: `organizations`, `projects` (name, gitlab_project_id nullable, default_branch), `environments` (name, slug, order; unique per project) + repo functions.
 Done when: repo tests cover insert, unique violations and cascade rules.
 

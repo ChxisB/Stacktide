@@ -29,11 +29,12 @@ describe("createTestDb", () => {
 
   test("migrating again is a no-op", async () => {
     const t = await make();
+    const count = async () =>
+      (await t.db.execute(sql`SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`))[0]?.n;
+    const before = await count();
     await migrateDb(t.db);
-    const rows = await t.db.execute(
-      sql`SELECT count(*)::int AS n FROM drizzle.__drizzle_migrations`,
-    );
-    expect(rows[0]?.n).toBe(1);
+    expect(before).toBeGreaterThanOrEqual(1);
+    expect(await count()).toBe(before);
   });
 
   test("baseline provides set_updated_at() for table triggers", async () => {

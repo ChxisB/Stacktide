@@ -1,2 +1,3 @@
-// Tables are added by the feature that owns them (API-2 onwards).
-export {};
+export * from "./environments";
+export * from "./organizations";
+export * from "./projects";
