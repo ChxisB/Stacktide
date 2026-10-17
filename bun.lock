@@ -24,6 +24,16 @@
         "zod": "4.6.7",
       },
     },
+    "apps/cli": {
+      "name": "@orch/cli",
+      "version": "0.1.0",
+      "bin": {
+        "orch": "./src/main.ts",
+      },
+      "dependencies": {
+        "zod": "4.6.7",
+      },
+    },
     "packages/api-client": {
       "name": "@orch/api-client",
       "dependencies": {
@@ -168,6 +178,8 @@
     "@orch/api": ["@orch/api@workspace:apps/api"],
 
     "@orch/api-client": ["@orch/api-client@workspace:packages/api-client"],
+
+    "@orch/cli": ["@orch/cli@workspace:apps/cli"],
 
     "@orch/core": ["@orch/core@workspace:packages/core"],
 

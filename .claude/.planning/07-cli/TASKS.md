@@ -1,6 +1,6 @@
 # 07 CLI - Tasks
 
-### CLI-1 - Scaffold and binary build  `[ ]` M - deps: API-5
+### CLI-1 - Scaffold and binary build  `[x]` M - deps: API-5
 Do: `apps/cli` command router (`util.parseArgs` or a tiny lib - decide, justify), `--version`, `--json`, config file loader (0600), `.orch.json` discovery, `bun build --compile` script.
 Done when: `orch --version` runs from the compiled binary; config-file permission check has a test.
 

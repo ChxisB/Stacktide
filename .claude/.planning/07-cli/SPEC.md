@@ -1,5 +1,5 @@
 # 07 CLI (`orch`) - Spec
-Prefix: CLI · Milestone: M2 · Status: todo
+Prefix: CLI · Milestone: M2 · Status: building
 
 ## Goal
 Developers and CI jobs use the platform from a terminal: pull variables, run commands with them injected, push changes, trigger sync and pipeline setup.

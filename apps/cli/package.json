@@ -1,0 +1,12 @@
+{
+  "name": "@orch/cli",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "orch": "./src/main.ts"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  }
+}
