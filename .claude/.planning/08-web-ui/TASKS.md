@@ -20,7 +20,7 @@ Done when: tests cover rollback confirmation and that the import preview shows k
 Do: per project/environment targets, plan preview table, apply with confirmation, drift badge, last-sync status.
 Done when: tests prove the plan view has no value-rendering path for secrets.
 
-### UI-6 - Pipeline setup wizard  `[ ]` M - deps: UI-1, PIPE-4, PIPE-6
+### UI-6 - Pipeline setup wizard  `[x]` M - deps: UI-1, PIPE-4, PIPE-6
 Do: detect -> select -> generated params form -> rendered diff and lint result -> Create MR; link to the MR.
 Done when: tests cover missing-variable warnings, lint errors blocking creation, and re-run updating the same MR.
 

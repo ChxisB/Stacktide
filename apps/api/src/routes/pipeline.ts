@@ -10,7 +10,14 @@ import {
   type Tx,
 } from "@orch/db";
 import { createGitlab } from "@orch/gitlab";
-import { loadTemplates, recommend, type Template } from "@orch/pipelines";
+import {
+  limitedProperties,
+  loadTemplates,
+  newest,
+  paramSchema,
+  recommend,
+  type Template,
+} from "@orch/pipelines";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
@@ -73,6 +80,33 @@ const validationSchema = z.object({
   ),
 });
 const existingSchema = z.enum(["none", "identical", "generated", "hand-written"]);
+
+/** What a template takes and needs, for a form: the newest version of each template in the catalog. */
+const templateSchema = z.object({
+  name: z.string(),
+  version: z.string(),
+  description: z.string(),
+  params: z.object({
+    /** A string parameter always has a `maxLength`: its own, or the limit every string is held to. */
+    properties: z.record(z.string(), paramSchema),
+    required: z.array(z.string()),
+  }),
+  /** Project kinds the template suits. */
+  detects: z.array(z.string()),
+  /** Variables the pipeline reads; the review lists the ones the project lacks. */
+  requiresVariables: z.array(z.string()),
+});
+const templateDto = (m: Template["manifest"]): z.infer<typeof templateSchema> => ({
+  name: m.name,
+  version: m.version,
+  description: m.description,
+  params: {
+    properties: limitedProperties(m),
+    required: m.params.required,
+  },
+  detects: [...m.detects],
+  requiresVariables: m.requiresVariables,
+});
 
 const params = z.object({ orgId: z.uuid(), projectId: z.uuid() });
 /** Names and values the template's own schema checks; here only the shape and a size. */
@@ -195,9 +229,11 @@ export const pipelineRoutes = ({
         const project = await getProject(db, orgId, projectId);
         if (!project) throw notFound("Project");
         const config = await getPipelineConfig(db, orgId, projectId);
+        const catalog = await templates();
         return {
           config: config ? configDto(config) : null,
-          recommendations: recommend(project.detectedTypes, await templates()),
+          recommendations: recommend(project.detectedTypes, catalog),
+          templates: newest(catalog).map(templateDto),
         };
       },
       {
@@ -214,6 +250,8 @@ export const pipelineRoutes = ({
                 reason: z.string(),
               }),
             ),
+            /** Every template a pipeline can be made from. */
+            templates: z.array(templateSchema),
           }),
           ...readErrors,
         },
@@ -232,6 +270,8 @@ export const pipelineRoutes = ({
           mode: p.mode,
           template: { name: p.template.name, version: p.template.version },
           validation: p.validation,
+          // a file written by hand may hold anything, a secret among it: only ours is shown back
+          current: p.existing === "generated" || p.existing === "identical" ? p.current : null,
         };
       },
       {
@@ -247,6 +287,8 @@ export const pipelineRoutes = ({
             mode: z.enum(["inline", "include"]),
             template: z.object({ name: z.string(), version: z.string() }),
             validation: validationSchema,
+            /** The generated file on the default branch now, for a diff; null when there is none or it was written by hand. */
+            current: z.string().nullable(),
           }),
           ...writeErrors,
           ...sealed,

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { detectProjectTypes } from "@orch/core";
 import { loadTemplates, type Template } from "./loader";
-import { recommend } from "./recommend";
+import { newest, recommend } from "./recommend";
 
 const catalog = await loadTemplates();
 const of = (...paths: string[]) => recommend(detectProjectTypes(paths), catalog);
@@ -79,5 +79,26 @@ describe("recommend", () => {
     expect(
       recommend(detectProjectTypes(["bun.lock"]), [variant("bun-app", { detects: [] })]),
     ).toEqual([]);
+  });
+});
+
+describe("newest", () => {
+  test("one version of each template, the newest, in the order of the names", () => {
+    const named = (name: string, version: string) => ({
+      ...variant("bun-app", { version }),
+      manifest: { ...variant("bun-app", { version }).manifest, name },
+    });
+    const found = newest([
+      named("zed", "1.0.0"),
+      named("alpha", "1.0.0"),
+      named("alpha", "1.10.0"),
+      named("alpha", "1.9.0"),
+      named("mid", "2.0.0"),
+    ]);
+    expect(found.map((m) => `${m.name}@${m.version}`)).toEqual([
+      "alpha@1.10.0",
+      "mid@2.0.0",
+      "zed@1.0.0",
+    ]);
   });
 });

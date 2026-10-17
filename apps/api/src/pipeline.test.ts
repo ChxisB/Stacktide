@@ -109,9 +109,9 @@ async function call(who: Who | null, method: string, path: string, body?: unknow
 
 let n = 0;
 /** A project on a GitLab project of its own (detected as a Bun project). */
-async function world(org = o1) {
+async function world(org = o1, files?: Record<string, string>) {
   const id = ++n;
-  const gl = mock.addProject({ path: `fx/p${id}` });
+  const gl = mock.addProject({ path: `fx/p${id}`, files });
   const project = await createProject(t.db, {
     organizationId: org,
     name: `p${id}`,
@@ -162,6 +162,28 @@ describe("GET /pipeline", () => {
     expect(res.json.recommendations).toEqual([
       { template: "bun-app", version: "1.0.0", confidence: "high", reason: "bun (bun.lock)" },
     ]);
+  });
+
+  test("lists the newest version of each template with its parameters, for a form", async () => {
+    const w = await world();
+    const res = await w.get("carol");
+    const names = res.json.templates.map((x: { name: string }) => x.name);
+    expect(names).toEqual([...names].sort());
+    expect(names).toEqual(expect.arrayContaining(["bun-app", "docker-image", "node-app"]));
+    const bunApp = res.json.templates.find((x: { name: string }) => x.name === "bun-app");
+    expect(bunApp).toMatchObject({
+      version: "1.0.0",
+      detects: ["bun"],
+      requiresVariables: [],
+      params: { required: [], properties: { bunVersion: { type: "string", default: "1" } } },
+    });
+    expect(bunApp.description).toBeString();
+    // every string takes a length, so a form can limit it
+    for (const template of res.json.templates) {
+      for (const p of Object.values(template.params.properties) as { type: string }[]) {
+        if (p.type === "string") expect(p).toHaveProperty("maxLength");
+      }
+    }
   });
 
   test("after an apply it shows what the project was set up with", async () => {
@@ -362,6 +384,34 @@ describe("POST /pipeline/preview", () => {
       await t.db.select().from(pipelineConfigs).where(eq(pipelineConfigs.projectId, w.project)),
     ).toEqual([]);
     expect((await events("pipeline.apply")).filter((e) => e.projectId === w.project)).toEqual([]);
+  });
+
+  test("shows our own file on the default branch for a diff, and none when it is not there", async () => {
+    const none = await world();
+    expect((await none.preview(bun())).json.current).toBeNull();
+
+    const same = await world();
+    const text = (await same.preview(bun())).json.text;
+    const identical = await world(o1, { [PIPELINE_FILE]: text });
+    expect((await identical.preview(bun())).json).toMatchObject({
+      existing: "identical",
+      current: text,
+    });
+
+    const older = await world(o1, { [PIPELINE_FILE]: text.replace("oven/bun:1", "oven/bun:0") });
+    const res = await older.preview(bun());
+    expect(res.json.existing).toBe("generated");
+    expect(res.json.current).toContain("oven/bun:0");
+  });
+
+  test("a file written by hand is never shown back: it may hold anything", async () => {
+    const canary = `SEKRIT-handwritten-${Bun.randomUUIDv7()}`;
+    const mine = `stages: [mine]\nmine:\n  stage: mine\n  script: [echo ${canary}]\n`;
+    const w = await world(o1, { [PIPELINE_FILE]: mine });
+    const res = await w.preview(bun());
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ existing: "hand-written", current: null });
+    expect(res.text.includes(canary)).toBe(false);
   });
 
   test("a lint failure is a result, not an error", async () => {

@@ -18,7 +18,7 @@ type Roles = Pick<Subject, "orgRoles" | "projectRoles">;
  * The real API on a real port over a fresh test database, so a screen is tested against what the
  * server really answers. Sessions are made in the database, as a sign-in would.
  */
-export async function startBackend() {
+export async function startBackend(templates?: Parameters<typeof createApp>[0]["templates"]) {
   const t = await createTestDb();
   const keys = envKeyProvider(`k1:${Buffer.alloc(32, 9).toString("base64")}`);
   const roles = new Map<number, Roles>();
@@ -33,6 +33,8 @@ export async function startBackend() {
     keys,
     // the mock GitLab is on loopback, which the API refuses for a real connection
     loopbackConnections: true,
+    // left out, the API offers the shipped catalog
+    ...(templates ? { templates } : {}),
   }).listen({ port: 0, hostname: "127.0.0.1" });
   const api = `http://127.0.0.1:${app.server?.port}`;
 
@@ -62,10 +64,11 @@ export async function startBackend() {
     /** A new organization, for a test of its own. */
     organization: (name = "Acme") => createOrganization(t.db, { slug: `org-${++orgs}`, name }),
     /** A mock GitLab that sees what the test adds to it, and is stopped with the backend. */
-    gitlab(maxPerPage?: number, scopes = ["read_api"]) {
+    gitlab(maxPerPage?: number, scopes = ["read_api"], lintWarnings?: string[]) {
       const mock = createMockGitlab({
         scopes,
         ...(maxPerPage ? { maxPerPage } : {}),
+        ...(lintWarnings ? { lintWarnings } : {}),
       });
       mocks.push(mock);
       return mock;

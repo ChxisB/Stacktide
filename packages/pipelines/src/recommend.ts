@@ -13,6 +13,16 @@ export interface Recommendation {
 
 const SURER = { high: 0, medium: 1 } as const;
 
+/** The newest version of each template in the catalog, in the order of their names. */
+export const newest = (catalog: readonly Template[]): Template["manifest"][] => {
+  const byName = new Map<string, Template["manifest"]>();
+  for (const { manifest } of [...catalog].sort((a, b) =>
+    byVersion(a.manifest.version, b.manifest.version),
+  ))
+    byName.set(manifest.name, manifest);
+  return [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+};
+
 /**
  * Templates that suit a project, from the kinds `detectProjectTypes` found in it (PIPE-4): the newest
  * version of each template whose `detects` names one of them, the surest first and then by name.
@@ -22,12 +32,7 @@ export function recommend(
   detected: readonly DetectedType[],
   catalog: readonly Template[],
 ): Recommendation[] {
-  const newest = new Map<string, Template["manifest"]>();
-  for (const { manifest } of [...catalog].sort((a, b) =>
-    byVersion(a.manifest.version, b.manifest.version),
-  ))
-    newest.set(manifest.name, manifest);
-  return [...newest.values()]
+  return newest(catalog)
     .flatMap((manifest) => {
       const hits = detected.filter((d) => manifest.detects.includes(d.tag));
       if (hits.length === 0) return [];

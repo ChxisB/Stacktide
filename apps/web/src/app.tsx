@@ -5,6 +5,7 @@ import { ClientContext } from "./api";
 import { AuthGate } from "./auth";
 import { Checklist } from "./onboarding";
 import { OrgProvider, RequireOrg } from "./org";
+import { PipelinePage } from "./pipeline";
 import { ProjectsPage } from "./projects";
 import { type Page, Shell } from "./shell";
 import { SyncPage } from "./sync";
@@ -38,12 +39,20 @@ const Sync = () => (
   </>
 );
 
+const Pipeline = () => (
+  <>
+    <h1>Pipeline</h1>
+    <RequireOrg>{(org) => <PipelinePage key={org.id} orgId={org.id} />}</RequireOrg>
+  </>
+);
+
 /** The pages, in navigation order; the first is home. Each screen adds itself here. */
 const pages: readonly Page[] = [
   { path: "", label: "Home", element: <Home /> },
   { path: "projects", label: "Projects", element: <Projects /> },
   { path: "variables", label: "Variables", element: <Variables /> },
   { path: "sync", label: "Sync", element: <Sync /> },
+  { path: "pipeline", label: "Pipeline", element: <Pipeline /> },
 ];
 
 export const newQueryClient = () =>

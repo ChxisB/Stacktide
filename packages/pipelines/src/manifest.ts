@@ -2,7 +2,7 @@ import { KEY_PATTERN, PROJECT_TAGS } from "@orch/core";
 import { z } from "zod";
 
 /** The JSON-schema types a template parameter may have: scalars only, so a value is always an inert string, number or flag. */
-const paramSchema = z.strictObject({
+export const paramSchema = z.strictObject({
   type: z.enum(["string", "number", "integer", "boolean"]),
   description: z.string().min(1).max(500).optional(),
   default: z.union([z.string(), z.number(), z.boolean()]).optional(),
@@ -94,15 +94,19 @@ export type Manifest = z.infer<typeof manifestSchema>;
 /** Longest value a string parameter takes unless its manifest says otherwise. */
 export const DEFAULT_MAX_LENGTH = 1000;
 
-/** What a project's `params` must satisfy, defaults filled in; keys the manifest does not declare are refused. */
-export const paramsSchema = (m: Manifest) => {
-  const properties = Object.fromEntries(
+/** A manifest's parameters, each string one with the default length limit unless it has its own. */
+export const limitedProperties = (m: Manifest) =>
+  Object.fromEntries(
     Object.entries(m.params.properties).map(([name, p]) => [
       name,
       p.type === "string" ? { maxLength: DEFAULT_MAX_LENGTH, ...p } : p,
     ]),
   );
-  return z.fromJSONSchema({ ...m.params, properties, additionalProperties: false }) as z.ZodType<
-    Record<string, unknown>
-  >;
-};
+
+/** What a project's `params` must satisfy, defaults filled in; keys the manifest does not declare are refused. */
+export const paramsSchema = (m: Manifest) =>
+  z.fromJSONSchema({
+    ...m.params,
+    properties: limitedProperties(m),
+    additionalProperties: false,
+  }) as z.ZodType<Record<string, unknown>>;
