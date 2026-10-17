@@ -1,6 +1,12 @@
 import { DomainError, type Logger } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
-import { getSyncRun, getSyncTarget, listSyncRunItems, type SyncRun } from "@orch/db";
+import {
+  getLastSyncRun,
+  getSyncRun,
+  getSyncTarget,
+  listSyncRunItems,
+  type SyncRun,
+} from "@orch/db";
 import type { PlanAction } from "@orch/sync";
 import { Elysia } from "elysia";
 import { z } from "zod";
@@ -98,7 +104,8 @@ const conflict = (code: string, message: string) => new DomainError(code, 409, m
  *
  * Applying (SYNC-6) is by plan id only: a plan that is still `planned`, not expired and still true of
  * the variables is claimed (one apply at a time per target) and handed to the `sync.apply` job,
- * which writes to the target and records what happened to each line.
+ * which writes to the target and records what happened to each line. `last-run` is the newest run
+ * that was applied (or is being, or failed), for a screen that shows when the target was last synced.
  */
 export const syncRunRoutes = ({
   db,
@@ -189,6 +196,19 @@ export const syncRunRoutes = ({
         response: applying,
         audit: ["sync_run.apply", "sync_run.failed"],
         guard: "sync.apply",
+      },
+    )
+    .get(
+      "/last-run",
+      async ({ params: { orgId, projectId, targetId } }) => {
+        if (!(await getSyncTarget(db, orgId, projectId, targetId))) throw notFound("Sync target");
+        const run = await getLastSyncRun(db, orgId, projectId, targetId);
+        return { run: run ? runDto(run, await listSyncRunItems(db, run.id)) : null };
+      },
+      {
+        params,
+        response: { 200: z.object({ run: runSchema.nullable() }), ...readErrors },
+        guard: "sync.run.read",
       },
     )
     .get(

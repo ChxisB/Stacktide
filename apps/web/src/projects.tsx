@@ -1,7 +1,8 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, type ReactNode, useState } from "react";
 import { ApiError, allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { href } from "./router";
 import { Loading } from "./ui";
 
 /** What the API says of a project (see `projectSchema`), as far as this screen shows it. */
@@ -25,6 +26,49 @@ export const useProjects = (orgId: string) => {
       ),
   });
 };
+
+/** The project a page is about: the only one, or the one chosen from a list. `children` gets it. */
+export function ProjectPicker({
+  orgId,
+  children,
+}: {
+  orgId: string;
+  children: (project: Project) => ReactNode;
+}) {
+  const projects = useProjects(orgId);
+  const [chosen, setChosen] = useState<string>();
+  if (projects.error) return <ErrorPanel error={projects.error} />;
+  if (!projects.data) return <Loading what="Loading projects" />;
+  const project = projects.data.find((p) => p.id === chosen) ?? projects.data[0];
+  if (!project) {
+    return (
+      <p>
+        No projects yet. <a href={href("projects")}>Import one</a> first.
+      </p>
+    );
+  }
+  return (
+    <div className="stack wide">
+      {projects.data.length > 1 ? (
+        <label>
+          Project
+          <select value={project.id} onChange={(e) => setChosen(e.target.value)}>
+            {projects.data.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <p>
+          Project <strong>{project.name}</strong>
+        </p>
+      )}
+      {children(project)}
+    </div>
+  );
+}
 
 export const useConnections = (orgId: string) => {
   const client = useClient();

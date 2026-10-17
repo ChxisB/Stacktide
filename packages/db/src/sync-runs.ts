@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Executor } from "./repo";
 import { jobs, syncRunItems, syncRuns } from "./schema";
 
@@ -84,6 +84,28 @@ const inTarget = (organizationId: string, projectId: string, targetId: string) =
     eq(syncRuns.projectId, projectId),
     eq(syncRuns.organizationId, organizationId),
   );
+
+/**
+ * The run that was applied, is being applied, or failed most recently: a plan nobody applied is not a
+ * sync. Plans can be made in one order and applied in another, so the order is when a run last
+ * changed (a trigger keeps `updated_at` current), not when it was planned.
+ */
+export async function getLastSyncRun(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  targetId: string,
+) {
+  return (
+    await db
+      .select()
+      .from(syncRuns)
+      .where(and(inTarget(organizationId, projectId, targetId), ne(syncRuns.status, "planned")))
+      // ids are time-ordered (uuidv7): the tie-break for two runs changed in the same instant
+      .orderBy(desc(syncRuns.updatedAt), desc(syncRuns.id))
+      .limit(1)
+  )[0];
+}
 
 /**
  * `planned` -> `applying`, for the job that will do it: only a plan that is still planned and not

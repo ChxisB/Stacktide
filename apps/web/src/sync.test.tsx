@@ -1,0 +1,674 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { recordDrift } from "@orch/db";
+import { createGitlab } from "@orch/gitlab";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { newQueryClient, Providers } from "./app";
+import { AuthGate } from "./auth";
+import { OrgProvider, RequireOrg } from "./org";
+import { SyncPage } from "./sync";
+import { type Backend, clientVia, down, mount, pathOf, startBackend } from "./testing";
+import { must, ref, SECRET, scene as sceneOn } from "./variables.fixture";
+
+let backend: Backend;
+/** Each apply of the worker waits for this; a test holds it to keep one running. */
+let hold: Promise<void> = Promise.resolve();
+const pause = () => {
+  const gate = Promise.withResolvers<void>();
+  hold = gate.promise;
+  return gate.resolve;
+};
+beforeAll(async () => {
+  backend = await startBackend();
+  backend.startWorker(() => hold);
+});
+afterAll(() => backend.stop());
+beforeEach(() => {
+  hold = Promise.resolve();
+  window.location.hash = "#/sync";
+  try {
+    localStorage.clear();
+  } catch {
+    // the page copes without it
+  }
+});
+
+let n = 0;
+/**
+ * A project of the scene with a target `main` on a GitLab project of its own (the mock), the
+ * environment `dev` mapped to the scope `development`, and the means to look at the target.
+ */
+async function world(
+  options: {
+    reporter?: boolean;
+    policy?: "ignore" | "adopt" | "prune";
+    target?: boolean;
+    autoSync?: boolean;
+  } = {},
+) {
+  const s = await sceneOn(backend, { reporter: options.reporter });
+  const mock = backend.gitlab(undefined, ["api"]);
+  const gl = mock.addProject({ path: `fx/web-${++n}` });
+  mock.addMember({ project: gl.id }, mock.tokenUser.id, 40);
+  const of = { project: gl.path };
+  let seen = 0;
+  const gitlab = createGitlab({
+    baseUrl: mock.url,
+    auth: { type: "private-token", token: mock.token },
+    maxRetries: 0,
+  });
+  const connection = must(
+    await s.admin.client.organizations({ orgId: s.org.id }).connections.post({
+      type: "gitlab",
+      name: "Mock GitLab",
+      baseUrl: mock.url,
+      token: mock.token,
+    }),
+  );
+  const target =
+    options.target === false
+      ? undefined
+      : must(
+          await s.scope["sync-targets"].post({
+            name: "main",
+            type: "gitlab-variables",
+            connectionId: connection.id,
+            config: { project: gl.path },
+            environmentMapping: { dev: "development" },
+            ...(options.policy ? { unmanagedPolicy: options.policy } : {}),
+            ...(options.autoSync ? { autoSync: true } : {}),
+          }),
+        );
+  return {
+    ...s,
+    mock,
+    of,
+    gitlab,
+    target,
+    /** Everything the target holds, as `KEY scope` -> value. */
+    held: async () => {
+      const found: Record<string, string> = {};
+      for await (const v of gitlab.variables.list(of)) found[`${v.key} ${v.scope}`] = v.value ?? "";
+      return found;
+    },
+    /** Requests that changed the target since `mark` (the set-up is not the screen's doing). */
+    writes: () =>
+      mock.requests.slice(seen).filter((r) => r.method !== "GET" && r.path.includes("/variables"))
+        .length,
+    mark: () => {
+      seen = mock.requests.length;
+    },
+  };
+}
+type World = Awaited<ReturnType<typeof world>>;
+
+/** The page alone, with a short time between looks at an apply that is running. */
+function mountPage(client: ReturnType<Backend["anonymous"]>, pollMs = 20) {
+  const queries = newQueryClient();
+  return {
+    queries,
+    ...render(
+      <Providers client={client} queries={queries}>
+        <AuthGate>
+          <OrgProvider>
+            <RequireOrg>{(org) => <SyncPage orgId={org.id} pollMs={pollMs} />}</RequireOrg>
+          </OrgProvider>
+        </AuthGate>
+      </Providers>,
+    ),
+  };
+}
+
+const card = () => screen.findByRole("region", { name: "Sync target main" });
+const plan = () => screen.findByRole("region", { name: "Plan for main" });
+const rowsOf = (table: HTMLElement) =>
+  within(table)
+    .getAllByRole("row")
+    .slice(1)
+    .map((row) => Array.from(row.children).map((c) => c.textContent));
+const facts = (c: HTMLElement) =>
+  Object.fromEntries(
+    Array.from(c.querySelectorAll("dt")).map((dt) => [
+      dt.textContent,
+      dt.nextElementSibling?.textContent,
+    ]),
+  );
+
+/** A project with variables of every kind, and a target that holds some of them. */
+async function filled(options: Parameters<typeof world>[0] = {}) {
+  const w = await world(options);
+  await w.put.project("A_PLAIN", "plain-a-value");
+  await w.put.project("B_SECRET", SECRET, true);
+  await w.put.project("D_CHANGED", "d-new-value");
+  await w.put.project("E_SAME", "e-same-value");
+  await w.put.env("dev", "F_DEV", "f-dev-value");
+  await w.gitlab.variables.create(w.of, "D_CHANGED", { value: "d-old-value" });
+  await w.gitlab.variables.create(w.of, "E_SAME", { value: "e-same-value" });
+  w.mark();
+  return w;
+}
+/** None of these may be anywhere on the page. */
+const VALUES = [
+  SECRET,
+  "plain-a-value",
+  "d-new-value",
+  "d-old-value",
+  "e-same-value",
+  "f-dev-value",
+];
+const noValues = () => {
+  for (const v of VALUES) expect(document.body.textContent).not.toContain(v);
+};
+const planIt = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.click(await screen.findByRole("button", { name: "Plan sync" }));
+  return plan();
+};
+const finished = (text: RegExp) =>
+  waitFor(() => expect(facts(document.body)["Last sync"]).toMatch(text), { timeout: 5000 });
+
+describe("before there is a target", () => {
+  test("a project with none says so", async () => {
+    const w = await world({ target: false });
+    mountPage(w.client);
+    await screen.findByText("This project has no sync targets yet.");
+    expect(screen.queryByRole("button", { name: "Plan sync" })).toBeNull();
+  });
+
+  test("the page is in the navigation and shows the target's settings", async () => {
+    const w = await world({ policy: "prune" });
+    mount(w.client);
+    const nav = await screen.findByRole("navigation", { name: "Main" });
+    expect(within(nav).getByRole("link", { name: "Sync" }).getAttribute("aria-current")).toBe(
+      "page",
+    );
+    const c = await card();
+    expect(c.textContent).toContain("GitLab CI/CD variables");
+    expect(c.textContent).toContain("Variables only on the target are deleted.");
+    expect(c.textContent).toContain("Syncs when you ask.");
+    expect(c.textContent).toContain("dev \u2192 development");
+    // nothing has run yet: no drift check, no sync
+    await waitFor(() =>
+      expect(facts(c)).toEqual({
+        Drift: "Not checked yet",
+        "Last sync": "Never synced from here.",
+      }),
+    );
+  });
+});
+
+describe("a target that syncs by itself", () => {
+  test("says so", async () => {
+    const w = await world({ autoSync: true });
+    mountPage(w.client);
+    expect((await card()).textContent).toContain("Syncs by itself when a variable changes.");
+  });
+});
+
+describe("what cannot be loaded", () => {
+  test("a target list that fails says why and can be tried again", async () => {
+    const w = await world();
+    let failing = true;
+    const client = clientVia(backend.api, w.cookie, async (request, send) =>
+      failing && pathOf(request).endsWith("/sync-targets")
+        ? down("the sync store is down")
+        : send(),
+    );
+    mountPage(client);
+    const user = userEvent.setup();
+    expect((await screen.findByRole("alert")).textContent).toContain("the sync store is down");
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await card();
+  });
+
+  test("a target whose drift cannot be read says why and can be tried again", async () => {
+    const w = await world();
+    let failing = true;
+    const client = clientVia(backend.api, w.cookie, async (request, send) =>
+      failing && pathOf(request).endsWith("/drift") ? down("the drift store is down") : send(),
+    );
+    mountPage(client);
+    const user = userEvent.setup();
+    expect((await screen.findByRole("alert")).textContent).toContain("the drift store is down");
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await finished(/^Never synced/);
+  });
+
+  test("a last sync that cannot be read says why and can be tried again", async () => {
+    const w = await world();
+    let failing = true;
+    const client = clientVia(backend.api, w.cookie, async (request, send) =>
+      failing && pathOf(request).endsWith("/last-run") ? down("the run store is down") : send(),
+    );
+    mountPage(client);
+    const user = userEvent.setup();
+    expect((await screen.findByRole("alert")).textContent).toContain("the run store is down");
+    failing = false;
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await finished(/^Never synced/);
+  });
+});
+
+describe("drift and the last sync", () => {
+  const ref = (w: World) => {
+    if (!w.target) throw new Error("no target");
+    return { id: w.target.id, projectId: w.project.id, organizationId: w.org.id };
+  };
+
+  test("a drifted target shows what an apply would write, and when it was checked", async () => {
+    const w = await world();
+    await recordDrift(backend.t.db, ref(w), "drifted", {
+      create: 2,
+      update: 1,
+      delete: 0,
+      noop: 3,
+      adopt: 0,
+    });
+    mountPage(w.client);
+    const c = await card();
+    await waitFor(() =>
+      expect(facts(c).Drift).toMatch(/^Drifted checked \d{4}-\d\d-\d\d \d\d:\d\d UTC/),
+    );
+    expect(facts(c).Drift).toContain("(2 to create, 1 to change, 0 to delete)");
+  });
+
+  test("a target that is in sync says so, with no counts", async () => {
+    const w = await world();
+    await recordDrift(backend.t.db, ref(w), "in_sync", { noop: 4 });
+    mountPage(w.client);
+    const c = await card();
+    await waitFor(() => expect(facts(c).Drift).toMatch(/^In sync checked /));
+    expect(facts(c).Drift).not.toContain("to create");
+  });
+});
+
+describe("a plan", () => {
+  test("lists what would change by name, scope and field, shows no value, and writes nothing", async () => {
+    const w = await filled();
+    const { queries } = mountPage(w.client);
+    const user = userEvent.setup();
+    const p = await planIt(user);
+    expect(p.textContent).toContain("Nothing has been changed on the target yet.");
+    expect(p.textContent).toMatch(/good until \d{4}-\d\d-\d\d \d\d:\d\d UTC/);
+    expect(p.textContent).toContain("3 to create, 1 to change, 0 to delete.");
+    expect(rowsOf(within(p).getByRole("table"))).toEqual([
+      ["A_PLAIN", "All environments", "Create", ""],
+      ["B_SECRET", "All environments", "Create", ""],
+      ["D_CHANGED", "All environments", "Change", "the value"],
+      ["F_DEV", "development", "Create", ""],
+    ]);
+    expect(p.textContent).toContain("1 variable already matches.");
+    // reading a plan changes nothing on the target, and no value reached the page or the cache
+    expect(w.writes()).toBe(0);
+    noValues();
+    expect(
+      JSON.stringify(
+        queries
+          .getQueryCache()
+          .getAll()
+          .map((q) => q.state.data),
+      ),
+    ).not.toContain(SECRET);
+    expect(await w.audit("sync_run.plan")).toHaveLength(1);
+  });
+
+  test("names what changed in a secret's settings, not its value", async () => {
+    const w = await world();
+    await w.put.project("MASKED_NOW", SECRET, true);
+    await w.gitlab.variables.create(w.of, "MASKED_NOW", { value: SECRET, masked: false });
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    expect(rowsOf(within(p).getByRole("table"))).toEqual([
+      ["MASKED_NOW", "All environments", "Change", "masked or not"],
+    ]);
+    noValues();
+  });
+
+  test("a target that already matches has nothing to apply", async () => {
+    const w = await world();
+    await w.put.project("SAME", "same-value");
+    await w.gitlab.variables.create(w.of, "SAME", { value: "same-value" });
+    mountPage(w.client);
+    const user = userEvent.setup();
+    const p = await planIt(user);
+    expect(p.textContent).toContain(
+      "The target already has everything this project would put there.",
+    );
+    expect(p.textContent).toContain("0 to create, 0 to change, 0 to delete.");
+    expect(within(p).queryByRole("table")).toBeNull();
+    expect(within(p).queryByRole("button", { name: "Apply…" })).toBeNull();
+    await user.click(within(p).getByRole("button", { name: "Discard plan" }));
+    expect(await screen.findByRole("button", { name: "Plan sync" })).toBeTruthy();
+  });
+
+  test("a reference that cannot be resolved is left out and named", async () => {
+    const w = await world();
+    await w.put.project("GOOD", "good-value");
+    await w.put.project("BROKEN", ref("NOPE_NOT_HERE"));
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    const left = within(p).getByRole("list");
+    expect(left.textContent).toContain("BROKEN");
+    expect(rowsOf(within(p).getByRole("table")).map((r) => r[0])).toEqual(["GOOD"]);
+  });
+
+  test("a value that grows past the limit is left out, and the reason is in words", async () => {
+    const w = await world();
+    await w.put.project("FINE", "fine-value");
+    await w.put.project("BASE", "x".repeat(9_000));
+    await w.put.project("HUGE", ref("BASE").repeat(130));
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    const left = within(p).getByRole("list");
+    expect(left.textContent).toContain("HUGE");
+    expect(left.textContent).toContain("too large");
+    expect(left.textContent).not.toContain("_");
+  });
+
+  test("something only the target holds is listed and left alone, or deleted when the target says so", async () => {
+    const w = await world({ policy: "prune" });
+    await w.put.project("KEPT", "kept-value");
+    await w.gitlab.variables.create(w.of, "G_EXTRA", { value: "not-wanted-value" });
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    expect(rowsOf(within(p).getByRole("table"))).toEqual([
+      ["G_EXTRA", "All environments", "Delete from the target", ""],
+      ["KEPT", "All environments", "Create", ""],
+    ]);
+    expect(p.textContent).toContain("1 to create, 0 to change, 1 to delete.");
+    expect(document.body.textContent).not.toContain("not-wanted-value");
+  });
+
+  test("a plan that only deletes can still be applied", async () => {
+    const w = await world({ policy: "prune" });
+    await w.gitlab.variables.create(w.of, "G_EXTRA", { value: "not-wanted-value" });
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    expect(rowsOf(within(p).getByRole("table"))).toEqual([
+      ["G_EXTRA", "All environments", "Delete from the target", ""],
+    ]);
+    expect(within(p).getByRole("button", { name: "Apply\u2026" })).toBeTruthy();
+  });
+
+  test("an environment that is mapped and gone is said to be left alone", async () => {
+    const w = await world();
+    await w.put.project("A", "a-value");
+    expect((await w.scope.environments({ envId: w.envs.dev ?? "" }).delete()).status).toBe(204);
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    expect(p.textContent).toMatch(/no longer exists, and left alone: .*dev/);
+  });
+
+  test("the plan the API refuses to make says why", async () => {
+    const w = await world({ reporter: true });
+    await w.put.project("A", "a-value");
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Plan sync" }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/permission|allowed|forbidden/i);
+    expect(screen.queryByRole("region", { name: "Plan for main" })).toBeNull();
+    // the refusal leaves the button usable
+    expect((screen.getByRole("button", { name: "Plan sync" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+});
+
+describe("applying a plan", () => {
+  test("asks first, and writes only after the plan has been read and confirmed", async () => {
+    const w = await filled();
+    const { queries } = mountPage(w.client);
+    const user = userEvent.setup();
+    const p = await planIt(user);
+    await user.click(within(p).getByRole("button", { name: "Apply…" }));
+    const form = screen.getByRole("form", { name: "Apply to main" });
+    expect(form.textContent).toContain("creates 3, changes 1 and deletes 0 variables");
+    // asking is not doing
+    expect(w.writes()).toBe(0);
+    await user.click(within(form).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("form", { name: "Apply to main" })).toBeNull();
+    expect(w.writes()).toBe(0);
+
+    await user.click(within(await plan()).getByRole("button", { name: "Apply…" }));
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    await finished(/^Applied \d{4}-/);
+
+    expect(await w.held()).toEqual({
+      "A_PLAIN *": "plain-a-value",
+      "B_SECRET *": SECRET,
+      "D_CHANGED *": "d-new-value",
+      "E_SAME *": "e-same-value",
+      "F_DEV development": "f-dev-value",
+    });
+    // the plan is spent: the screen goes back to asking for one, and says what was done, still with no value
+    expect(screen.queryByRole("region", { name: "Plan for main" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Plan sync" })).toBeTruthy();
+    const done = await screen.findByRole("group");
+    expect(done.textContent).toContain("What the last sync did");
+    expect(rowsOf(within(done).getByRole("table")).map((r) => [r[0], r[4]])).toEqual([
+      ["A_PLAIN", "Done"],
+      ["B_SECRET", "Done"],
+      ["D_CHANGED", "Done"],
+      ["F_DEV", "Done"],
+    ]);
+    noValues();
+    expect(
+      JSON.stringify(
+        queries
+          .getQueryCache()
+          .getAll()
+          .map((q) => q.state.data),
+      ),
+    ).not.toContain(SECRET);
+    expect(await w.audit("sync_run.apply")).toHaveLength(1);
+  });
+
+  test("the last sync is still there after a reload of the page", async () => {
+    const w = await filled();
+    const first = mountPage(w.client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await user.click(screen.getByRole("button", { name: "Apply…" }));
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    await finished(/^Applied /);
+    first.unmount();
+    mountPage(w.client);
+    await card();
+    await finished(/^Applied \d{4}-/);
+  });
+
+  test("shows that it is running, and cannot be planned over until it is done", async () => {
+    const w = await filled();
+    const release = pause();
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await user.click(screen.getByRole("button", { name: "Apply…" }));
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    await finished(/^Syncing now/);
+    expect((screen.getByRole("button", { name: "Plan sync" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    release();
+    await finished(/^Applied /);
+    expect((screen.getByRole("button", { name: "Plan sync" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
+  test("an apply that is starting cannot be sent again or cancelled", async () => {
+    const w = await filled();
+    const gate = Promise.withResolvers<void>();
+    let posts = 0;
+    const client = clientVia(backend.api, w.cookie, async (request, send) => {
+      if (pathOf(request).endsWith("/apply")) {
+        posts += 1;
+        await gate.promise;
+      }
+      return send();
+    });
+    mountPage(client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await user.click(screen.getByRole("button", { name: "Apply\u2026" }));
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    const starting = screen.getByRole("button", { name: "Starting\u2026" }) as HTMLButtonElement;
+    expect(starting.disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    await user.click(starting);
+    gate.resolve();
+    await finished(/^Applied /);
+    expect(posts).toBe(1);
+  });
+
+  /** An apply started from elsewhere (another tab, a colleague): the screen learns of it when it looks again. */
+  const startElsewhere = async (
+    w: World,
+    queries: { invalidateQueries: (f: object) => unknown },
+  ) => {
+    const at = w.scope["sync-targets"]({ targetId: w.target?.id ?? "" });
+    must(await at.apply.post({ planId: must(await at.plan.post()).id }));
+    await queries.invalidateQueries({ queryKey: ["sync-last"] });
+    await finished(/^Syncing now/);
+  };
+
+  test("a plan on screen cannot be applied while another apply is running", async () => {
+    const w = await filled();
+    const { queries } = mountPage(w.client);
+    const user = userEvent.setup();
+    await planIt(user);
+    const release = pause();
+    await startElsewhere(w, queries);
+    const apply = screen.getByRole("button", { name: "Apply\u2026" }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+    release();
+    await finished(/^Applied /);
+    expect(apply.disabled).toBe(false);
+  });
+
+  test("a confirmation that is open cannot be sent once another apply is running", async () => {
+    const w = await filled();
+    const { queries } = mountPage(w.client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await user.click(screen.getByRole("button", { name: "Apply\u2026" }));
+    const release = pause();
+    await startElsewhere(w, queries);
+    expect((screen.getByRole("button", { name: "Apply plan" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    release();
+    await finished(/^Applied /);
+  });
+
+  test("the plan stays on screen until the last sync is known", async () => {
+    const w = await filled();
+    let hold: Promise<void> | undefined;
+    let waiting = 0;
+    const client = clientVia(backend.api, w.cookie, async (request, send) => {
+      if (hold && pathOf(request).endsWith("/last-run")) {
+        waiting += 1;
+        await hold;
+      }
+      return send();
+    });
+    mountPage(client);
+    const user = userEvent.setup();
+    await planIt(user);
+    const gate = Promise.withResolvers<void>();
+    hold = gate.promise;
+    await user.click(screen.getByRole("button", { name: "Apply\u2026" }));
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    // the apply was accepted and the screen is asking what the last sync is: the plan is still there
+    await waitFor(() => expect(waiting > 0).toBe(true));
+    expect(screen.queryByRole("region", { name: "Plan for main" }) !== null).toBe(true);
+    gate.resolve();
+    await finished(/^Applied /);
+  });
+
+  test("a plan that is being made cannot be asked for again", async () => {
+    const w = await filled();
+    const gate = Promise.withResolvers<void>();
+    let posts = 0;
+    const client = clientVia(backend.api, w.cookie, async (request, send) => {
+      if (pathOf(request).endsWith("/plan")) {
+        posts += 1;
+        await gate.promise;
+      }
+      return send();
+    });
+    mountPage(client);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Plan sync" }));
+    const planning = screen.getByRole("button", { name: "Planning\u2026" }) as HTMLButtonElement;
+    expect(planning.disabled).toBe(true);
+    await user.click(planning);
+    gate.resolve();
+    await plan();
+    expect(posts).toBe(1);
+  });
+
+  test("what would be deleted is said again before it is", async () => {
+    const w = await world({ policy: "prune" });
+    await w.put.project("KEPT", "kept-value");
+    await w.gitlab.variables.create(w.of, "G_EXTRA", { value: "not-wanted-value" });
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await user.click(screen.getByRole("button", { name: "Apply…" }));
+    const form = screen.getByRole("form", { name: "Apply to main" });
+    expect(form.textContent).toContain("creates 1, changes 0 and deletes 1 variables");
+    expect(form.textContent).toContain("cannot be brought back from here");
+    expect(Object.keys(await w.held())).toContain("G_EXTRA *");
+    await user.click(within(form).getByRole("button", { name: "Apply plan" }));
+    await finished(/^Applied /);
+    expect(Object.keys(await w.held())).toEqual(["KEPT *"]);
+  });
+
+  test("a plan that the variables have moved on from is refused and has to be made again", async () => {
+    const w = await filled();
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await w.put.project("LATE", "late-value");
+    await user.click(screen.getByRole("button", { name: "Apply…" }));
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("plan again");
+    // it can never be applied now, so it is gone, and nothing was written
+    expect(screen.queryByRole("region", { name: "Plan for main" })).toBeNull();
+    expect(w.writes()).toBe(0);
+    const p = await planIt(user);
+    expect(rowsOf(within(p).getByRole("table")).map((r) => r[0])).toContain("LATE");
+    // a plan made again starts clean
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("a line the target refuses is shown as failed, with why, and the others are done", async () => {
+    const w = await filled();
+    w.mock.inject({
+      method: "POST",
+      path: new RegExp(`/projects/${encodeURIComponent(w.of.project)}/variables`),
+      status: 400,
+      times: 1,
+    });
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await user.click(screen.getByRole("button", { name: "Apply…" }));
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    await finished(/^Failed /);
+    expect(facts(document.body)["Last sync"]).toContain(
+      "1 of 4 changes failed (1 variable failed)",
+    );
+    // what went wrong is open without asking for it, and holds no value
+    const done = await screen.findByRole("group");
+    expect((done as HTMLDetailsElement).open).toBe(true);
+    const results = rowsOf(within(done).getByRole("table")).map((r) => r[4]);
+    expect(results.filter((r) => r?.startsWith("Failed: "))).toHaveLength(1);
+    expect(results.filter((r) => r === "Done")).toHaveLength(3);
+    noValues();
+  });
+});

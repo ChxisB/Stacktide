@@ -1,6 +1,8 @@
 import { createApp } from "@orch/api";
 import { callerPrincipal } from "@orch/api/credentials";
+import { SYNC_APPLY, syncApplyHandler } from "@orch/api/sync-apply";
 import { hashToken, randomToken } from "@orch/api/tokens";
+import { createWorker, type Worker } from "@orch/api/worker";
 import { createClient } from "@orch/api-client";
 import { createLogger, type Subject } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
@@ -37,6 +39,7 @@ export async function startBackend() {
   let gitlabId = 1000;
   let orgs = 0;
   const mocks: ReturnType<typeof createMockGitlab>[] = [];
+  let worker: Worker | undefined;
   return {
     api,
     t,
@@ -59,9 +62,9 @@ export async function startBackend() {
     /** A new organization, for a test of its own. */
     organization: (name = "Acme") => createOrganization(t.db, { slug: `org-${++orgs}`, name }),
     /** A mock GitLab that sees what the test adds to it, and is stopped with the backend. */
-    gitlab(maxPerPage?: number) {
+    gitlab(maxPerPage?: number, scopes = ["read_api"]) {
       const mock = createMockGitlab({
-        scopes: ["read_api"],
+        scopes,
         ...(maxPerPage ? { maxPerPage } : {}),
       });
       mocks.push(mock);
@@ -69,7 +72,26 @@ export async function startBackend() {
     },
     /** Roles of a user already signed in (the API reads them at each request). */
     setRoles: (gitlabUserId: number, held: Roles) => roles.set(gitlabUserId, held),
+    /** Runs the job queue, so that an apply a screen starts is carried out; `gate` holds each apply back until it settles. */
+    startWorker(gate: () => Promise<void> = async () => {}) {
+      const logger = createLogger({ level: "error", write: () => {} });
+      const applying = syncApplyHandler({ db: t.db, keys, logger });
+      worker = createWorker({
+        db: t.db,
+        logger,
+        handlers: {
+          [SYNC_APPLY]: async (ctx) => {
+            await gate();
+            await applying(ctx);
+          },
+        },
+        pollMs: 10,
+        backoff: () => 0,
+      });
+      worker.start();
+    },
     async stop() {
+      await worker?.stop();
       for (const mock of mocks) mock.stop();
       await app.stop(true);
       await t.drop();

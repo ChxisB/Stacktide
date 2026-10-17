@@ -2,12 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { Loading } from "./ui";
+import { Loading, stamp, when } from "./ui";
 import { type Cell, type Env, Form, SOURCE, useWrite, variablesAt } from "./variable-parts";
-
-// The typed client turns an ISO timestamp into a Date although the type says string: take either.
-const stamp = (at: string | Date) => new Date(at).toISOString();
-const when = (at: string | Date) => `${stamp(at).slice(0, 16).replace("T", " ")} UTC`;
 
 function Restore({
   orgId,

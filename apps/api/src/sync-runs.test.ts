@@ -651,6 +651,70 @@ describe("who may plan and read", () => {
   });
 });
 
+describe("the last run of a target", () => {
+  const last = (w: World, who: Who | null = "alice", target = w.target) =>
+    call(who, "GET", `${w.targets}/${target}/last-run`);
+
+  test("is none before an apply, and a plan nobody applied is not one", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    expect(await last(w)).toMatchObject({ status: 200, json: { run: null } });
+    expect((await w.plan()).status).toBe(201);
+    expect(await last(w)).toMatchObject({ status: 200, json: { run: null } });
+  });
+
+  test("is the newest apply, with its lines and no value", async () => {
+    const w = await world();
+    const secret = sekrit("last-run");
+    await w.put("project", "A", "secret", secret);
+    const first = await w.plan();
+    await w.finished((await w.apply(first.json.id)).json.id);
+    await w.put("project", "B", "plain", "b");
+    const second = await w.plan();
+    // planned again, not applied: the first apply is still the last
+    expect((await last(w)).json.run).toMatchObject({ id: first.json.id, status: "applied" });
+    await w.finished((await w.apply(second.json.id)).json.id);
+    const res = await last(w);
+    expect(res.json.run).toMatchObject({ id: second.json.id, status: "applied" });
+    expect(res.json.run.items.map((i: { key: string }) => i.key)).toEqual(["A", "B"]);
+    expect(res.text).not.toContain(secret);
+  });
+
+  test("is the one applied most recently, not the one planned last", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const early = await w.plan();
+    const late = await w.plan();
+    await w.finished((await w.apply(late.json.id)).json.id);
+    await w.finished((await w.apply(early.json.id)).json.id);
+    expect((await last(w)).json.run).toMatchObject({ id: early.json.id, status: "applied" });
+  });
+
+  test("is a failed apply too, with why", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const planned = await w.plan();
+    w.refuse("POST", 400);
+    await w.finished((await w.apply(planned.json.id)).json.id);
+    expect((await last(w)).json.run).toMatchObject({ id: planned.json.id, status: "failed" });
+  });
+
+  test("takes a reporter; another project's or an unknown target is not found", async () => {
+    const w = await world();
+    const other = await world();
+    await w.put("project", "A", "plain", "a");
+    await w.finished((await w.apply((await w.plan()).json.id)).json.id);
+    for (const who of ["alice", "carol", "dan"] as const)
+      expect([who, (await last(w, who)).status]).toEqual([who, 200]);
+    expect((await last(w, "erin")).status).toBe(404);
+    expect((await last(w, null)).status).toBe(401);
+    expect((await last(w, "alice", crypto.randomUUID())).status).toBe(404);
+    expect((await last(w, "alice", other.target)).status).toBe(404);
+    // the other project's own target has none, whatever this one did
+    expect((await last(other)).json.run).toBeNull();
+  });
+});
+
 describe("the digest of what a plan was made from", () => {
   const digests = async (w: World) => (await w.runs()).map((r) => r.desiredDigest);
 

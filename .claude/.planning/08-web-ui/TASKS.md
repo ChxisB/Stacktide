@@ -16,7 +16,7 @@ Done when: tests cover reveal flow, inheritance display and delete confirmation.
 Do: version history drawer with rollback; `.env` paste/upload import with dry-run preview.
 Done when: tests cover rollback confirmation and that the import preview shows key names and conflicts, not secret values.
 
-### UI-5 - Sync panel  `[ ]` M - deps: UI-1, SYNC-6, SYNC-8
+### UI-5 - Sync panel  `[x]` M - deps: UI-1, SYNC-6, SYNC-8
 Do: per project/environment targets, plan preview table, apply with confirmation, drift badge, last-sync status.
 Done when: tests prove the plan view has no value-rendering path for secrets.
 

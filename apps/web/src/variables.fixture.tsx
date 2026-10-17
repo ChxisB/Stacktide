@@ -50,6 +50,7 @@ export async function scene(
     project,
     client: (reporter ?? admin).client,
     cookie: (reporter ?? admin).cookie,
+    admin,
     envs,
     scope,
     /** Variables made through the API, at the organization, the project or one environment. */
