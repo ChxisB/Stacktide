@@ -177,12 +177,14 @@ button:disabled {
   align-items: end;
   gap: var(--gap);
 }
-label {
+label,
+.field {
   display: grid;
   gap: 4px;
 }
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: var(--text);
   background: var(--surface);
@@ -192,6 +194,7 @@ select {
 }
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 button:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--focus);
@@ -259,4 +262,25 @@ td {
 }
 .org select {
   max-width: 14rem;
+}
+.stack.wide {
+  max-width: none;
+}
+.matrix {
+  overflow-x: auto;
+}
+.matrix table {
+  max-width: none;
+}
+.cell {
+  display: grid;
+  gap: 6px;
+  min-width: 11rem;
+}
+button.small {
+  padding: 2px 8px;
+  font-size: 0.85em;
+}
+code.revealed {
+  overflow-wrap: anywhere;
 }

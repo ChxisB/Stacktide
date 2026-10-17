@@ -358,7 +358,8 @@ const projectActions = {
   import: "variable.import",
   bulk: "variable.bulk",
 };
-const organizationLevel: Level = {
+// `as const satisfies`: the literal prefixes are what lets the typed client see these routes (the web UI uses them)
+const organizationLevel = {
   level: "organization",
   prefix: "/organizations/:orgId/variables",
   actions: {
@@ -373,23 +374,23 @@ const organizationLevel: Level = {
   },
   parent: async (db, p) =>
     (await getOrganization(db, p.orgId)) ?? Promise.reject(notFound("Organization")),
-};
-const projectLevel: Level = {
+} as const satisfies Level;
+const projectLevel = {
   level: "project",
   prefix: "/organizations/:orgId/projects/:projectId/variables",
   actions: projectActions,
   parent: async (db, p) =>
     (p.projectId && (await getProject(db, p.orgId, p.projectId))) ||
     Promise.reject(notFound("Project")),
-};
-const environmentLevel: Level = {
+} as const satisfies Level;
+const environmentLevel = {
   level: "environment",
   prefix: "/organizations/:orgId/projects/:projectId/environments/:envId/variables",
   actions: projectActions,
   parent: async (db, p) =>
     (p.projectId && p.envId && (await getEnvironment(db, p.orgId, p.projectId, p.envId))) ||
     Promise.reject(notFound("Environment")),
-};
+} as const satisfies Level;
 
 const scopeOf = (p: Params): Scope => ({
   organizationId: p.orgId,
@@ -458,9 +459,9 @@ export const failing = (logger: Logger) => (set: { headers: Record<string, unkno
  * reveal permission and is audited. Without master keys every route that opens a value answers
  * 503; deleting and the history do not need keys.
  */
-const levelRoutes = (
+const levelRoutes = <const P extends string>(
   { db, principal, keys, logger }: RouteDeps & { keys?: KeyProvider; logger: Logger },
-  spec: Level,
+  spec: Level & { prefix: P },
 ) => {
   const sealing = () => {
     if (!keys) throw noKeys();

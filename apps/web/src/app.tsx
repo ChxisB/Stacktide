@@ -7,6 +7,7 @@ import { Checklist } from "./onboarding";
 import { OrgProvider, RequireOrg } from "./org";
 import { ProjectsPage } from "./projects";
 import { type Page, Shell } from "./shell";
+import { VariablesPage } from "./variables";
 
 const Home = () => (
   <>
@@ -22,10 +23,18 @@ const Projects = () => (
   </>
 );
 
+const Variables = () => (
+  <>
+    <h1>Variables</h1>
+    <RequireOrg>{(org) => <VariablesPage key={org.id} orgId={org.id} />}</RequireOrg>
+  </>
+);
+
 /** The pages, in navigation order; the first is home. Each screen adds itself here. */
 const pages: readonly Page[] = [
   { path: "", label: "Home", element: <Home /> },
   { path: "projects", label: "Projects", element: <Projects /> },
+  { path: "variables", label: "Variables", element: <Variables /> },
 ];
 
 export const newQueryClient = () =>

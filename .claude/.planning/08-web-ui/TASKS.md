@@ -8,7 +8,7 @@ Done when: signed-out users land on login; signed-in users see the shell. **Chec
 Do: add a GitLab connection, browse groups/projects, import selected, show detected types; first-run checklist.
 Done when: component tests cover bad token, empty list and partial import errors.
 
-### UI-3 - Variables matrix  `[ ]` M - deps: UI-1, VAR-4
+### UI-3 - Variables matrix  `[x]` M - deps: UI-1, VAR-4
 Do: environment matrix (rows = keys, columns = environments) with inherited/overridden markers, add/edit/delete, masked secrets with audited reveal that auto-hides.
 Done when: tests cover reveal flow, inheritance display and delete confirmation.
 

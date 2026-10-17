@@ -103,3 +103,12 @@ export function clientVia(
   );
   return createClient(api, { headers: { cookie }, fetcher });
 }
+
+/** A 500 in the API's own problem format, for a handler of `clientVia` to answer with. */
+export const down = (detail: string) =>
+  Response.json(
+    { type: "x", title: "Oops", status: 500, code: "internal", detail },
+    { status: 500 },
+  );
+
+export const pathOf = (request: Request) => new URL(request.url).pathname;

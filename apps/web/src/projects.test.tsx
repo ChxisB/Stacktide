@@ -3,7 +3,7 @@ import { auditEvents, createProject } from "@orch/db";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { eq } from "drizzle-orm";
-import { type Backend, clientVia, mount, startBackend } from "./testing";
+import { type Backend, clientVia, down, mount, pathOf, startBackend } from "./testing";
 
 let backend: Backend;
 beforeAll(async () => {
@@ -292,13 +292,6 @@ describe("importing", () => {
     );
   });
 });
-
-const down = (detail: string) =>
-  Response.json(
-    { type: "x", title: "Oops", status: 500, code: "internal", detail },
-    { status: 500 },
-  );
-const pathOf = (request: Request) => new URL(request.url).pathname;
 
 describe("what the screen shows of a project", () => {
   test("a type found below the root is marked likely, with the paths that suggested it", async () => {
