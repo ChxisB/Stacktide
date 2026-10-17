@@ -12,7 +12,7 @@ Done when: each template validates and renders with defaults; snapshots committe
 Do: parse template YAML, substitute scalar placeholders, deep-merge layers, emit deterministic YAML (`yaml` package).
 Done when: tests prove precedence of layers, list replacement, that a param containing YAML syntax stays an inert string, and output is byte-stable across runs.
 
-### PIPE-4 - Detection and recommendation  `[ ]` S - deps: PIPE-1, GL-7
+### PIPE-4 - Detection and recommendation  `[x]` S - deps: PIPE-1, GL-7
 Do: map project type tags to templates with a confidence and reason.
 Done when: fixture projects (Bun, Node, Docker-only, Terraform, empty) get the expected ranked recommendations.
 

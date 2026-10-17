@@ -24,7 +24,7 @@ const dirs = async (path: string) =>
     .filter((d) => d.isDirectory() && !d.name.startsWith("."))
     .map((d) => d.name);
 
-const byVersion = (a: string, b: string) => {
+export const byVersion = (a: string, b: string) => {
   const [x, y] = [a, b].map((v) => v.split(".").map(Number));
   return (
     (x?.[0] ?? 0) - (y?.[0] ?? 0) || (x?.[1] ?? 0) - (y?.[1] ?? 0) || (x?.[2] ?? 0) - (y?.[2] ?? 0)
