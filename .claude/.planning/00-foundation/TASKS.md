@@ -8,7 +8,7 @@ Done when: user confirmed every row; ADR files exist; ROADMAP matches. **Human g
 Do: `git init` (branch `main`); `.gitignore` (node_modules, dist, `.env*` except `.env.example`, `*.pem`, `*.key`, `secrets.json`); root `package.json` with workspaces; `tsconfig.base.json` (strict, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, bundler resolution); README quickstart.
 Done when: `bun install` succeeds; `git status` shows no ignored secrets.
 
-### FND-3 - Quality gates  `[ ]` S - deps: FND-2
+### FND-3 - Quality gates  `[x]` S - deps: FND-2
 Do: Biome config; scripts `typecheck`, `lint`, `test`, `check`; one smoke test in `packages/core`.
 Done when: `bun run check` is green, and a deliberate type error, lint error and failing test each turn it red (verify once, then revert).
 

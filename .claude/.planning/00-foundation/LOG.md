@@ -14,3 +14,10 @@
 - `git init -b main`; `.gitignore`; root `package.json` (workspaces `apps/*`, `packages/*`); `tsconfig.base.json`; README quickstart.
 - Gate: `bun install` ok (no packages yet); `git check-ignore` confirms `.env*`, `*.pem`, `*.key`, `secrets.json` ignored and `.env.example` not. Config-only task: no `/code-review` (nothing to review beyond the invariants, which it does not touch).
 - Deps added: none. `@types/bun` + `typescript` come with FND-3.
+
+## 2026-10-17 FND-3
+- Biome config (`biome.json`, 2-space, width 100, `.claude` excluded), root `tsconfig.json` (types: bun), scripts `typecheck` / `lint` / `test` / `check`, `packages/core` with a smoke test (red first: "Cannot find module", then green).
+- Gate: `bun run check` green. Deliberate type error, lint error (`debugger`) and failing test each exited 1 at their own stage, then reverted (an earlier failing-test probe was invalid because Biome rejected its formatting first; redone with a formatted file).
+- New deps (exact-pinned, devDependencies): `@biomejs/biome` 2.5.15 (ADR-0012 lint+format), `typescript` 7.0.2 (typecheck gate), `@types/bun` 1.4.3 (types for `bun:test`/Bun APIs).
+- Biome 2.5 deprecates `linter.rules.recommended`; omitted since recommended is the default.
+- Config + one constant only: no `/code-review`.
