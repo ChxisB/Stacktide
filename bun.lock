@@ -40,6 +40,7 @@
       "name": "@orch/gitlab",
       "dependencies": {
         "@orch/core": "workspace:*",
+        "zod": "4.6.7",
       },
     },
   },

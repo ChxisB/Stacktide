@@ -3,9 +3,11 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./mock": "./src/mock/server.ts"
   },
   "dependencies": {
-    "@orch/core": "workspace:*"
+    "@orch/core": "workspace:*",
+    "zod": "4.6.7"
   }
 }

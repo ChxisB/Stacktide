@@ -4,7 +4,7 @@
 Do: `packages/gitlab` fetch wrapper: auth strategies, keyset/offset pagination iterator, retry with `Retry-After`, timeouts, typed errors, token redaction. Check the target GitLab version's API notes.
 Done when: tests (local fake server) cover pagination, 429 backoff, 5xx retry limit, timeout and that no token appears in any error string.
 
-### GL-2 - Projects, repository and MR methods  `[ ]` M - deps: GL-1
+### GL-2 - Projects, repository and MR methods  `[x]` M - deps: GL-1
 Do: list/get projects and groups; repository tree (recursive, keyset); get file; compare refs; create branch; commit files (commits API with actions); create/get/update MR; MR notes (create/update).
 Done when: each method has a contract test (shared with GL-5 mock).
 
