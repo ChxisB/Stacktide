@@ -6,4 +6,5 @@ export * from "./jobs";
 export * from "./organizations";
 export * from "./projects";
 export * from "./schedules";
+export * from "./variables";
 export * from "./webhook-deliveries";

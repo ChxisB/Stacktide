@@ -15,6 +15,8 @@ export const environments = pgTable(
   },
   (t) => [
     unique("environments_project_slug_key").on(t.projectId, t.slug),
+    // Target of the composite foreign keys that keep child rows in the environment's project.
+    unique("environments_id_project_key").on(t.id, t.projectId),
     // Composite: an environment cannot name a different organization than its project.
     foreignKey({
       name: "environments_project_org_fk",

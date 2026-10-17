@@ -4,7 +4,7 @@
 Do: `packages/crypto`: `KeyProvider` (env-backed), DEK generate/wrap/unwrap with key id, `encrypt/decrypt(value, aad)`, `rewrap(oldKey, newKey)`.
 Done when: tests cover round-trip, tamper detection (ciphertext and AAD), wrong key, rotation via rewrap, and that nonces never repeat in 10k encryptions. **Human gate + `/security-review`.**
 
-### VAR-2 - Schema and repository  `[ ]` M - deps: API-2, VAR-1
+### VAR-2 - Schema and repository  `[x]` M - deps: API-2, VAR-1
 Do: `variables`, `variable_versions`, per-project wrapped DEK table; repo functions that encrypt on write and never expose ciphertext columns to callers.
 Done when: tests cover unique-key rules, soft delete, append-only versions and that raw `SELECT` of the table shows no plaintext.
 
