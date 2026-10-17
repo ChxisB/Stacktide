@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { parse } from "yaml";
 import type { Template } from "./loader";
 import { manifestSchema } from "./manifest";
-import { type Layer, RenderError, render } from "./render";
+import { GENERATED, type Layer, RenderError, render } from "./render";
 
 type Params = Record<string, Record<string, unknown>>;
 
@@ -47,6 +47,10 @@ const CI_PARAMS = {
 };
 
 describe("render", () => {
+  test("every file begins with the marker that tells it from a hand-written one", () => {
+    expect(render(tpl(CI, CI_PARAMS)).startsWith(`${GENERATED} demo@1.2.3.`)).toBe(true);
+  });
+
   test("fills the placeholders with the defaults, in a fixed layout", () => {
     expect(
       render(tpl(CI, CI_PARAMS)),

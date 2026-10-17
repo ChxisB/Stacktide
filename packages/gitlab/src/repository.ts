@@ -133,6 +133,14 @@ export function repositoryApi(
         });
         return decode(comparison, raw, "comparison");
       },
+      /** `not_found` means there is no such branch. */
+      async getBranch(project: ProjectRef, name: string) {
+        const raw = await client.request(
+          "GET",
+          `${repo(project)}/branches/${encodeURIComponent(name.replace(/^refs\/heads\//, ""))}`,
+        );
+        return decode(branch, raw, "branch");
+      },
       async createBranch(project: ProjectRef, name: string, ref: string) {
         const raw = await client.request("POST", `${repo(project)}/branches`, {
           body: { branch: name, ref },

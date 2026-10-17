@@ -560,6 +560,7 @@ describe("audit coverage", () => {
         "sync_run.plan",
         "sync_run.apply",
         "sync_run.failed",
+        "pipeline.apply",
         ...["organization", "project", "environment", "sync_target"].flatMap((r) =>
           ["create", "update", "delete"].map((v) => `${r}.${v}`),
         ),

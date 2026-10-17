@@ -69,6 +69,22 @@ export function mergeRequestsApi(client: GitlabClient) {
         });
         return decode(mergeRequest, raw, "merge request");
       },
+      /** The merge requests that match, newest first; `state` is any when left out. */
+      async *list(
+        project: ProjectRef,
+        o: { sourceBranch?: string; targetBranch?: string; state?: MergeRequest["state"] } = {},
+      ) {
+        const query = {
+          source_branch: o.sourceBranch,
+          target_branch: o.targetBranch,
+          state: o.state,
+          order_by: "created_at",
+          sort: "desc",
+        };
+        for await (const raw of client.paginate(`${projectPath(project)}/merge_requests`, query)) {
+          yield decode(mergeRequest, raw, "merge request");
+        }
+      },
       async get(project: ProjectRef, iid: number) {
         return decode(
           mergeRequest,

@@ -660,6 +660,17 @@ export function createMockGitlab(opts: MockOptions = {}) {
       }
 
       const bd = /^\/repository\/branches\/([^/]+)$/.exec(sub);
+      if (req.method === "GET" && bd) {
+        const name = decodeURIComponent(bd[1] ?? "");
+        const found = proj.branches.get(name);
+        if (!found) return fail(404, "404 Branch Not Found");
+        return json({
+          name,
+          commit: { id: found.head },
+          protected: false,
+          default: name === proj.defaultBranch,
+        });
+      }
       if (req.method === "DELETE" && bd) {
         const name = decodeURIComponent(bd[1] ?? "");
         if (!proj.branches.has(name)) return fail(404, "404 Branch Not Found");
@@ -728,6 +739,18 @@ export function createMockGitlab(opts: MockOptions = {}) {
         );
       }
 
+      if (sub === "/merge_requests" && req.method === "GET") {
+        const state = q("state");
+        const found = proj.mrs
+          .filter(
+            (x) =>
+              (q("source_branch") === undefined || x.source_branch === q("source_branch")) &&
+              (q("target_branch") === undefined || x.target_branch === q("target_branch")) &&
+              (state === undefined || state === "all" || x.state === state),
+          )
+          .sort((a, b) => b.iid - a.iid);
+        return page(found.map(mrJson));
+      }
       if (sub === "/merge_requests" && req.method === "POST") {
         const src = String(body.source_branch ?? "");
         const tgt = String(body.target_branch ?? "");

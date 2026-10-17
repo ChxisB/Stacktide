@@ -127,6 +127,13 @@
       "when": 1792246245708,
       "tag": "0017_sync_drift",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1792249123387,
+      "tag": "0018_pipeline_configs",
+      "breakpoints": true
     }
   ]
 }

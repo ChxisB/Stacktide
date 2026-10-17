@@ -13,6 +13,7 @@ import { connectionRoutes } from "./routes/connections";
 import { environmentRoutes } from "./routes/environments";
 import { importRoutes } from "./routes/imports";
 import { organizationRoutes } from "./routes/organizations";
+import { pipelineRoutes } from "./routes/pipeline";
 import { projectRoutes } from "./routes/projects";
 import { syncRunRoutes } from "./routes/sync-runs";
 import { syncTargetRoutes } from "./routes/sync-targets";
@@ -104,6 +105,7 @@ export function createApp(deps: AppDeps) {
     .use(environmentRoutes(deps))
     .use(syncTargetRoutes(deps))
     .use(syncRunRoutes(deps))
+    .use(pipelineRoutes(deps))
     .use(tokenRoutes(deps))
     .use(variableRoutes(deps));
   const open = unguardedRoutes(app, DOCS);

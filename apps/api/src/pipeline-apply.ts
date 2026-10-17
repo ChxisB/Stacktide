@@ -1,0 +1,317 @@
+import { createHash } from "node:crypto";
+import { APP_NAME, DomainError } from "@orch/core";
+import { type Db, getProject, type NewPipelineConfig } from "@orch/db";
+import { type Gitlab, GitlabError } from "@orch/gitlab";
+import {
+  byVersion,
+  GENERATED,
+  type Layer,
+  RenderError,
+  render,
+  type Template,
+  type Validation,
+} from "@orch/pipelines";
+import { WHY } from "./connections";
+import { validatePipeline } from "./pipeline-validate";
+
+export const PIPELINE_FILE = ".gitlab-ci.yml";
+/** The branch the merge request comes from: one per project, so a re-run finds it again. */
+export const PIPELINE_BRANCH = `${APP_NAME}/pipeline`;
+
+export interface PipelineRequest {
+  template: string;
+  /** The newest version of the template when left out. */
+  version?: string;
+  params?: Record<string, unknown>;
+  overrides?: Layer["overrides"];
+  /** Environment slugs the required variables are checked in; all of the project's when left out. */
+  environments?: string[];
+}
+
+/** What is on the default branch now: nothing, a file of ours (unchanged or not), or one written by hand. */
+export type Existing = "none" | "identical" | "generated" | "hand-written";
+
+export interface Prepared {
+  text: string;
+  renderedHash: string;
+  validation: Validation;
+  existing: Existing;
+  template: Template["manifest"];
+}
+
+export interface Applied extends Omit<Prepared, "text" | "template"> {
+  /** `opened` a new merge request, `updated` one that was open, `unchanged` (nothing to do), `in_place` (the default branch already has this file). */
+  outcome: "opened" | "updated" | "unchanged" | "in_place";
+  /** A commit was made on the branch this time. */
+  committed: boolean;
+  mr: { iid: number; url: string } | null;
+  /** What to store for the project once this is recorded. */
+  config: NewPipelineConfig;
+}
+
+export interface PipelineDeps {
+  db: Db;
+  catalog: readonly Template[];
+  /** Opens the connection that reaches the project; called once the project is known to be there. */
+  gitlab: () => Promise<Gitlab>;
+}
+
+/** GitLab refusing or failing, as the API reports it: about this project (422) or about GitLab (502). */
+const gitlabProblem = (e: unknown) => {
+  if (!(e instanceof GitlabError)) return e;
+  const aboutProject = e.kind === "not_found" || e.kind === "forbidden";
+  return new DomainError(
+    aboutProject ? "gitlab_project_unreachable" : "gitlab_failed",
+    aboutProject ? 422 : 502,
+    aboutProject
+      ? "GitLab has no such project, or the connection's token cannot use it."
+      : WHY[e.kind],
+  );
+};
+
+const notFound = <T>(read: Promise<T>) =>
+  read.catch((e) => {
+    if (e instanceof GitlabError && e.kind === "not_found") return null;
+    throw e;
+  });
+
+const pick = (catalog: readonly Template[], name: string, version?: string) => {
+  const found = catalog
+    .filter(
+      (t) => t.manifest.name === name && (version === undefined || t.manifest.version === version),
+    )
+    .sort((a, b) => byVersion(a.manifest.version, b.manifest.version))
+    .at(-1);
+  if (!found) {
+    throw new DomainError(
+      "unknown_template",
+      422,
+      version === undefined ? `No template ${name}` : `No template ${name} at version ${version}`,
+    );
+  }
+  return found;
+};
+
+const sentence = (lines: string[]) => lines.join("; ");
+
+/**
+ * Renders the pipeline, has GitLab lint it and checks the variables it needs (PIPE-3, PIPE-5), and
+ * looks at what the default branch holds. Writes nothing anywhere.
+ */
+async function prepare(
+  deps: PipelineDeps,
+  orgId: string,
+  projectId: string,
+  request: PipelineRequest,
+) {
+  const project = await getProject(deps.db, orgId, projectId);
+  if (!project) throw new DomainError("not_found", 404, "Project not found");
+  if (!project.gitlabProjectId) {
+    throw new DomainError("not_linked", 422, "This project was not imported from GitLab");
+  }
+  const template = pick(deps.catalog, request.template, request.version);
+  const layer: Layer = { params: request.params, overrides: request.overrides };
+  let text: string;
+  try {
+    text = render(template, [layer]);
+  } catch (e) {
+    if (e instanceof RenderError) {
+      throw new DomainError("invalid_pipeline", 422, sentence(e.problems.slice(0, 10)));
+    }
+    throw e;
+  }
+  const ref = project.gitlabProjectId;
+  const api = await deps.gitlab();
+  try {
+    const base = (await api.projects.get(ref)).defaultBranch;
+    if (!base)
+      throw new DomainError("no_default_branch", 422, "The repository has no default branch yet");
+    const validation = await validatePipeline(deps.db, {
+      organizationId: orgId,
+      projectId,
+      template,
+      text,
+      lint: (content) => api.ci.lint(ref, content),
+      environments: request.environments,
+    });
+    const onDefault =
+      (await notFound(api.repository.getFile(ref, PIPELINE_FILE, base)))?.content ?? null;
+    const existing: Existing =
+      onDefault === null
+        ? "none"
+        : onDefault === text
+          ? "identical"
+          : onDefault.startsWith(GENERATED)
+            ? "generated"
+            : "hand-written";
+    const prepared: Prepared = {
+      text,
+      renderedHash: createHash("sha256").update(text).digest("hex"),
+      validation,
+      existing,
+      template: template.manifest,
+    };
+    return { api, ref, base, onDefault, prepared, template };
+  } catch (e) {
+    throw gitlabProblem(e);
+  }
+}
+
+/** What applying this would put in the repository, without touching it. */
+export async function previewPipeline(
+  deps: PipelineDeps,
+  orgId: string,
+  projectId: string,
+  request: PipelineRequest,
+): Promise<Prepared> {
+  return (await prepare(deps, orgId, projectId, request)).prepared;
+}
+
+const SHOWN = 10;
+const clip = (s: string) => s.replaceAll("`", "'").slice(0, 300);
+
+/** The merge request's text. The same inputs give the same text, so a re-run changes nothing. */
+function describeMr(p: Prepared, request: PipelineRequest, version: string) {
+  const given = Object.entries(request.params ?? {});
+  const overrides = Object.keys(request.overrides ?? {}).length;
+  const lines = [
+    `Generated by ${APP_NAME} from the template **${p.template.name}** ${version}. Change the pipeline there, not in this file: it is rewritten on the next run.`,
+    "",
+    p.existing === "hand-written"
+      ? `**This replaces the \`${PIPELINE_FILE}\` that is on the default branch, which was written by hand. Read the diff before merging.**`
+      : `This ${p.existing === "none" ? "adds" : "updates"} \`${PIPELINE_FILE}\`.`,
+    "",
+    `Parameters: ${given.length === 0 ? "the template's defaults" : given.map(([k, v]) => `\`${k}\` = \`${clip(JSON.stringify(v))}\``).join(", ")}.`,
+  ];
+  if (overrides > 0)
+    lines.push(
+      `Overrides: ${overrides} entr${overrides === 1 ? "y" : "ies"} merged over the template.`,
+    );
+  const missing = p.validation.missingVariables;
+  if (missing.length > 0) {
+    lines.push("", "**Variables the pipeline needs that are not set yet**");
+    for (const m of missing) {
+      lines.push(
+        `- ${m.environment === null ? "project" : `\`${m.environment}\``}: ${m.keys.map((k) => `\`${k}\``).join(", ")}`,
+      );
+    }
+  }
+  const warnings = p.validation.lint.warnings;
+  if (warnings.length > 0) {
+    lines.push("", "**GitLab's lint warns**");
+    for (const w of warnings.slice(0, SHOWN)) lines.push(`- ${clip(w)}`);
+    if (warnings.length > SHOWN) lines.push(`- and ${warnings.length - SHOWN} more`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Lands the pipeline as a merge request (PIPE-6): the file is committed to the branch
+ * `orch/pipeline` (made from the default branch if it is not there), and one merge request from it
+ * is opened or, if it is already open, updated. Nothing is ever committed to the default branch, and
+ * a pipeline GitLab's lint refuses is not committed at all. Running it again with the same inputs
+ * makes no commit and changes nothing; with other inputs it commits on the same branch and edits the
+ * same merge request. A hand-written file on the default branch is replaced only by the merge request,
+ * which says so. Missing variables do not stop it: they are listed in the merge request.
+ */
+export async function applyPipeline(
+  deps: PipelineDeps,
+  orgId: string,
+  projectId: string,
+  connectionId: string,
+  request: PipelineRequest,
+): Promise<Applied> {
+  const { api, ref, base, onDefault, prepared, template } = await prepare(
+    deps,
+    orgId,
+    projectId,
+    request,
+  );
+  const { text, validation, existing, renderedHash } = prepared;
+  const { version } = template.manifest;
+  if (!validation.lint.valid) {
+    throw new DomainError(
+      "pipeline_invalid",
+      422,
+      `GitLab's lint refuses this pipeline: ${sentence(validation.lint.errors.slice(0, 3).map(clip))}`,
+    );
+  }
+  const config = (mr: Applied["mr"]): NewPipelineConfig => ({
+    organizationId: orgId,
+    projectId,
+    connectionId,
+    template: template.manifest.name,
+    version,
+    params: request.params ?? {},
+    overrides: request.overrides ?? {},
+    renderedHash,
+    mrIid: mr?.iid ?? null,
+    mrUrl: mr?.url ?? null,
+  });
+  const done = (outcome: Applied["outcome"], committed: boolean, mr: Applied["mr"]): Applied => ({
+    outcome,
+    committed,
+    mr,
+    renderedHash,
+    validation,
+    existing,
+    config: config(mr),
+  });
+  if (onDefault === text) return done("in_place", false, null);
+
+  try {
+    const onBranch = await notFound(api.repository.getBranch(ref, PIPELINE_BRANCH));
+    const there = onBranch
+      ? ((await notFound(api.repository.getFile(ref, PIPELINE_FILE, PIPELINE_BRANCH)))?.content ??
+        null)
+      : null;
+    let committed = false;
+    if (there !== text) {
+      const action = (onBranch ? there : onDefault) === null ? "create" : "update";
+      await api.repository.commitFiles(
+        ref,
+        {
+          branch: PIPELINE_BRANCH,
+          message: `Set up CI from the ${template.manifest.name} template ${version}`,
+          ...(onBranch ? {} : { startBranch: base }),
+        },
+        [{ action, path: PIPELINE_FILE, content: text }],
+      );
+      committed = true;
+    }
+
+    const title = `Set up CI from the ${template.manifest.name} template`;
+    const description = describeMr(prepared, request, version);
+    let open: Awaited<ReturnType<Gitlab["mergeRequests"]["get"]>> | undefined;
+    for await (const mr of api.mergeRequests.list(ref, {
+      sourceBranch: PIPELINE_BRANCH,
+      targetBranch: base,
+      state: "opened",
+    })) {
+      open = mr;
+      break;
+    }
+    if (!open) {
+      const mr = await api.mergeRequests.create(ref, {
+        sourceBranch: PIPELINE_BRANCH,
+        targetBranch: base,
+        title,
+        description,
+        removeSourceBranch: true,
+      });
+      return done("opened", committed, { iid: mr.iid, url: mr.webUrl });
+    }
+    // GitLab may store the text with other line endings or trimmed: only a real difference is an edit
+    const same = (a: string, b: string) => a.replaceAll("\r\n", "\n").trim() === b.trim();
+    const edited = open.title !== title || !same(open.description, description);
+    const mr = edited
+      ? await api.mergeRequests.update(ref, open.iid, { title, description })
+      : open;
+    return done(committed || edited ? "updated" : "unchanged", committed, {
+      iid: mr.iid,
+      url: mr.webUrl,
+    });
+  } catch (e) {
+    throw gitlabProblem(e);
+  }
+}

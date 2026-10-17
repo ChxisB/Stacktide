@@ -20,9 +20,9 @@ Done when: fixture projects (Bun, Node, Docker-only, Terraform, empty) get the e
 Do: lint the rendered YAML via GitLab CI lint; check `requiresVariables` exist in the platform for the target environments and report the missing ones.
 Done when: tests with the mock cover lint errors, warnings and missing-variable reports.
 
-### PIPE-6 - Apply via MR  `[ ]` M - deps: PIPE-5, GL-2, AUTH-3
+### PIPE-6 - Apply via MR  `[x]` M - deps: PIPE-5, GL-2, AUTH-3
 Do: `POST /projects/:id/pipeline` creates/updates a branch, commits `.gitlab-ci.yml`, opens or updates one MR with a readable description; store `pipeline_configs`; idempotent on re-run; audited.
-Done when: tests cover first run, re-run with unchanged config (no new commit), changed params (MR updated), existing hand-written `.gitlab-ci.yml` (MR shows a diff, nothing overwritten silently). **First real MR is a human gate.**
+Done when: tests cover first run, re-run with unchanged config (no new commit), changed params (MR updated), existing hand-written `.gitlab-ci.yml` (MR shows a diff, nothing overwritten silently). **First real MR is a human gate** (NOT done: built and tested against the mock only; see LOG).
 
 ### PIPE-7 - Fleet upgrade  `[ ]` M - deps: PIPE-6
 Do: when a template version is bumped, list pinned projects, dry-run diff each, then open MRs in rate-limited batches with per-project results.

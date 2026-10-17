@@ -73,6 +73,10 @@ export const RULES = {
   "sync.run.read": { project: "reporter" },
   // Applying writes to the target with the organization's connection token, from a plan made by someone who may plan: the same people.
   "sync.apply": { project: "maintainer" },
+  // What a project's pipeline is set up with: template, parameters and the merge request. Nothing secret.
+  "pipeline.read": { project: "reporter" },
+  // Previewing and applying a pipeline use the organization's connection token on the project's repository, and an override can add any job to the file: as privileged as a sync target, so org admins.
+  "pipeline.apply": { org: "admin" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

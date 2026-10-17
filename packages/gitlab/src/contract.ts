@@ -115,6 +115,19 @@ export function gitlabContract(
         );
       });
 
+      test("gets a branch; one that is not there is not_found", async () => {
+        const name = await newBranch();
+        expect(await t.api.repository.getBranch(t.project, name)).toMatchObject({
+          name,
+          default: false,
+        });
+        expect(await t.api.repository.getBranch(t.project, defaultBranch)).toMatchObject({
+          name: defaultBranch,
+          default: true,
+        });
+        await failsWith("not_found", t.api.repository.getBranch(t.project, `${name}-none`));
+      });
+
       test("commits several files at once and reads them back, tree and content", async () => {
         const branch = await newBranch();
         const root = `orch-contract/${branch}`;
@@ -522,6 +535,30 @@ export function gitlabContract(
 
         await t.api.mergeRequests.update(t.project, mr.iid, { state: "closed" });
         await failsWith("not_found", t.api.mergeRequests.get(t.project, 2_000_000_000));
+      });
+
+      test("lists the merge requests of a source branch by state", async () => {
+        const branch = await newBranch();
+        await t.api.repository.commitFiles(t.project, { branch, message: "contract: list" }, [
+          { action: "create", path: `orch-contract/${branch}/l.txt`, content: "1" },
+        ]);
+        const where = { sourceBranch: branch, targetBranch: defaultBranch };
+        expect(await collect(t.api.mergeRequests.list(t.project, where))).toEqual([]);
+        const mr = await t.api.mergeRequests.create(t.project, {
+          ...where,
+          title: "contract: list",
+        });
+        const opened = await collect(
+          t.api.mergeRequests.list(t.project, { ...where, state: "opened" }),
+        );
+        expect(opened.map((m) => m.iid)).toEqual([mr.iid]);
+        await t.api.mergeRequests.update(t.project, mr.iid, { state: "closed" });
+        expect(
+          await collect(t.api.mergeRequests.list(t.project, { ...where, state: "opened" })),
+        ).toEqual([]);
+        expect(
+          (await collect(t.api.mergeRequests.list(t.project, where))).map((m) => m.iid),
+        ).toEqual([mr.iid]);
       });
 
       test("creates and edits a note", async () => {

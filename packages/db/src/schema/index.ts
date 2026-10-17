@@ -4,6 +4,7 @@ export * from "./connections";
 export * from "./environments";
 export * from "./jobs";
 export * from "./organizations";
+export * from "./pipeline-configs";
 export * from "./projects";
 export * from "./schedules";
 export * from "./sync-drift";
