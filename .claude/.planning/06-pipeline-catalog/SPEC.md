@@ -1,5 +1,5 @@
 # 06 Pipeline Catalog - Spec
-Prefix: PIPE · Milestone: M2 · Status: todo
+Prefix: PIPE · Milestone: M2 · Status: done
 
 ## Goal
 Set up CI/CD for a GitLab project in minutes: detect what it is, pick a template, preview the result, and land it as an MR - then keep a fleet of projects up to date.
