@@ -1,5 +1,5 @@
 # 05 Sync Engine - Spec
-Prefix: SYNC · Milestone: M1 · Status: todo
+Prefix: SYNC · Milestone: M1 · Status: building
 
 ## Goal
 Safely push the resolved variables for an environment to external targets with Terraform-style plan/apply, and detect when targets drift.
@@ -11,7 +11,7 @@ Adapter contract + conformance suite; diff/plan engine; GitLab CI variables adap
 Other targets (EXT), approvals on protected environments (GOV-4), rotation.
 
 ## Design
-- Contract: `SyncAdapter { type; validate(config); read(scope): RemoteItem[]; create/update/delete(item); capabilities { canReadValues, supportsMasking, supportsScopes } }`. Every adapter must pass the shared conformance suite.
+- Contract (`packages/sync`, SYNC-1): `SyncAdapter<Config> { type; capabilities { canReadValues, supportsMasking, supportsScopes }; validate(config): Config; connect(config): Remote }`, `Remote { read(): RemoteItem[]; create(item); update(item); delete(ref) }`. An item is `{ key, scope, value, secret }` (`value` is `null` when the target hides it; scope `*` when it has none). Errors are `SyncError` with a kind (`not_found`, `exists`, `invalid`, `unsupported`, `unmaskable`, ...) and never carry a value. Every adapter must pass `runAdapterConformance`.
 - Plan = list of `{ key, scope, action: create|update|delete|noop, changed: [...] }`. **Plans never contain values.** Value comparison happens in memory; when a target cannot return values (hidden variables) compare against the stored last-applied HMAC.
 - Unmanaged remote keys: policy `ignore` (default) | `adopt` | `prune`. `prune` is explicit per target and a human gate in UI/CLI.
 - GitLab mapping: variables with no environment override -> `*` scope; environment-specific overrides -> that environment's `environment_scope` (GitLab falls back to `*`). A value that cannot satisfy GitLab's masking rules while marked secret **fails the plan** with a clear error - it is never silently unmasked.

@@ -1,6 +1,6 @@
 # 05 Sync Engine - Tasks
 
-### SYNC-1 - Adapter contract, fake, conformance suite  `[ ]` M - deps: FND-4
+### SYNC-1 - Adapter contract, fake, conformance suite  `[x]` M - deps: FND-4
 Do: `packages/sync` types, an in-memory fake adapter and a reusable conformance suite (`runAdapterConformance(factory)`).
 Done when: the fake passes the suite; the suite covers create/update/delete/idempotency/not-found/scope isolation.
 

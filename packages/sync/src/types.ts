@@ -1,0 +1,55 @@
+/** The scope of an item in a target without scopes, and of one meant for every scope of a target with. */
+export const ALL_SCOPES = "*";
+
+export interface Capabilities {
+  /** `read` returns values. A target that hides them (a GitLab hidden variable) gives `null`. */
+  canReadValues: boolean;
+  /** The target can hide a value in logs and displays. A secret is never written to one that cannot. */
+  supportsMasking: boolean;
+  /** The target keeps one item per key and scope. Without, the only scope is {@link ALL_SCOPES}. */
+  supportsScopes: boolean;
+}
+
+/** What names an item: a key is its own item in each scope, and a scope never falls back to `*`. */
+export interface ItemRef {
+  key: string;
+  scope: string;
+}
+
+export interface ItemInput extends ItemRef {
+  value: string;
+  /** Hide the value where the target can. The target decides how; it never un-hides a secret. */
+  secret: boolean;
+}
+
+export interface RemoteItem extends ItemRef {
+  /** `null` when the target cannot return values. */
+  value: string | null;
+  secret: boolean;
+}
+
+/**
+ * One target, as the sync engine sees it. Every call is one request's worth of work, no more. A call
+ * that can never work on this target (`invalid`, `unsupported`, `unmaskable`) fails as that before
+ * the target is asked whether the item is there, so `not_found` and `exists` always mean the item.
+ */
+export interface Remote {
+  /** Every item of every scope, ordered by key and then scope (UTF-16 code units, not locale). */
+  read(): Promise<RemoteItem[]>;
+  /** `exists` if the key is already there in that scope. */
+  create(item: ItemInput): Promise<void>;
+  /** Replaces value and secret flag. `not_found` if there is nothing in exactly that scope. */
+  update(item: ItemInput): Promise<void>;
+  /** `not_found` if there is nothing in exactly that scope; the engine may treat that as done. */
+  delete(ref: ItemRef): Promise<void>;
+}
+
+/** A kind of target (GitLab variables, a file, ...). Every one passes `runAdapterConformance`. */
+export interface SyncAdapter<Config = unknown> {
+  readonly type: string;
+  readonly capabilities: Capabilities;
+  /** Checks a config object without touching the target; `invalid_config` otherwise. */
+  validate(config: unknown): Config;
+  /** Nothing is read or written until the {@link Remote} is used. */
+  connect(config: Config): Remote;
+}
