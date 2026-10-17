@@ -3,6 +3,7 @@ import { mergeRequestsApi } from "./merge-requests";
 import { pipelinesApi } from "./pipelines";
 import { projectsApi } from "./projects";
 import { repositoryApi } from "./repository";
+import { variablesApi } from "./variables";
 
 /** The typed gateway to GitLab: every method returns a domain type, never raw API JSON. */
 export function gitlabApi(client: GitlabClient) {
@@ -12,6 +13,7 @@ export function gitlabApi(client: GitlabClient) {
     ...repositoryApi(client, projects.projects.get),
     ...mergeRequestsApi(client),
     ...pipelinesApi(client),
+    ...variablesApi(client),
   };
 }
 

@@ -1,5 +1,13 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type Gitlab, GitlabError, type GitlabErrorKind, type ProjectRef } from "./index";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import {
+  canMask,
+  type Gitlab,
+  GitlabError,
+  type GitlabErrorKind,
+  type ProjectRef,
+  type VariableOwner,
+  type VariableRef,
+} from "./index";
 
 /**
  * The behaviour every GitLab target must show. It runs against the in-process mock by default
@@ -260,6 +268,133 @@ export function gitlabContract(
         const broken = await t.api.ci.lint(t.project, "contract: [unclosed\n");
         expect(broken.valid).toBe(false);
         expect(broken.errors.length).toBeGreaterThan(0);
+      });
+    });
+
+    describe("variables", () => {
+      // Every variable made here is removed again, also when the test fails.
+      const made: { owner: VariableOwner; ref: VariableRef }[] = [];
+      afterEach(async () => {
+        const left: unknown[] = [];
+        for (const { owner, ref } of made.splice(0)) {
+          await t.api.variables.delete(owner, ref).catch((e) => {
+            if (!(e instanceof GitlabError && e.kind === "not_found")) left.push(e);
+          });
+        }
+        if (left.length) throw new AggregateError(left, "contract variables could not be removed");
+      });
+      const projectOwner = (): VariableOwner => ({ project: t.project });
+      const newKey = () => `ORCH_CONTRACT_${Bun.randomUUIDv7().slice(-12).replaceAll("-", "")}`;
+      const make = async (
+        owner: VariableOwner,
+        key: string,
+        input: Parameters<Gitlab["variables"]["create"]>[2],
+      ) => {
+        made.push({ owner, ref: { key, scope: input.scope } });
+        return t.api.variables.create(owner, key, input);
+      };
+      const owners: [string, () => VariableOwner][] = [
+        ["project", () => ({ project: t.project })],
+        ["group", () => ({ group: t.group.id })],
+      ];
+
+      for (const [name, ownerOf] of owners) {
+        test(`${name}: creates, lists, reads, updates and deletes a variable`, async () => {
+          const o = ownerOf();
+          const key = newKey();
+          const created = await make(o, key, {
+            value: "contract-value-1",
+            masked: true,
+            raw: true,
+            description: "contract",
+          });
+          expect(created).toMatchObject({
+            key,
+            type: "env_var",
+            masked: true,
+            protected: false,
+            raw: true,
+            hidden: false,
+            scope: "*",
+            description: "contract",
+          });
+          expect(created.value).toBe("contract-value-1");
+          expect(JSON.stringify(created)).not.toContain("contract-value-1");
+
+          const listed = (await collect(t.api.variables.list(o))).find((v) => v.key === key);
+          expect(listed?.value).toBe("contract-value-1");
+          await failsWith("invalid", t.api.variables.create(o, key, { value: "contract-value-1" }));
+
+          const updated = await t.api.variables.update(
+            o,
+            { key },
+            { value: "contract-value-2", protected: true, masked: true, raw: true },
+          );
+          expect(updated).toMatchObject({ key, protected: true, scope: "*" });
+          expect((await t.api.variables.get(o, { key })).value).toBe("contract-value-2");
+
+          await t.api.variables.delete(o, { key });
+          await failsWith("not_found", t.api.variables.get(o, { key }));
+          await failsWith("not_found", t.api.variables.delete(o, { key }));
+        });
+      }
+
+      test("scope-qualified update and delete touch only that scope, a missing scope is not_found", async () => {
+        const o = projectOwner();
+        const key = newKey();
+        const scope = `orch-contract-${Bun.randomUUIDv7().slice(-12)}`;
+        await make(o, key, { value: "base-value-1" });
+        await make(o, key, { value: "scoped-value-1", scope, type: "file" });
+
+        const both = (await collect(t.api.variables.list(o))).filter((v) => v.key === key);
+        expect(both.map((v) => v.scope).sort()).toEqual(["*", scope].sort());
+        expect((await t.api.variables.get(o, { key, scope })).type).toBe("file");
+
+        await t.api.variables.update(o, { key, scope }, { value: "scoped-value-2", type: "file" });
+        expect((await t.api.variables.get(o, { key, scope })).value).toBe("scoped-value-2");
+        expect((await t.api.variables.get(o, { key })).value).toBe("base-value-1");
+
+        // A scope that does not exist must not fall through to the variable that does.
+        const ghost = { key, scope: "orch-contract-ghost" };
+        await failsWith("not_found", t.api.variables.update(o, ghost, { value: "clobbered-1" }));
+        await failsWith("not_found", t.api.variables.delete(o, ghost));
+        expect((await t.api.variables.get(o, { key })).value).toBe("base-value-1");
+        expect((await t.api.variables.get(o, { key, scope })).value).toBe("scoped-value-2");
+
+        const moved = `${scope}-moved`;
+        made.push({ owner: o, ref: { key, scope: moved } });
+        await t.api.variables.update(o, { key, scope }, { value: "scoped-value-2", scope: moved });
+        await failsWith("not_found", t.api.variables.get(o, { key, scope }));
+        expect((await t.api.variables.get(o, { key, scope: moved })).value).toBe("scoped-value-2");
+
+        await t.api.variables.delete(o, { key, scope: moved });
+        await failsWith("not_found", t.api.variables.get(o, { key, scope: moved }));
+        expect((await t.api.variables.get(o, { key })).value).toBe("base-value-1");
+        await t.api.variables.delete(o, { key });
+      });
+
+      test("canMask agrees with what the target accepts for a masked variable", async () => {
+        const o = projectOwner();
+        const table: [string, boolean, boolean][] = [
+          ["abcd1234", true, true],
+          ["abcd123", true, false],
+          ["has space in it", true, false],
+          ["line-one\nline-two", true, false],
+          ["pa$$w0rd%^&*", true, true],
+          ["abc_:@-+.~=/12", false, true],
+          ["abcd$efgh1", false, false],
+          ["abcd%efgh1", false, false],
+          ["abcd efgh1", false, false],
+        ];
+        for (const [value, raw, ok] of table) {
+          expect(canMask(value, { raw })).toBe(ok);
+          const key = newKey();
+          const accepted = await make(o, key, { value, masked: true, raw }).then(
+            () => true,
+            (e) => (e instanceof GitlabError && e.kind === "invalid" ? false : Promise.reject(e)),
+          );
+          expect(accepted).toBe(ok);
+        }
       });
     });
 

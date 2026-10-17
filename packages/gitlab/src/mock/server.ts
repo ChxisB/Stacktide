@@ -55,6 +55,17 @@ interface Pipe {
   /** Kept for tests; GitLab never returns trigger variables, and neither does the mock. */
   variables: { key: string; value: string }[];
 }
+interface MockVar {
+  key: string;
+  value: string;
+  variable_type: "env_var" | "file";
+  protected: boolean;
+  masked: boolean;
+  hidden: boolean;
+  raw: boolean;
+  environment_scope: string;
+  description: string | null;
+}
 interface Proj {
   id: number;
   path: string;
@@ -63,6 +74,7 @@ interface Proj {
   branches: Map<string, Branch>;
   mrs: Mr[];
   pipelines: Pipe[];
+  variables: MockVar[];
 }
 
 export interface RecordedRequest {
@@ -113,6 +125,10 @@ function checkCi(content: string) {
   return { jobs, errors };
 }
 
+/** GitLab's documented masking rules, written out again here so the contract can test `canMask`. */
+const maskable = (v: string, raw: boolean) =>
+  /^\S{8,}$/.test(v) && (raw || /^[A-Za-z0-9_:@+.~=/-]+$/.test(v));
+
 const sha = () => Bun.randomUUIDv7().replaceAll("-", "").padEnd(40, "0").slice(0, 40);
 
 export function createMockGitlab(opts: MockOptions = {}) {
@@ -120,6 +136,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
   const maxPerPage = opts.maxPerPage ?? 100;
   const projects: Proj[] = [];
   const groups: { id: number; name: string; full_path: string }[] = [];
+  const groupVars = new Map<number, MockVar[]>();
   const requests: RecordedRequest[] = [];
   let seq = 0;
 
@@ -172,6 +189,95 @@ export function createMockGitlab(opts: MockOptions = {}) {
         visibility: "private",
       });
 
+      /** `/variables` and `/variables/:key` of a project or group, as GitLab documents them. */
+      const variablesRoute = (store: MockVar[], path: string) => {
+        const vm = /^\/variables(?:\/([A-Za-z0-9_]+))?$/.exec(path);
+        if (!vm) return undefined;
+        const key = vm[1];
+        const scope = q("filter[environment_scope]") ?? "*";
+        const shape = (v: MockVar) => ({ ...v, value: v.hidden ? null : v.value });
+        const taken = (k: string, s: string) =>
+          store.some((v) => v.key === k && v.environment_scope === s);
+        const check = (v: MockVar) =>
+          v.masked && !maskable(v.value, v.raw)
+            ? json({ message: { value: ["is invalid"] } }, 400)
+            : undefined;
+        if (!key) {
+          if (req.method === "GET") return page(store.map(shape));
+          if (req.method !== "POST") return undefined;
+          const k = String(body.key ?? "");
+          const hidden = body.masked_and_hidden === true;
+          const v: MockVar = {
+            key: k,
+            value: typeof body.value === "string" ? body.value : "",
+            variable_type: body.variable_type === "file" ? "file" : "env_var",
+            protected: body.protected === true,
+            masked: body.masked === true || hidden,
+            hidden,
+            raw: body.raw !== false,
+            environment_scope: String(body.environment_scope ?? "*"),
+            description: typeof body.description === "string" ? body.description : null,
+          };
+          if (!/^[A-Za-z0-9_]{1,255}$/.test(k) || typeof body.value !== "string") {
+            return json({ message: { key: ["is invalid"] } }, 400);
+          }
+          if (taken(k, v.environment_scope)) {
+            return json({ message: { key: [`(${k}) has already been taken`] } }, 400);
+          }
+          const bad = check(v);
+          if (bad) return bad;
+          store.push(v);
+          return json(shape(v), 201);
+        }
+        const exact = store.find((v) => v.key === key && v.environment_scope === scope);
+        // GitLab documents that an update with a filter matching nothing falls back to a same-named
+        // variable of another scope; reads and deletes are assumed to do the same. The mock does it
+        // everywhere so the client's exact-scope check is what keeps writes on the right variable.
+        const hit = exact ?? store.find((v) => v.key === key);
+        if (!hit) return fail(404, "404 Not Found");
+        if (req.method === "GET") return json(shape(hit));
+        if (req.method === "DELETE") {
+          store.splice(store.indexOf(hit), 1);
+          return new Response(null, { status: 204 });
+        }
+        if (req.method !== "PUT") return undefined;
+        const next: MockVar = {
+          ...hit,
+          value: typeof body.value === "string" ? body.value : hit.value,
+          variable_type:
+            body.variable_type === "file"
+              ? "file"
+              : body.variable_type
+                ? "env_var"
+                : hit.variable_type,
+          protected: typeof body.protected === "boolean" ? body.protected : hit.protected,
+          masked: typeof body.masked === "boolean" ? body.masked : hit.masked,
+          raw: typeof body.raw === "boolean" ? body.raw : hit.raw,
+          environment_scope: String(body.environment_scope ?? hit.environment_scope),
+          description:
+            body.description === undefined ? hit.description : (body.description as string | null),
+        };
+        if (
+          next.environment_scope !== hit.environment_scope &&
+          taken(key, next.environment_scope)
+        ) {
+          return json({ message: { key: [`(${key}) has already been taken`] } }, 400);
+        }
+        const bad = check(next);
+        if (bad) return bad;
+        store[store.indexOf(hit)] = next;
+        return json(shape(next));
+      };
+
+      const gv = /^\/groups\/([^/]+)(\/variables(?:\/.+)?)$/.exec(rest);
+      if (gv) {
+        const ref = decodeURIComponent(gv[1] ?? "");
+        const hit = groups.find((x) => String(x.id) === ref || x.full_path === ref);
+        const store = hit && groupVars.get(hit.id);
+        if (!store) return fail(404, "404 Group Not Found");
+        return variablesRoute(store, gv[2] ?? "") ?? fail(404, "404 Not Found");
+      }
+
       if (req.method === "GET" && rest === "/projects") {
         const search = q("search");
         const archived = q("archived");
@@ -200,6 +306,8 @@ export function createMockGitlab(opts: MockOptions = {}) {
       if (!proj) return fail(404, "404 Project Not Found");
       const sub = m[2] ?? "";
       if (req.method === "GET" && sub === "") return json(projectJson(proj));
+      const pv = variablesRoute(proj.variables, sub);
+      if (pv) return pv;
 
       const branchOf = (name: string | undefined) =>
         proj.branches.get(name ?? proj.defaultBranch ?? "");
@@ -497,6 +605,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
     addGroup(fullPath: string) {
       const group = { id: ++seq, name: fullPath.split("/").pop() ?? fullPath, full_path: fullPath };
       groups.push(group);
+      groupVars.set(group.id, []);
       return group;
     },
     addProject(input: MockProjectInput) {
@@ -516,6 +625,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
         branches,
         mrs: [],
         pipelines: [],
+        variables: [],
       };
       projects.push(proj);
       return { id: proj.id, path: proj.path };

@@ -14,3 +14,10 @@ export type {
   RepoFile,
   TreeEntry,
 } from "./repository";
+export type {
+  CreateVariableInput,
+  VariableInput,
+  VariableOwner,
+  VariableRef,
+} from "./variables";
+export { CiVariable, canMask } from "./variables";

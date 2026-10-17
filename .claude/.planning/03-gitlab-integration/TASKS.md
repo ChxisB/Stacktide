@@ -12,7 +12,7 @@ Done when: each method has a contract test (shared with GL-5 mock).
 Do: trigger pipeline (with variables), get pipeline/jobs, retry/cancel; project CI lint (content, dry-run).
 Done when: contract tests pass, including lint error mapping to a typed result.
 
-### GL-4 - Variables methods  `[ ]` M - deps: GL-1
+### GL-4 - Variables methods  `[x]` M - deps: GL-1
 Do: project and group variables list/create/update/delete with `environment_scope`, `masked`, `protected`, `raw`, `variable_type`; a pure `canMask(value)` helper for GitLab's masking rules.
 Done when: contract tests cover scope-qualified update/delete and `canMask` table tests (length, charset).
 
