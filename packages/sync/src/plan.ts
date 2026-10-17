@@ -1,12 +1,6 @@
 import { SyncError } from "./errors";
 import { byKeyThenScope, refId } from "./ref";
-import {
-  ALL_SCOPES,
-  type Capabilities,
-  type ItemInput,
-  type ItemRef,
-  type RemoteItem,
-} from "./types";
+import type { ItemInput, ItemRef, RemoteItem } from "./types";
 
 /**
  * What to do with an item only the target has: leave it out of the plan (`ignore`), list it so it can
@@ -18,7 +12,7 @@ export type UnmanagedPolicy = "ignore" | "adopt" | "prune";
 export type PlanAction = "create" | "update" | "delete" | "noop" | "adopt";
 
 /** What differs between a wanted item and the target's. Names only, never the values. */
-export type ChangedField = "value" | "secret";
+export type ChangedField = "value" | "secret" | "file";
 
 /** One line of a plan: which item, and what will happen to it. A plan never holds a value. */
 export interface PlanItem extends ItemRef {
@@ -37,8 +31,6 @@ export interface PlanOptions {
   /** Default `ignore`. */
   unmanaged?: UnmanagedPolicy;
   lastApplied?: LastApplied;
-  /** With these, a wanted item the target cannot hold (a secret without masking, a scope without scopes) is `unsupported`, not a change that never settles. */
-  capabilities?: Capabilities;
 }
 
 /**
@@ -50,7 +42,7 @@ export interface PlanOptions {
 export function plan(
   desired: readonly ItemInput[],
   actual: readonly RemoteItem[],
-  { unmanaged = "ignore", lastApplied, capabilities }: PlanOptions = {},
+  { unmanaged = "ignore", lastApplied }: PlanOptions = {},
 ): PlanItem[] {
   const remote = new Map<string, RemoteItem>();
   for (const item of actual) {
@@ -67,7 +59,6 @@ export function plan(
     if (wanted.has(id))
       throw new SyncError("invalid", `${want.key} (${want.scope}) is wanted twice`);
     wanted.add(id);
-    if (capabilities) checkHoldable(want, capabilities);
     const have = remote.get(id);
     const changed = have ? changes(want, have, lastApplied) : [];
     const action = !have ? "create" : changed.length ? "update" : "noop";
@@ -86,23 +77,11 @@ export function plan(
   return items.sort(byKeyThenScope);
 }
 
-function checkHoldable(want: ItemInput, capabilities: Capabilities) {
-  if (!capabilities.supportsScopes && want.scope !== ALL_SCOPES)
-    throw new SyncError(
-      "unsupported",
-      `${want.key}: the target has no scopes, so not ${want.scope}`,
-    );
-  if (want.secret && !capabilities.supportsMasking)
-    throw new SyncError(
-      "unsupported",
-      `${want.key} (${want.scope}) is secret and the target cannot mask it`,
-    );
-}
-
 function changes(want: ItemInput, have: RemoteItem, lastApplied?: LastApplied): ChangedField[] {
   const changed: ChangedField[] = [];
   if (!sameValue(want, have, lastApplied)) changed.push("value");
   if (have.secret !== want.secret) changed.push("secret");
+  if (have.file !== want.file) changed.push("file");
   return changed;
 }
 

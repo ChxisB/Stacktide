@@ -115,8 +115,11 @@ const variable = z
       ),
   );
 
+/** GitLab's rule for a variable key: 1-255 letters, digits or `_`. */
+export const isVariableKey = (key: string) => KEY.test(key);
+
 function assertKey(key: string) {
-  if (!KEY.test(key)) {
+  if (!isVariableKey(key)) {
     throw new TypeError("GitLab variable key must be 1-255 letters, digits or _");
   }
 }

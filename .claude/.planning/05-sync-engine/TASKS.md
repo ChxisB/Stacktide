@@ -8,7 +8,7 @@ Done when: the fake passes the suite; the suite covers create/update/delete/idem
 Do: pure `plan(desired, actual, policy)` with unmanaged-key policy, deterministic ordering, value comparison via equality or last-applied HMAC when `canReadValues` is false.
 Done when: table + property tests cover each action, each policy, hidden-value targets, and that the plan type has no value fields.
 
-### SYNC-3 - GitLab variables adapter  `[ ]` M - deps: SYNC-1, GL-4
+### SYNC-3 - GitLab variables adapter  `[x]` M - deps: SYNC-1, GL-4
 Do: Adapter for project and group variables with `environment_scope`, `masked`, `protected`, `raw`, `variable_type`; fail-the-plan on unmaskable secrets.
 Done when: passes the conformance suite against the mock; masking-failure and scope-collision cases have tests.
 

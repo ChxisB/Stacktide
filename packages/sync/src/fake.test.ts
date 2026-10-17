@@ -8,7 +8,13 @@ const variants = {
   "hidden values": { canReadValues: false },
   "no scopes": { supportsScopes: false },
   "no masking": { supportsMasking: false },
-  "bare target": { canReadValues: false, supportsScopes: false, supportsMasking: false },
+  "no files": { supportsFiles: false },
+  "bare target": {
+    canReadValues: false,
+    supportsScopes: false,
+    supportsMasking: false,
+    supportsFiles: false,
+  },
 };
 
 for (const [label, caps] of Object.entries(variants)) {
@@ -23,7 +29,7 @@ describe("fake adapter", () => {
     const { adapter, stores } = fakeAdapter();
     const one = adapter.connect(adapter.validate({ store: "one" }));
     const two = adapter.connect(adapter.validate({ store: "two" }));
-    await one.create({ key: "K", scope: "*", value: "v", secret: false });
+    await one.create({ key: "K", scope: "*", value: "v", secret: false, file: false });
     expect(await two.read()).toEqual([]);
     const again = adapter.connect(adapter.validate({ store: "one" }));
     expect((await again.read()).map((i) => i.key)).toEqual(["K"]);

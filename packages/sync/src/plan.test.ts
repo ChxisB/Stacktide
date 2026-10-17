@@ -5,17 +5,31 @@ import { type LastApplied, type PlanItem, plan, type UnmanagedPolicy } from "./p
 import { refId } from "./ref";
 import type { ItemInput, ItemRef, RemoteItem } from "./types";
 
-const want = (key: string, value: string, scope = "*", secret = false): ItemInput => ({
+const want = (
+  key: string,
+  value: string,
+  scope = "*",
+  secret = false,
+  file = false,
+): ItemInput => ({
   key,
   scope,
   value,
   secret,
+  file,
 });
-const have = (key: string, value: string | null, scope = "*", secret = false): RemoteItem => ({
+const have = (
+  key: string,
+  value: string | null,
+  scope = "*",
+  secret = false,
+  file = false,
+): RemoteItem => ({
   key,
   scope,
   value,
   secret,
+  file,
 });
 const fingerprint = (value: string) => createHmac("sha256", "test key").update(value).digest("hex");
 const applied = (...entries: [ItemRef, string][]): LastApplied => {
@@ -56,6 +70,15 @@ describe("plan: what happens to an item the platform wants", () => {
     ]);
     expect(summary(plan([want("A", "new", "*", true)], [have("A", "old")]))).toEqual([
       "update A@* value+secret",
+    ]);
+    expect(summary(plan([want("A", "1", "*", false, true)], [have("A", "1")]))).toEqual([
+      "update A@* file",
+    ]);
+    expect(summary(plan([want("A", "1")], [have("A", "1", "*", false, true)]))).toEqual([
+      "update A@* file",
+    ]);
+    expect(summary(plan([want("A", "new", "*", true, true)], [have("A", "old")]))).toEqual([
+      "update A@* value+secret+file",
     ]);
   });
 
@@ -201,53 +224,6 @@ describe("plan: a target that hides its values", () => {
       },
     });
     expect(asked).toEqual([{ key: "A", scope: "*" }]);
-  });
-});
-
-describe("plan: an item the target cannot hold", () => {
-  const caps = { canReadValues: true, supportsMasking: true, supportsScopes: true };
-  const refused = (fn: () => unknown) => {
-    try {
-      fn();
-    } catch (e) {
-      return e as SyncError;
-    }
-    throw new Error("did not throw");
-  };
-
-  test("a secret for a target that cannot mask fails the plan, without its value", () => {
-    const e = refused(() =>
-      plan([want("A", "VALUE-CANARY", "*", true)], [], {
-        capabilities: { ...caps, supportsMasking: false },
-      }),
-    );
-    expect(e).toBeInstanceOf(SyncError);
-    expect(e.kind).toBe("unsupported");
-    expect(e.message).toContain("A");
-    expect(e.message).not.toContain("CANARY");
-    // a plain value is fine there, and a secret is fine where it can be masked
-    expect(
-      plan([want("A", "1")], [], { capabilities: { ...caps, supportsMasking: false } }),
-    ).toHaveLength(1);
-    expect(plan([want("A", "1", "*", true)], [], { capabilities: caps })).toHaveLength(1);
-  });
-
-  test("a scope for a target without scopes fails the plan; the one scope is fine", () => {
-    const e = refused(() =>
-      plan([want("A", "VALUE-CANARY", "prod")], [], {
-        capabilities: { ...caps, supportsScopes: false },
-      }),
-    );
-    expect(e.kind).toBe("unsupported");
-    expect(e.message).toContain("prod");
-    expect(e.message).not.toContain("CANARY");
-    expect(
-      plan([want("A", "1")], [], { capabilities: { ...caps, supportsScopes: false } }),
-    ).toHaveLength(1);
-  });
-
-  test("without capabilities nothing is checked", () => {
-    expect(plan([want("A", "1", "prod", true)], [])).toHaveLength(1);
   });
 });
 
@@ -408,10 +384,16 @@ describe("plan: properties", () => {
           const ref = { key, scope };
           const id = refId(ref);
           const value = () => `VALUE-${Math.floor(rand() * 3)}`;
-          if (rand() < 0.5) desired.set(id, { ...ref, value: value(), secret: rand() < 0.5 });
+          if (rand() < 0.5)
+            desired.set(id, { ...ref, value: value(), secret: rand() < 0.5, file: rand() < 0.3 });
           if (rand() < 0.5) {
             const v = value();
-            remote.set(id, { ...ref, value: hidesValues ? null : v, secret: rand() < 0.5 });
+            remote.set(id, {
+              ...ref,
+              value: hidesValues ? null : v,
+              secret: rand() < 0.5,
+              file: rand() < 0.3,
+            });
             if (rand() < 0.5) record.set(id, fingerprint(v));
           }
         }
@@ -460,6 +442,7 @@ describe("plan: properties", () => {
             scope: d.scope,
             value: hidesValues ? null : d.value,
             secret: d.secret,
+            file: d.file,
           });
           record.set(id, fingerprint(d.value));
         }

@@ -16,6 +16,12 @@ export interface ConformanceTarget<C = unknown> {
   stop?: () => void | Promise<void>;
 }
 
+/** What a kind of target refuses beyond what its capabilities already say, for the suite to try. */
+export interface ConformanceOptions {
+  /** Items it can never hold (a secret it cannot mask, a key it cannot name) and the error each is. */
+  refused?: { item: ItemInput; kind: SyncErrorKind }[];
+}
+
 /** A value that must never show up in an error. */
 const CANARY = "conformance-canary-7f3a9c";
 
@@ -32,12 +38,13 @@ async function failsWith(kind: SyncErrorKind, p: Promise<unknown>) {
   throw new Error(`expected a ${kind} error`);
 }
 
-const item = (key: string, value: string, scope = ALL_SCOPES, secret = false): ItemInput => ({
-  key,
-  scope,
-  value,
-  secret,
-});
+const item = (
+  key: string,
+  value: string,
+  scope = ALL_SCOPES,
+  secret = false,
+  file = false,
+): ItemInput => ({ key, scope, value, secret, file });
 const ids = (items: RemoteItem[]) => items.map((i) => `${i.key}@${i.scope}`);
 
 /**
@@ -48,6 +55,7 @@ const ids = (items: RemoteItem[]) => items.map((i) => `${i.key}@${i.scope}`);
 export function runAdapterConformance<C>(
   label: string,
   setup: () => Promise<ConformanceTarget<C>>,
+  options: ConformanceOptions = {},
 ) {
   describe(`sync adapter conformance: ${label}`, () => {
     const stops: (() => void | Promise<void>)[] = [];
@@ -107,6 +115,7 @@ export function runAdapterConformance<C>(
           scope: ALL_SCOPES,
           value: shown(caps, "https://example.test"),
           secret: false,
+          file: false,
         },
       ]);
     });
@@ -134,7 +143,7 @@ export function runAdapterConformance<C>(
       await remote.create(item("DUP", "first"));
       await failsWith("exists", remote.create(item("DUP", CANARY)));
       expect(await remote.read()).toEqual([
-        { key: "DUP", scope: ALL_SCOPES, value: shown(caps, "first"), secret: false },
+        { key: "DUP", scope: ALL_SCOPES, value: shown(caps, "first"), secret: false, file: false },
       ]);
     });
 
@@ -240,7 +249,7 @@ export function runAdapterConformance<C>(
         // what can never work is refused before the target is asked whether the item is there
         await failsWith("unsupported", remote.update(item("Q", CANARY, ALL_SCOPES, true)));
         expect(await remote.read()).toEqual([
-          { key: "P", scope: ALL_SCOPES, value: shown(caps, "p"), secret: false },
+          { key: "P", scope: ALL_SCOPES, value: shown(caps, "p"), secret: false, file: false },
         ]);
         return;
       }
@@ -250,6 +259,63 @@ export function runAdapterConformance<C>(
       expect((await remote.read())[0]).toMatchObject({ key: "S", secret: false });
       await remote.update(item("S", "hidden-again", ALL_SCOPES, true));
       expect((await remote.read())[0]).toMatchObject({ key: "S", secret: true });
+    });
+
+    test("a file item is kept as a file and can be made plain; a target without files refuses one", async () => {
+      const { remote, caps } = await fresh();
+      if (!caps.supportsFiles) {
+        await failsWith("unsupported", remote.create(item("F", CANARY, ALL_SCOPES, false, true)));
+        await remote.create(item("P", "p"));
+        await failsWith("unsupported", remote.update(item("P", CANARY, ALL_SCOPES, false, true)));
+        // what can never work is refused before the target is asked whether the item is there
+        await failsWith("unsupported", remote.update(item("Q", CANARY, ALL_SCOPES, false, true)));
+        expect(ids(await remote.read())).toEqual(["P@*"]);
+        return;
+      }
+      await remote.create(item("F", "line one\nline two\n", ALL_SCOPES, false, true));
+      expect((await remote.read())[0]).toMatchObject({ key: "F", file: true, secret: false });
+      await remote.update(item("F", "one line", ALL_SCOPES, false, false));
+      expect((await remote.read())[0]).toMatchObject({ file: false });
+      await remote.update(item("F", "again", ALL_SCOPES, false, true));
+      expect((await remote.read())[0]).toMatchObject({ file: true });
+    });
+
+    test("check says what a write would say, and a write of what it accepts works", async () => {
+      const { adapter, remote } = await fresh();
+      const probes: { item: ItemInput; kind?: SyncErrorKind }[] = [
+        { item: item("OK", "a plain value") },
+        { item: item("", CANARY), kind: "invalid" },
+        { item: item("K", CANARY, ""), kind: "invalid" },
+        ...(options.refused ?? []),
+      ];
+      const kindOf = (i: ItemInput) => {
+        try {
+          adapter.check(i);
+        } catch (e) {
+          expect(e).toBeInstanceOf(SyncError);
+          expect((e as SyncError).message).not.toContain(CANARY);
+          return (e as SyncError).kind;
+        }
+      };
+      // what the target's capabilities rule out, whatever else it refuses
+      const caps = adapter.capabilities;
+      if (!caps.supportsScopes)
+        probes.push({ item: item("K", CANARY, "production"), kind: "unsupported" });
+      if (!caps.supportsMasking)
+        probes.push({ item: item("K", CANARY, ALL_SCOPES, true), kind: "unsupported" });
+      if (!caps.supportsFiles)
+        probes.push({ item: item("K", CANARY, ALL_SCOPES, false, true), kind: "unsupported" });
+      for (const probe of probes) {
+        expect(kindOf(probe.item)).toBe(probe.kind);
+        if (probe.kind) {
+          await failsWith(probe.kind, remote.create(probe.item));
+          await failsWith(probe.kind, remote.update(probe.item));
+        } else {
+          await remote.create(probe.item);
+          await remote.delete(probe.item);
+        }
+      }
+      expect(await remote.read()).toEqual([]);
     });
 
     test("a hidden value is null, never an empty string or a mask", async () => {

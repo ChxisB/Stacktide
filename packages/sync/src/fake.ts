@@ -18,24 +18,32 @@ export function fakeAdapter(caps: Partial<Capabilities> = {}) {
     canReadValues: true,
     supportsMasking: true,
     supportsScopes: true,
+    supportsFiles: true,
     ...caps,
   };
   const stores = new Map<string, Map<string, ItemInput>>();
 
-  const check = (item: ItemRef & { secret?: boolean }) => {
-    if (!item.key) throw new SyncError("invalid", "the key is empty");
-    if (!item.scope) throw new SyncError("invalid", `${item.key}: the scope is empty`);
-    if (!capabilities.supportsScopes && item.scope !== ALL_SCOPES) {
-      throw new SyncError("unsupported", `${item.key}: this target has no scopes`);
+  const checkRef = (ref: ItemRef) => {
+    if (!ref.key) throw new SyncError("invalid", "the key is empty");
+    if (!ref.scope) throw new SyncError("invalid", `${ref.key}: the scope is empty`);
+    if (!capabilities.supportsScopes && ref.scope !== ALL_SCOPES) {
+      throw new SyncError("unsupported", `${ref.key}: this target has no scopes`);
     }
+  };
+  const check = (item: ItemInput) => {
+    checkRef(item);
     if (item.secret && !capabilities.supportsMasking) {
       throw new SyncError("unsupported", `${item.key}: this target cannot mask a value`);
+    }
+    if (item.file && !capabilities.supportsFiles) {
+      throw new SyncError("unsupported", `${item.key}: this target has no file values`);
     }
   };
 
   const adapter: SyncAdapter<FakeConfig> = {
     type: "fake",
     capabilities,
+    check,
     validate(config) {
       const store = (config as { store?: unknown } | null)?.store;
       if (typeof store !== "string" || !store) {
@@ -53,6 +61,7 @@ export function fakeAdapter(caps: Partial<Capabilities> = {}) {
             scope: i.scope,
             value: capabilities.canReadValues ? i.value : null,
             secret: i.secret,
+            file: i.file,
           }));
         },
         async create(item) {
@@ -70,7 +79,7 @@ export function fakeAdapter(caps: Partial<Capabilities> = {}) {
           items.set(idOf(item), { ...item });
         },
         async delete(ref) {
-          check(ref);
+          checkRef(ref);
           if (!items.delete(idOf(ref))) {
             throw new SyncError("not_found", `${ref.key} (${ref.scope}) is not there`);
           }

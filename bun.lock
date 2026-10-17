@@ -66,6 +66,10 @@
     },
     "packages/sync": {
       "name": "@orch/sync",
+      "dependencies": {
+        "@orch/gitlab": "workspace:*",
+        "zod": "4.6.7",
+      },
     },
   },
   "packages": {

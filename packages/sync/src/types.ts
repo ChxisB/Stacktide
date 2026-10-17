@@ -8,6 +8,8 @@ export interface Capabilities {
   supportsMasking: boolean;
   /** The target keeps one item per key and scope. Without, the only scope is {@link ALL_SCOPES}. */
   supportsScopes: boolean;
+  /** The target can hand a value to a job as a file (a GitLab file variable). */
+  supportsFiles: boolean;
 }
 
 /** What names an item: a key is its own item in each scope, and a scope never falls back to `*`. */
@@ -20,12 +22,15 @@ export interface ItemInput extends ItemRef {
   value: string;
   /** Hide the value where the target can. The target decides how; it never un-hides a secret. */
   secret: boolean;
+  /** Give the value to a job as a file, not as text. Refused as `unsupported` where the target cannot. */
+  file: boolean;
 }
 
 export interface RemoteItem extends ItemRef {
   /** `null` when the target cannot return values. */
   value: string | null;
   secret: boolean;
+  file: boolean;
 }
 
 /**
@@ -48,6 +53,13 @@ export interface Remote {
 export interface SyncAdapter<Config = unknown> {
   readonly type: string;
   readonly capabilities: Capabilities;
+  /**
+   * Throws what a write of this item would throw because the item can never be held by this kind of
+   * target (`invalid`, `unsupported`, `unmaskable`), without touching the target. Whoever builds a plan
+   * calls it for every wanted item first, so the plan fails before an apply does (the plan itself
+   * does not know the target); `create`/`update` fail the same way.
+   */
+  check(item: ItemInput): void;
   /** Checks a config object without touching the target; `invalid_config` otherwise. */
   validate(config: unknown): Config;
   /** Nothing is read or written until the {@link Remote} is used. */

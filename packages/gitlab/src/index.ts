@@ -23,4 +23,4 @@ export type {
   VariableOwner,
   VariableRef,
 } from "./variables";
-export { CiVariable, canMask } from "./variables";
+export { CiVariable, canMask, isVariableKey } from "./variables";
