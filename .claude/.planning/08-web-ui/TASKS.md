@@ -1,6 +1,6 @@
 # 08 Web UI - Tasks
 
-### UI-1 - Shell, auth, design tokens  `[ ]` M - deps: API-5, AUTH-1
+### UI-1 - Shell, auth, design tokens  `[x]` M - deps: API-5, AUTH-1
 Do: `apps/web` Bun HTML-import app; login/logout; layout with nav; typed client wiring; light/dark tokens; error boundary.
 Done when: signed-out users land on login; signed-in users see the shell. **Check the visual direction with the user before UI-2.**
 

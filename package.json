@@ -15,10 +15,11 @@
     "openapi": "bun apps/api/src/gen-openapi.ts",
     "release:build": "bun apps/cli/release.ts",
     "cli:build": "mkdir -p dist && cd dist && bun build --compile ../apps/cli/src/main.ts --outfile orch && rm -f .*.bun-build",
+    "web": "bun apps/web/src/server.ts",
     "templates:include": "bun packages/pipelines/src/include-files.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web",
     "lint": "biome check .",
-    "test": "bun test --env-file=.env.example",
+    "test": "bun test --env-file=.env.example && cd apps/web && bun test --env-file=../../.env.example",
     "check": "bun run typecheck && bun run lint && bun run test"
   },
   "devDependencies": {
