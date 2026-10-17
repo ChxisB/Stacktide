@@ -52,10 +52,26 @@ export function gitlabContract(
       ({ target: t, stop } = await setup());
       defaultBranch = (await t.api.projects.get(t.project)).defaultBranch ?? "";
     });
-    afterAll(() => stop());
+    // Branches made here are removed at the end, so a real sandbox is left as it was found.
+    const branches: string[] = [];
+    afterAll(async () => {
+      if (!t) return; // setup failed: that error is the one to read
+      const left: unknown[] = [];
+      try {
+        for (const name of branches) {
+          await t.api.repository.deleteBranch(t.project, name).catch((e) => {
+            if (!(e instanceof GitlabError && e.kind === "not_found")) left.push(e);
+          });
+        }
+      } finally {
+        await stop();
+      }
+      if (left.length) throw new AggregateError(left, "contract branches could not be removed");
+    });
 
     const newBranch = async () => {
       const name = `orch-contract-${Bun.randomUUIDv7().slice(-12)}`;
+      branches.push(name);
       await t.api.repository.createBranch(t.project, name, defaultBranch);
       return name;
     };
@@ -88,6 +104,7 @@ export function gitlabContract(
     describe("repository", () => {
       test("creates a branch; creating it again is invalid", async () => {
         const name = `orch-contract-${Bun.randomUUIDv7().slice(-12)}`;
+        branches.push(name);
         const b = await t.api.repository.createBranch(t.project, name, defaultBranch);
         expect(b).toMatchObject({ name, default: false });
         expect(b.commitId).toMatch(/^[0-9a-f]{40}$/);
@@ -135,6 +152,7 @@ export function gitlabContract(
           { action: "create", path: `${dir}/gone.txt`, content: "1" },
         ]);
         const base = `${branch}-base`;
+        branches.push(base);
         await t.api.repository.createBranch(t.project, base, branch);
         await t.api.repository.commitFiles(t.project, { branch, message: "contract: change" }, [
           { action: "update", path: `${dir}/keep.txt`, content: "2" },
@@ -207,8 +225,18 @@ export function gitlabContract(
         );
       });
 
+      test("deletes a branch, once; the default branch is never deleted", async () => {
+        const name = await newBranch();
+        await t.api.repository.deleteBranch(t.project, name);
+        await failsWith("not_found", t.api.repository.deleteBranch(t.project, name));
+        await failsWith("invalid", t.api.repository.deleteBranch(t.project, defaultBranch));
+        expect((await t.api.projects.get(t.project)).defaultBranch).toBe(defaultBranch);
+        await t.api.repository.createBranch(t.project, name, defaultBranch); // the name is free again
+      });
+
       test("commitFiles can start a new branch from another", async () => {
         const branch = `orch-contract-${Bun.randomUUIDv7().slice(-12)}`;
+        branches.push(branch);
         const path = `orch-contract/${branch}/s.txt`;
         await t.api.repository.commitFiles(
           t.project,

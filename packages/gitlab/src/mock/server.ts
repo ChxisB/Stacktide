@@ -77,6 +77,21 @@ interface Proj {
   variables: MockVar[];
 }
 
+/**
+ * A canned failure for matching requests, to exercise retry and error handling. It applies before
+ * authentication and routing, like a failing proxy in front of GitLab.
+ */
+export interface Injection {
+  method?: string;
+  /** Matched against the path without the query; a string must match exactly. */
+  path?: string | RegExp;
+  status: number;
+  /** How many matching requests fail before the mock behaves again. Default 1. */
+  times?: number;
+  /** Sent as `Retry-After`, in seconds. */
+  retryAfter?: number;
+}
+
 export interface RecordedRequest {
   method: string;
   /** Path without the query string. */
@@ -138,6 +153,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
   const groups: { id: number; name: string; full_path: string }[] = [];
   const groupVars = new Map<number, MockVar[]>();
   const requests: RecordedRequest[] = [];
+  const injections: (Injection & { left: number })[] = [];
   let seq = 0;
 
   const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -155,6 +171,21 @@ export function createMockGitlab(opts: MockOptions = {}) {
     async fetch(req) {
       const u = new URL(req.url);
       requests.push({ method: req.method, path: u.pathname });
+      const injected = injections.find(
+        (i) =>
+          i.left > 0 &&
+          (!i.method || i.method === req.method) &&
+          (!i.path ||
+            (typeof i.path === "string" ? i.path === u.pathname : i.path.test(u.pathname))),
+      );
+      if (injected) {
+        injected.left--;
+        return json(
+          { message: `injected ${injected.status}` },
+          injected.status,
+          injected.retryAfter === undefined ? {} : { "retry-after": String(injected.retryAfter) },
+        );
+      }
       const origin = u.origin;
       const bearer = req.headers.get("authorization");
       if (req.headers.get("private-token") !== token && bearer !== `Bearer ${token}`) {
@@ -467,6 +498,16 @@ export function createMockGitlab(opts: MockOptions = {}) {
         });
       }
 
+      const bd = /^\/repository\/branches\/([^/]+)$/.exec(sub);
+      if (req.method === "DELETE" && bd) {
+        const name = decodeURIComponent(bd[1] ?? "");
+        if (!proj.branches.has(name)) return fail(404, "404 Branch Not Found");
+        if (name === proj.defaultBranch) return fail(400, "Cannot remove HEAD branch");
+        proj.branches.delete(name);
+        for (const mr of proj.mrs) if (mr.source_branch === name) mr.state = "closed";
+        return new Response(null, { status: 204 });
+      }
+
       if (req.method === "POST" && sub === "/repository/branches") {
         const name = String(body.branch ?? "");
         const from = proj.branches.get(String(body.ref ?? ""));
@@ -629,6 +670,10 @@ export function createMockGitlab(opts: MockOptions = {}) {
       };
       projects.push(proj);
       return { id: proj.id, path: proj.path };
+    },
+    /** Makes the next matching requests fail (see `Injection`). */
+    inject(i: Injection) {
+      injections.push({ ...i, left: i.times ?? 1 });
     },
     /** What a pipeline was triggered with (GitLab itself never shows these back). */
     pipelineVariables: (id: number) =>

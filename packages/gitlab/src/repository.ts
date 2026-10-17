@@ -140,6 +140,21 @@ export function repositoryApi(
         return decode(branch, raw, "branch");
       },
       /**
+       * Removes a branch (also closes what hangs off it, as GitLab does). Never the default branch.
+       * `not_found` means it is already gone.
+       */
+      async deleteBranch(project: ProjectRef, name: string) {
+        const { defaultBranch } = await getProject(project);
+        const branchName = name.replace(/^refs\/heads\//, "");
+        if (branchName === defaultBranch) {
+          throw new GitlabError("invalid", "Refusing to delete the default branch");
+        }
+        await client.request(
+          "DELETE",
+          `${repo(project)}/branches/${encodeURIComponent(branchName)}`,
+        );
+      },
+      /**
        * One commit with several file actions. Refuses the project's default branch: changes
        * land through a merge request (ROADMAP invariant 6). This is defence in depth, not the
        * control: the default branch must also be protected in GitLab, since the name is looked up

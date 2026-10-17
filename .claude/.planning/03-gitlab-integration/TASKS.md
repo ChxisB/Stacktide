@@ -16,7 +16,7 @@ Done when: contract tests pass, including lint error mapping to a typed result.
 Do: project and group variables list/create/update/delete with `environment_scope`, `masked`, `protected`, `raw`, `variable_type`; a pure `canMask(value)` helper for GitLab's masking rules.
 Done when: contract tests cover scope-qualified update/delete and `canMask` table tests (length, charset).
 
-### GL-5 - Mock GitLab and contract suite  `[ ]` M - deps: GL-2, GL-3, GL-4
+### GL-5 - Mock GitLab and contract suite  `[x]` M - deps: GL-2, GL-3, GL-4
 Do: In-process fake implementing the endpoints above with fixtures and failure injection (429/500); contract tests run against the mock by default and the real sandbox when env is set.
 Done when: the whole suite is green against the mock; the real-instance run is documented and opt-in. **First real-instance write is a human gate.**
 

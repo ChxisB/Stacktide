@@ -27,3 +27,20 @@ bun run dev:db     # local Postgres on 127.0.0.1:5433 (needs Docker)
 - Stop: `docker compose -p orch down`. Wipe data too: `docker compose -p orch down -v`.
 - Schema changes: edit `packages/db/src/schema/`, run `bun run db:generate`, commit the new SQL in `packages/db/drizzle/`. Migrations are forward-only. `bun run db:migrate` applies them to `DATABASE_URL`; it falls back to the local database above unless you export `DATABASE_URL` in your shell, so check before pointing it elsewhere.
 - Tests need the database running (`bun run dev:db`). Each test file creates and drops its own `orch_test_*` database via `createTestDb()` from `@orch/db/testing`.
+
+## GitLab contract against a real instance
+
+`packages/gitlab` ships one contract suite ([contract.ts](packages/gitlab/src/contract.ts)). It always runs against the in-process mock; it can also run against a real GitLab **sandbox group**, which is how the mock stays honest. It is off by default and the first run is a deliberate step: it writes to the instance.
+
+What it writes, all inside the one project you name: branches `orch-contract-*` (with a `.gitlab-ci.yml` of one manual job), merge requests on them (closed again), CI variables `ORCH_CONTRACT_*` in that project and in the group, and manual pipelines (cancelled). It never commits to the default branch. When it finishes it deletes the branches and variables it created (a removal that fails fails the run; merge requests go with their branches). Pipelines stay, cancelled. If a run is killed midway, anything named `orch-contract-*` or `ORCH_CONTRACT_*` is safe to delete by hand. The group-level variables exist briefly and are inherited by every project in the group, so use a group of its own.
+
+```bash
+export GITLAB_E2E_URL=https://gitlab.example.com
+export GITLAB_E2E_TOKEN=...            # a project/group access token with `api` scope (Owner on the sandbox group)
+export GITLAB_E2E_GROUP=sandbox/orch   # full path of the sandbox group
+export GITLAB_E2E_PROJECT=sandbox/orch/demo   # a project inside it with a default branch and at least one commit
+export GITLAB_E2E_ALLOW_WRITES=yes     # confirms the run may write there
+bun test packages/gitlab/src/real.contract.test.ts
+```
+
+Group variable scopes are Premium; a Free group makes the scope cases fail by design (the client reports a scope GitLab ignored). Differences between the mock and the instance show up as failing contract cases: fix the mock, not the assertion, unless GitLab's behaviour is not guaranteed.

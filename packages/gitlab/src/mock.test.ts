@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { createGitlab, GitlabError, isFinished } from "./index";
 import { createMockGitlab } from "./mock/server";
 
@@ -373,6 +373,80 @@ describe("variables", () => {
       description: null,
     });
     f.stop();
+  });
+});
+
+describe("failure injection", () => {
+  const started: Array<{ stop: () => void }> = [];
+  afterEach(() => {
+    for (const m of started.splice(0)) m.stop();
+  });
+  const retrying = (maxRetries = 3) => {
+    const mock = createMockGitlab();
+    started.push(mock);
+    const sleeps: number[] = [];
+    const api = createGitlab({
+      baseUrl: mock.url,
+      auth: { type: "private-token", token: mock.token },
+      maxRetries,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    mock.addProject({ path: "g/p" });
+    return {
+      mock,
+      api,
+      sleeps,
+      hits: () => mock.requests.filter((r) => r.path.endsWith("/g%2Fp")),
+    };
+  };
+  const projectGet = /\/projects\/[^/]+$/;
+
+  test("a 429 waits for Retry-After and then succeeds", async () => {
+    const { mock, api, sleeps, hits } = retrying();
+    mock.inject({ method: "GET", path: projectGet, status: 429, times: 2, retryAfter: 2 });
+    expect((await api.projects.get("g/p")).path).toBe("g/p");
+    expect(sleeps).toEqual([2000, 2000]);
+    expect(hits()).toHaveLength(3);
+  });
+
+  test("a wait beyond the cap fails at once as rate_limited, carrying the wait", async () => {
+    const { mock, api, sleeps, hits } = retrying();
+    mock.inject({ status: 429, times: 5, retryAfter: 120 });
+    const err = await api.projects.get("g/p").catch((e) => e);
+    expect(err).toMatchObject({ kind: "rate_limited", status: 429, retryAfterMs: 120_000 });
+    expect(sleeps).toEqual([]);
+    expect(hits()).toHaveLength(1);
+  });
+
+  test("a GET is retried through 500s and gives up after the limit", async () => {
+    const ok = retrying();
+    ok.mock.inject({ path: projectGet, status: 500, times: 2 });
+    expect((await ok.api.projects.get("g/p")).path).toBe("g/p");
+    expect(ok.hits()).toHaveLength(3);
+
+    const down = retrying(2);
+    down.mock.inject({ path: projectGet, status: 503, times: 99 });
+    expect((await down.api.projects.get("g/p").catch((e) => e)).kind).toBe("server");
+    expect(down.hits()).toHaveLength(3);
+  });
+
+  test("a POST is not retried after a 500, since it may have been applied", async () => {
+    const { mock, api } = retrying();
+    mock.inject({ method: "POST", status: 500, times: 3 });
+    const err = await api.repository.createBranch("g/p", "feature", "main").catch((e) => e);
+    expect(err.kind).toBe("server");
+    expect(mock.requests.filter((r) => r.method === "POST")).toHaveLength(1);
+  });
+
+  test("an injection only hits what it matches and runs out", async () => {
+    const { mock, api } = retrying(0);
+    mock.inject({ method: "DELETE", status: 500 });
+    mock.inject({ path: "/api/v4/groups", status: 500 });
+    expect((await api.projects.get("g/p")).path).toBe("g/p"); // neither matches
+    expect((await collect(api.groups.list()).catch((e) => e)).kind).toBe("server");
+    expect(await collect(api.groups.list())).toEqual([]); // used up
   });
 });
 
