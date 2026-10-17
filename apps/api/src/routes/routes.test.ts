@@ -557,7 +557,7 @@ describe("audit coverage", () => {
         "connection.delete",
         "connection.webhook_secret",
         "project.import",
-        ...["organization", "project", "environment"].flatMap((r) =>
+        ...["organization", "project", "environment", "sync_target"].flatMap((r) =>
           ["create", "update", "delete"].map((v) => `${r}.${v}`),
         ),
         // At each of the three levels of variables (the action names do not say which level):

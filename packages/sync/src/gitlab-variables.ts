@@ -23,6 +23,21 @@ const configSchema = z.union([
  */
 export type GitlabVariablesConfig = z.infer<typeof configSchema>;
 
+/**
+ * The config as stored: checked, and stripped of anything not in the shape. The error says what the
+ * shape is and nothing of what was given, so a credential pasted into a config is never echoed.
+ */
+export function parseGitlabVariablesConfig(config: unknown): GitlabVariablesConfig {
+  const parsed = configSchema.safeParse(config);
+  if (!parsed.success) {
+    throw new SyncError(
+      "invalid_config",
+      "the config is { project } or { group }, an id or a path, and optionally { protected }",
+    );
+  }
+  return parsed.data;
+}
+
 const label = ({ key, scope }: ItemRef) => `${JSON.stringify(key)} (${scope})`;
 
 /** Fixed words, so nothing GitLab said, no value and no URL can reach an error. */
@@ -77,16 +92,7 @@ export function gitlabVariablesAdapter(
     type: GITLAB_VARIABLES,
     capabilities,
     check,
-    validate(config) {
-      const parsed = configSchema.safeParse(config);
-      if (!parsed.success) {
-        throw new SyncError(
-          "invalid_config",
-          "the config is { project } or { group }, an id or a path, and optionally { protected }",
-        );
-      }
-      return parsed.data;
-    },
+    validate: parseGitlabVariablesConfig,
     connect(config): Remote {
       const of: VariableOwner =
         "project" in config ? { project: config.project } : { group: config.group };

@@ -210,6 +210,11 @@ describe("coverage", () => {
       [`GET ${E}/:envId`]: "environment.read",
       [`PATCH ${E}/:envId`]: "environment.update",
       [`DELETE ${E}/:envId`]: "environment.delete",
+      [`GET ${P}/:projectId/sync-targets`]: "sync.target.read",
+      [`POST ${P}/:projectId/sync-targets`]: "sync.target.create",
+      [`GET ${P}/:projectId/sync-targets/:targetId`]: "sync.target.read",
+      [`PATCH ${P}/:projectId/sync-targets/:targetId`]: "sync.target.update",
+      [`DELETE ${P}/:projectId/sync-targets/:targetId`]: "sync.target.delete",
       [`GET ${O}/:orgId/connections`]: "connection.read",
       [`POST ${O}/:orgId/connections`]: "connection.create",
       [`POST ${O}/:orgId/connections/:connectionId/test`]: "connection.test",
@@ -255,6 +260,7 @@ describe("without a session", () => {
       .replace(":envId", ids.e1)
       .replace(":tokenId", crypto.randomUUID())
       .replace(":varId", NO_CONNECTION)
+      .replace(":targetId", NO_CONNECTION)
       .replace(":connectionId", NO_CONNECTION);
 
   test("every route that is not public answers 401", async () => {
@@ -263,7 +269,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(66);
+    expect(routes.length).toBe(71);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

@@ -25,7 +25,7 @@ test("every API operation documents its guard, audit action and the problems it 
         op,
       })),
     );
-  expect(ops.length).toBe(66); // 5 per resource (list, get, create, update, delete) + 3 for tokens + 4 for connections + 2 for imports + 1 webhook secret + 13 per level of variables (3 levels) + the resolved set + the search
+  expect(ops.length).toBe(71); // 5 per resource (list, get, create, update, delete; sync targets too) + 3 for tokens + 4 for connections + 2 for imports + 1 webhook secret + 13 per level of variables (3 levels) + the resolved set + the search
   for (const { id, method, op } of ops) {
     const codes = Object.keys(op.responses as object).sort();
     const writes = method !== "get";

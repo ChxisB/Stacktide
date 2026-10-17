@@ -12,7 +12,7 @@ Done when: table + property tests cover each action, each policy, hidden-value t
 Do: Adapter for project and group variables with `environment_scope`, `masked`, `protected`, `raw`, `variable_type`; fail-the-plan on unmaskable secrets.
 Done when: passes the conformance suite against the mock; masking-failure and scope-collision cases have tests.
 
-### SYNC-4 - Targets schema and API  `[ ]` M - deps: SYNC-1, VAR-4, GL-6, AUTH-3
+### SYNC-4 - Targets schema and API  `[x]` M - deps: SYNC-1, VAR-4, GL-6, AUTH-3
 Do: `sync_targets(project_id, type, connection_id, config, environment_mapping, unmanaged_policy, auto_sync)`; CRUD endpoints (audited); config validated by the adapter.
 Done when: endpoint tests cover validation, authz and audit; credentials are never returned.
 

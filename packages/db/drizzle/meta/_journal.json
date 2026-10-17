@@ -92,6 +92,13 @@
       "when": 1792234815628,
       "tag": "0012_variables",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1792241415891,
+      "tag": "0013_sync_targets",
+      "breakpoints": true
     }
   ]
 }

@@ -228,13 +228,24 @@ export const connectionRoutes = ({
     .delete(
       "/:connectionId",
       async ({ params: { orgId, connectionId }, audit, set }) => {
-        await db.transaction(async (tx) => {
-          const c = await getConnection(tx, orgId, connectionId);
-          if (!c || !(await deleteConnection(tx, orgId, connectionId))) {
-            throw notFound("Connection");
-          }
-          await audit(tx, audited("connection.delete", c, { type: c.type, name: c.name }));
-        });
+        await db
+          .transaction(async (tx) => {
+            const c = await getConnection(tx, orgId, connectionId);
+            if (!c || !(await deleteConnection(tx, orgId, connectionId))) {
+              throw notFound("Connection");
+            }
+            await audit(tx, audited("connection.delete", c, { type: c.type, name: c.name }));
+          })
+          .catch(
+            mapDbError({
+              // RESTRICT: a connection that sync targets use is not taken from under them.
+              sync_targets_connection_org_fk: new DomainError(
+                "connection_in_use",
+                409,
+                "Sync targets still use this connection",
+              ),
+            }),
+          );
         set.status = 204;
       },
       {

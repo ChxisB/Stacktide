@@ -77,6 +77,11 @@ const allowed: Record<string, string[]> = {
   "project.import": ["org admin", "org owner"],
   "connection.delete": ["org admin", "org owner"],
   "connection.webhook": ["org admin", "org owner"],
+  // A target uses the connection's token: org rules for writes, any project reader may see one.
+  "sync.target.read": REPORTER_UP,
+  "sync.target.create": ["org admin", "org owner"],
+  "sync.target.update": ["org admin", "org owner"],
+  "sync.target.delete": ["org admin", "org owner"],
 };
 
 describe("role x action", () => {

@@ -14,6 +14,7 @@ import { environmentRoutes } from "./routes/environments";
 import { importRoutes } from "./routes/imports";
 import { organizationRoutes } from "./routes/organizations";
 import { projectRoutes } from "./routes/projects";
+import { syncTargetRoutes } from "./routes/sync-targets";
 import { tokenRoutes } from "./routes/tokens";
 import { variableRoutes } from "./routes/variables";
 import { webhookRoutes } from "./routes/webhooks";
@@ -100,6 +101,7 @@ export function createApp(deps: AppDeps) {
     .use(importRoutes(deps))
     .use(webhookRoutes(deps))
     .use(environmentRoutes(deps))
+    .use(syncTargetRoutes(deps))
     .use(tokenRoutes(deps))
     .use(variableRoutes(deps));
   const open = unguardedRoutes(app, DOCS);

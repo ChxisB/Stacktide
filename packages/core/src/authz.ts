@@ -63,6 +63,11 @@ export const RULES = {
   "connection.webhook": { org: "admin" },
   // Reading a connection's GitLab with its token and bringing projects in: the same org admins.
   "project.import": { org: "admin" },
+  // A sync target aims an organization's connection token at a GitLab project or group, so changing one is as privileged as the connection: org admins, not the project's maintainers. Reading one shows no credential.
+  "sync.target.read": { project: "reporter" },
+  "sync.target.create": { org: "admin" },
+  "sync.target.update": { org: "admin" },
+  "sync.target.delete": { org: "admin" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

@@ -6,5 +6,6 @@ export * from "./jobs";
 export * from "./organizations";
 export * from "./projects";
 export * from "./schedules";
+export * from "./sync-targets";
 export * from "./variables";
 export * from "./webhook-deliveries";
