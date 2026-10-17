@@ -28,6 +28,6 @@ Done when: a concurrency test with 3 workers and 100 jobs runs each job exactly 
 Do: `schedules(name, cron|interval, queue, payload, next_run_at)`; the worker enqueues due schedules without double-firing across workers.
 Done when: a test with a fake clock shows exactly one enqueue per tick with two workers.
 
-### API-8 - Audit event primitive  `[ ]` S - deps: API-2
+### API-8 - Audit event primitive  `[x]` S - deps: API-2
 Do: `audit_events` (actor, action, resource_type/id, org, project, metadata jsonb, request_id, ip, at); `audit(tx, ctx, event)`; forbid UPDATE/DELETE via DB trigger; metadata guard rejects keys like `value`, `secret`, `token`.
 Done when: tests prove UPDATE/DELETE are rejected, the guard rejects forbidden keys, and an audit row rolls back with a failed mutation. Also add a coverage test over registered routes: every non-GET route must call `audit` or carry an explicit `noAudit: "<reason>"` marker (the test fails otherwise, so later features can't forget).

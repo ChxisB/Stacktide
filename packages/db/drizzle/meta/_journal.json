@@ -15,6 +15,13 @@
       "when": 1792221853348,
       "tag": "0001_base_schema",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792224334254,
+      "tag": "0002_audit_events",
+      "breakpoints": true
     }
   ]
 }

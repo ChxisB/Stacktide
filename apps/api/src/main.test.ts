@@ -30,6 +30,10 @@ function start(env: Record<string, string>) {
       await drained;
       return text;
     },
+    /** The request line is logged after the response is sent: wait for it before signalling. */
+    logged: async (needle: string) => {
+      for (let i = 0; i < 500 && !text.includes(needle); i++) await Bun.sleep(10);
+    },
     /** The child prints one JSON line per event; wait for "listening" and return its port. */
     port: async () => {
       for (let i = 0; i < 1000; i++) {
@@ -54,6 +58,7 @@ describe("api entrypoint", () => {
     expect(ready.status).toBe(200);
     expect(await ready.json()).toEqual({ status: "ready" });
 
+    await child.logged('"probe-1"');
     child.proc.kill("SIGTERM");
     expect(await child.proc.exited).toBe(0);
     const out = await child.output();

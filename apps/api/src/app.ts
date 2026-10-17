@@ -1,7 +1,8 @@
 import { DomainError, type Logger } from "@orch/core";
 import { Elysia } from "elysia";
+import { auditPlugin } from "./audit";
 import { http } from "./http";
-import { type PrincipalResolver, principalPlugin } from "./principal";
+import type { PrincipalResolver } from "./principal";
 
 export interface AppDeps {
   logger: Logger;
@@ -12,8 +13,9 @@ export interface AppDeps {
 }
 
 /**
- * Public routes first, then the principal: routes chained onto the result (or onto a plugin that
- * `.use(principalPlugin(...))`) get `ctx.principal`; `/health` and `/ready` never need it.
+ * Public routes first, then the principal and audit: routes chained onto the result (or onto a
+ * plugin that `.use(auditPlugin(...))`) get `ctx.principal` and `ctx.audit`; `/health` and
+ * `/ready` never need them.
  */
 export function createApp({ logger, principal, ready, readyTimeoutMs = 2000 }: AppDeps) {
   // Unauthenticated and polled: concurrent calls share one check so a slow database is not
@@ -52,7 +54,7 @@ export function createApp({ logger, principal, ready, readyTimeoutMs = 2000 }: A
         throw new DomainError("not_ready", 503, "Dependencies are not ready");
       }
     })
-    .use(principalPlugin(principal));
+    .use(auditPlugin(principal));
 }
 
 export type App = ReturnType<typeof createApp>;
