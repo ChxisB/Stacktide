@@ -1,3 +1,4 @@
+import { VARIABLE_KINDS, type VariableKind } from "@orch/core";
 import { sql } from "drizzle-orm";
 import {
   check,
@@ -21,8 +22,8 @@ const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
   dataType: () => "bytea",
 });
 
-export const VARIABLE_KINDS = ["plain", "secret", "file"] as const;
-export type VariableKind = (typeof VARIABLE_KINDS)[number];
+// Defined in core, where the resolver that reads these kinds lives.
+export { VARIABLE_KINDS, type VariableKind };
 
 /**
  * The data key that seals the values of one owner's variables: one per project, one per

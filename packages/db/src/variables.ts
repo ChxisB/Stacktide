@@ -1,3 +1,4 @@
+import type { VariableInput, VariableLevel } from "@orch/core";
 import {
   aad,
   type Dek,
@@ -358,15 +359,9 @@ export async function revealVariable(
   return { variable: info(row), version: row.version, value };
 }
 
-export type ChainLevel = "organization" | "project" | "environment";
-
-export interface ChainEntry {
-  id: string;
-  level: ChainLevel;
-  key: string;
-  kind: VariableKind;
-  value: string;
-}
+/** What `resolveVariables` in `@orch/core` takes: the types are one, so they cannot drift apart. */
+export type ChainLevel = VariableLevel;
+export type ChainEntry = VariableInput;
 
 /**
  * Every live variable that applies to an environment (or, without `environmentId`, to a project):

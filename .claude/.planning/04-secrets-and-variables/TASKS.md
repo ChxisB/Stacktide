@@ -8,7 +8,7 @@ Done when: tests cover round-trip, tamper detection (ciphertext and AAD), wrong 
 Do: `variables`, `variable_versions`, per-project wrapped DEK table; repo functions that encrypt on write and never expose ciphertext columns to callers.
 Done when: tests cover unique-key rules, soft delete, append-only versions and that raw `SELECT` of the table shows no plaintext.
 
-### VAR-3 - Resolution engine  `[ ]` M - deps: FND-3
+### VAR-3 - Resolution engine  `[x]` M - deps: FND-3
 Do: Pure functions in `packages/core`: resolve a scope chain into a key/value set for an environment; `${REF}` interpolation with cycle/missing detection; secret-taint propagation.
 Done when: table + property tests cover precedence, override, cycles, missing refs, nested refs and taint.
 
