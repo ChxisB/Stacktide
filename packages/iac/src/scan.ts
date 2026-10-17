@@ -59,7 +59,7 @@ const CONCURRENCY = 8;
 // A stack's directory goes into shell commands and job names of generated pipelines: no spaces,
 // quotes or anything a shell treats specially, and no segment that reads as an option.
 const SEGMENT = /^[A-Za-z0-9._@+=][A-Za-z0-9._@+=-]*$/;
-const safeDir = (dir: string) =>
+export const safeDir = (dir: string) =>
   dir === "." || dir.split("/").every((s) => s !== "." && s !== ".." && SEGMENT.test(s));
 
 const dirOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ".");

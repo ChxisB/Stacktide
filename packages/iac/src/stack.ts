@@ -13,8 +13,8 @@ export const MAX_MANIFEST_BYTES = 64 * 1024;
 
 // Names, tool versions and tags end up in job names, `resource_group`s, state names and image tags
 // of generated pipelines, so they are closed character sets, not free text.
-const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
-const VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]{1,32})?$/;
+export const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+export const VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]{1,32})?$/;
 const TAG = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 
 const name = z

@@ -12,7 +12,7 @@ Done when: table + property tests (random DAGs) prove wave order, cycle errors a
 Do: from MR source/target SHAs use the compare API -> changed paths -> affected stacks (dir match + `watch` globs).
 Done when: tests cover module-path changes, deleted files, renamed files and no-op MRs.
 
-### IAC-4 - Child pipeline generation  `[ ]` M - deps: IAC-2, IAC-3, GL-3
+### IAC-4 - Child pipeline generation  `[x]` M - deps: IAC-2, IAC-3, GL-3
 Do: generate pipeline YAML for a set of stack actions: per-stack jobs, `needs` by wave, `resource_group`, tool setup by version, `id_tokens`, plan artifact, summary post step.
 Done when: snapshot tests plus GitLab CI lint on the output (mock) pass; a cycle or missing tool version fails generation loudly.
 
