@@ -155,6 +155,13 @@
       "when": 1792254098321,
       "tag": "0021_cli_logins",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792273953248,
+      "tag": "0022_stacks",
+      "breakpoints": true
     }
   ]
 }

@@ -110,6 +110,14 @@
         "zod": "4.6.7",
       },
     },
+    "packages/iac": {
+      "name": "@orch/iac",
+      "dependencies": {
+        "@orch/gitlab": "workspace:*",
+        "yaml": "2.8.1",
+        "zod": "4.6.7",
+      },
+    },
     "packages/pipelines": {
       "name": "@orch/pipelines",
       "dependencies": {
@@ -230,6 +238,8 @@
     "@orch/db": ["@orch/db@workspace:packages/db"],
 
     "@orch/gitlab": ["@orch/gitlab@workspace:packages/gitlab"],
+
+    "@orch/iac": ["@orch/iac@workspace:packages/iac"],
 
     "@orch/pipelines": ["@orch/pipelines@workspace:packages/pipelines"],
 

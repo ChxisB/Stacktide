@@ -18,6 +18,7 @@ export * from "./pipeline-runs";
 export * from "./repo";
 export * from "./schedules";
 export * from "./schema";
+export * from "./stacks";
 export * from "./sync-drift";
 export * from "./sync-runs";
 export * from "./sync-targets";

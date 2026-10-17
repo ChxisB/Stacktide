@@ -8,6 +8,7 @@ export * from "./pipeline-configs";
 export * from "./pipeline-runs";
 export * from "./projects";
 export * from "./schedules";
+export * from "./stacks";
 export * from "./sync-drift";
 export * from "./sync-runs";
 export * from "./sync-targets";

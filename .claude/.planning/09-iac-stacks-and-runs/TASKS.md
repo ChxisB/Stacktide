@@ -1,6 +1,6 @@
 # 09 IaC Stacks and Runs - Tasks
 
-### IAC-1 - Stack model and discovery  `[ ]` M - deps: GL-2, API-2
+### IAC-1 - Stack model and discovery  `[x]` M - deps: GL-2, API-2
 Do: `stack.yml` zod schema; `stacks` table; scanner that reads the repo tree and markers (`packages/iac`); reports stacks missing `backend "http" {}`.
 Done when: fixture trees cover valid, invalid, duplicate-name and nested stacks.
 
