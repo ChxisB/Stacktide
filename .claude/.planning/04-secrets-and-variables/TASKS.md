@@ -24,6 +24,6 @@ Done when: tests cover restore of changed, deleted and added keys, and that dry-
 Do: parse `.env` (quotes, comments, `export`, multiline), JSON; import from existing GitLab project variables (dry-run default, conflict report, masked/protected flags noted).
 Done when: parser fixtures from real-world `.env` oddities pass; import is idempotent; conflicts are reported not overwritten unless asked.
 
-### VAR-7 - Search and bulk edit  `[ ]` S - deps: VAR-4
+### VAR-7 - Search and bulk edit  `[x]` S - deps: VAR-4
 Do: search by key (and by value for `plain` only) across projects; bulk set/rename/delete with a preview step (Envolve-style).
 Done when: tests show preview changes nothing, apply is audited once per change, and secret values are never searchable.

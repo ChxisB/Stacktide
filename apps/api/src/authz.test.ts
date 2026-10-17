@@ -140,6 +140,7 @@ const writes = () =>
           ["POST", `${path}/${NO_CONNECTION}/restore`, { version: 1 }],
           ["POST", `${path}/restore`, { at: "2020-01-01T00:00:00Z", prune: true }],
           ["POST", `${path}/import`, { source: "dotenv", content: "NOPE=1", dryRun: false }],
+          ["POST", `${path}/bulk`, { ops: [{ op: "delete", key: "NOPE" }], dryRun: false }],
         ] as const,
     ),
   ] as const;
@@ -170,7 +171,7 @@ describe("coverage", () => {
     expect(unguardedRoutes(app)).toEqual(["GET /openapi/json"]);
   });
 
-  /** The twelve routes of one level of variables. */
+  /** The thirteen routes of one level of variables. */
   const variableGuards = (path: string, family: string, reveal: string) => ({
     [`GET ${path}`]: `${family}.read`,
     [`POST ${path}`]: `${family}.create`,
@@ -184,6 +185,7 @@ describe("coverage", () => {
     [`GET ${path}/restore-plan`]: `${family}.restore`,
     [`POST ${path}/restore`]: `${family}.restore`,
     [`POST ${path}/import`]: `${family}.import`,
+    [`POST ${path}/bulk`]: `${family}.bulk`,
   });
 
   test("the guard of every route, written out", () => {
@@ -219,6 +221,7 @@ describe("coverage", () => {
       ...variableGuards(`${P}/:projectId/variables`, "variable", "secret.reveal"),
       ...variableGuards(`${E}/:envId/variables`, "variable", "secret.reveal"),
       [`GET ${E}/:envId/resolved-variables`]: "variable.read",
+      [`POST ${O}/:orgId/variable-search`]: "variable.org.read",
     });
   });
 
@@ -260,7 +263,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(62);
+    expect(routes.length).toBe(66);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

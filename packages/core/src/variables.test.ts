@@ -1,8 +1,11 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: the strings under test are made of `${...}`
 import { describe, expect, test } from "bun:test";
 import {
+  type BulkOp,
+  bulkKeys,
   KEY_PATTERN,
   MAX_RESOLVED_LENGTH,
+  planBulk,
   planImport,
   planRestore,
   type ResolveIssue,
@@ -753,5 +756,106 @@ describe("planImport", () => {
       "unchanged",
       "unchanged",
     ]);
+  });
+});
+
+describe("planBulk", () => {
+  const have = (key: string, value: string, kind: VariableKind = "secret") => ({
+    id: `id-${key}`,
+    key,
+    kind,
+    value,
+  });
+  const set = (key: string, value: string, kind: VariableKind = "secret"): BulkOp => ({
+    op: "set",
+    key,
+    kind,
+    value,
+  });
+  const brief = (ops: BulkOp[], current: ReturnType<typeof have>[]) =>
+    planBulk(ops, current).map((c) => `${c.change} ${c.key} ${c.kind}${c.to ? ` -> ${c.to}` : ""}`);
+
+  test("says what each step does, sorted by key, and never touches a key it was not given", () => {
+    const current = [
+      have("SAME", "1"),
+      have("DIFF", "old"),
+      have("KIND", "x", "plain"),
+      have("GONE", "g"),
+      have("OLD", "o"),
+      have("UNTOUCHED", "u"),
+    ];
+    const ops: BulkOp[] = [
+      set("NEW", "n"),
+      set("SAME", "1"),
+      set("DIFF", "new"),
+      set("KIND", "x"),
+      { op: "delete", key: "GONE" },
+      { op: "rename", key: "OLD", to: "FRESH" },
+    ];
+    expect(brief(ops, current)).toEqual([
+      "update DIFF secret",
+      "delete GONE secret",
+      "kind_mismatch KIND secret",
+      "create NEW secret",
+      "rename OLD secret -> FRESH",
+      "unchanged SAME secret",
+    ]);
+  });
+
+  test("a delete or a rename of a key the level does not hold is missing, with no kind", () => {
+    expect(
+      brief(
+        [
+          { op: "delete", key: "NOPE" },
+          { op: "rename", key: "ALSO", to: "X" },
+        ],
+        [],
+      ),
+    ).toEqual(["missing ALSO null", "missing NOPE null"]);
+  });
+
+  test("a rename onto a held key is a conflict, and a rename keeps the kind of its source", () => {
+    const current = [have("A", "1", "plain"), have("B", "2"), have("C", "3", "file")];
+    expect(
+      brief(
+        [
+          { op: "rename", key: "A", to: "B" },
+          { op: "rename", key: "C", to: "D" },
+        ],
+        current,
+      ),
+    ).toEqual(["conflict A plain -> B", "rename C file -> D"]);
+  });
+
+  test("a set without a kind keeps the kind of a held key, and makes a new one secret", () => {
+    const current = [have("P", "1", "plain"), have("F", "1", "file")];
+    expect(
+      brief(
+        [
+          { op: "set", key: "P", value: "2" },
+          { op: "set", key: "F", value: "1" },
+          { op: "set", key: "N", value: "n" },
+          { op: "set", key: "P2", kind: "plain", value: "n" },
+        ],
+        current,
+      ),
+    ).toEqual(["unchanged F file", "create N secret", "update P plain", "create P2 plain"]);
+  });
+
+  test("a set carries the held entry as current, a create does not", () => {
+    const [update, create] = planBulk([set("A", "new"), set("Z", "z")], [have("A", "old")]);
+    expect(update?.current?.value).toBe("old");
+    expect(create?.current).toBeUndefined();
+  });
+
+  test("applying the result and planning again leaves nothing to do", () => {
+    const ops: BulkOp[] = [set("A", "1"), { op: "delete", key: "B" }];
+    expect(brief(ops, [have("A", "1")])).toEqual(["unchanged A secret", "missing B null"]);
+  });
+
+  test("bulkKeys names the source and the target of a rename, and the key of anything else", () => {
+    expect(bulkKeys({ op: "rename", key: "A", to: "B" })).toEqual(["A", "B"]);
+    expect(bulkKeys({ op: "delete", key: "A" })).toEqual(["A"]);
+    expect(bulkKeys(set("A", "1"))).toEqual(["A"]);
   });
 });

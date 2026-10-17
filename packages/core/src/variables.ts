@@ -293,3 +293,80 @@ export function planImport<C extends RestoreEntry>(
     })
     .sort((a, b) => compare(a.key, b.key));
 }
+
+/**
+ * One step of a bulk edit. `set` is create-or-update, with the kind the key has or else `secret`;
+ * no key may be named by two steps.
+ */
+export type BulkOp =
+  | { op: "set"; key: string; kind?: VariableKind; value: string }
+  | { op: "rename"; key: string; to: string }
+  | { op: "delete"; key: string };
+
+/** The keys a step names: a bulk edit must not name one twice, so the order of the steps never matters. */
+export const bulkKeys = (op: BulkOp) => (op.op === "rename" ? [op.key, op.to] : [op.key]);
+
+/**
+ * `create`, `update` and `unchanged` are a `set` (a key held with another kind is `kind_mismatch`,
+ * never applied); `rename` and `delete` are applied; `missing` is a `rename` or `delete` of a key
+ * the level does not hold; `conflict` is a `rename` onto a key that is held. `kind` is the kind the
+ * key has or will have (a `set` without one keeps the kind of a held key, else `secret`), null when
+ * there is none.
+ */
+export interface BulkChange<C extends RestoreEntry = RestoreEntry> {
+  change:
+    | "create"
+    | "update"
+    | "unchanged"
+    | "kind_mismatch"
+    | "rename"
+    | "delete"
+    | "missing"
+    | "conflict";
+  key: string;
+  kind: VariableKind | null;
+  /** The new key of a `rename`. */
+  to?: string;
+  op: BulkOp;
+  current?: C;
+}
+
+/**
+ * What the steps do to a level that holds `current`, sorted by key. Run it again after applying
+ * and nothing is left to do: every `set` is `unchanged`, every `delete` is `missing`, and a
+ * `rename` is `missing` too. Pure.
+ */
+export function planBulk<C extends RestoreEntry>(
+  ops: readonly BulkOp[],
+  current: readonly C[],
+): BulkChange<C>[] {
+  const is = new Map(current.map((e) => [e.key, e]));
+  return ops
+    .map((op): BulkChange<C> => {
+      const have = is.get(op.key);
+      if (op.op === "set") {
+        const kind = op.kind ?? have?.kind ?? "secret";
+        const [c] = planImport([{ key: op.key, kind, value: op.value }], current, true);
+        return {
+          change: c?.change ?? "create",
+          key: op.key,
+          kind,
+          op,
+          ...(have && { current: have }),
+        };
+      }
+      if (!have) return { change: "missing", key: op.key, kind: null, op };
+      if (op.op === "delete")
+        return { change: "delete", key: op.key, kind: have.kind, op, current: have };
+      const taken = is.has(op.to);
+      return {
+        change: taken ? "conflict" : "rename",
+        key: op.key,
+        kind: have.kind,
+        to: op.to,
+        op,
+        current: have,
+      };
+    })
+    .sort((a, b) => compare(a.key, b.key));
+}

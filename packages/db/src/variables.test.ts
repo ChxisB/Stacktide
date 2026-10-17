@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { BulkOp } from "@orch/core";
 import { aad, CryptoError, encrypt, envKeyProvider, generateDek, wrapDek } from "@orch/crypto";
 import { sql } from "drizzle-orm";
 import { pgCode, pgConstraint } from "./pg-error";
@@ -13,6 +14,7 @@ import {
 import { variableKeys, variables, variableVersions } from "./schema";
 import { createTestDb, type TestDb } from "./testing";
 import {
+  bulkLevel,
   createVariable,
   deleteVariable,
   getVariable,
@@ -21,6 +23,7 @@ import {
   openChain,
   revealVariable,
   type Scope,
+  searchVariables,
   setVariable,
 } from "./variables";
 
@@ -590,5 +593,222 @@ describe("the chain an environment resolves from", () => {
     await make(w.at.project);
     const other = envKeyProvider(`k9:${key(9)}`);
     await expect(openChain(t.db, other, w.at.env)).rejects.toBeInstanceOf(CryptoError);
+  });
+});
+
+describe("bulk edit", () => {
+  const set = (
+    key: string,
+    value: string,
+    kind: "plain" | "secret" | "file" = "secret",
+  ): BulkOp => ({
+    op: "set",
+    key,
+    kind,
+    value,
+  });
+  const run = (scope: Scope, ops: BulkOp[]) => bulkLevel(t.db, keys, scope, ops, { actor });
+  const brief = (done: Awaited<ReturnType<typeof run>>) =>
+    done.map((d) => `${d.change} ${d.key}${d.to ? `>${d.to}` : ""} ${d.applied}`);
+
+  test("makes, changes, renames and deletes in one go, keeps history, and a second run changes nothing", async () => {
+    const w = await world();
+    await make(w.at.project, { key: "KEEP", value: "k" });
+    const old = await make(w.at.project, { key: "OLD", value: "o" });
+    const gone = await make(w.at.project, { key: "GONE", value: "g" });
+    const chg = await make(w.at.project, { key: "CHG", value: "1" });
+    const ops: BulkOp[] = [
+      set("NEW", "n", "plain"),
+      set("CHG", "2"),
+      set("KEEP", "k"),
+      { op: "rename", key: "OLD", to: "FRESH" },
+      { op: "delete", key: "GONE" },
+    ];
+
+    const done = await run(w.at.project, ops);
+    expect(brief(done)).toEqual([
+      "update CHG true",
+      "delete GONE true",
+      "unchanged KEEP false",
+      "create NEW true",
+      "rename OLD>FRESH true",
+    ]);
+    expect(done.find((d) => d.change === "rename")?.variable?.key).toBe("FRESH");
+    expect(JSON.stringify(done)).not.toContain('"value"');
+
+    const renamed = await revealVariable(t.db, keys, w.at.project, old.id);
+    expect([renamed?.variable.key, renamed?.version, renamed?.value]).toEqual(["FRESH", 1, "o"]);
+    expect(await getVariable(t.db, keys, w.at.project, gone.id)).toBeUndefined();
+    const versions = await listVersions(t.db, w.at.project, chg.id, { limit: 10 });
+    expect(versions.map((v) => [v.version, v.reason])).toEqual([
+      [2, "bulk edit"],
+      [1, null],
+    ]);
+
+    const again = await run(w.at.project, ops);
+    expect(brief(again)).toEqual([
+      "unchanged CHG false",
+      "missing GONE false",
+      "unchanged KEEP false",
+      "unchanged NEW false",
+      "missing OLD false",
+    ]);
+    expect(await code(make(w.at.project, { key: "OLD" }))).toBeUndefined(); // the old key is free
+    expect(await code(make(w.at.project, { key: "GONE" }))).toBeUndefined();
+  });
+
+  test("a rename onto a held key, a key of another kind and a missing key are left alone", async () => {
+    const w = await world();
+    const a = await make(w.at.project, { key: "A", value: "a" });
+    await make(w.at.project, { key: "B", value: "b" });
+    await make(w.at.project, { key: "P", kind: "plain", value: "p" });
+    const done = await run(w.at.project, [
+      { op: "rename", key: "A", to: "B" },
+      set("P", "x"),
+      { op: "delete", key: "NOPE" },
+    ]);
+    expect(brief(done)).toEqual([
+      "conflict A>B false",
+      "missing NOPE false",
+      "kind_mismatch P false",
+    ]);
+    expect((await getVariable(t.db, keys, w.at.project, a.id))?.key).toBe("A");
+  });
+
+  test("works on one level only: the same key one level up or down is untouched", async () => {
+    const w = await world();
+    const up = await make(w.at.org, { key: "SAME", value: "up" });
+    const mid = await make(w.at.project, { key: "SAME", value: "mid" });
+    const low = await make(w.at.env, { key: "SAME", value: "low" });
+    await run(w.at.project, [{ op: "delete", key: "SAME" }]);
+    expect(await getVariable(t.db, keys, w.at.project, mid.id)).toBeUndefined();
+    expect((await getVariable(t.db, keys, w.at.org, up.id))?.key).toBe("SAME");
+    expect((await getVariable(t.db, keys, w.at.env, low.id))?.key).toBe("SAME");
+  });
+
+  test("one step that fails undoes the others", async () => {
+    const w = await world();
+    const a = await make(w.at.project, { key: "A", value: "a" });
+    const bad = run(w.at.project, [
+      { op: "rename", key: "A", to: "Z" },
+      set("lower case", "x"), // not an environment variable name: a check violation
+    ]);
+    expect(await code(bad)).toBe("23514");
+    expect((await getVariable(t.db, keys, w.at.project, a.id))?.key).toBe("A");
+    expect(await listVariables(t.db, keys, w.at.project, { limit: 10 })).toHaveLength(1);
+  });
+});
+
+describe("search", () => {
+  const find = (
+    w: Awaited<ReturnType<typeof world>>,
+    over: Partial<Parameters<typeof searchVariables>[2]> = {},
+  ) =>
+    searchVariables(t.db, keys, { organizationId: w.org.id, projects: true, limit: 50, ...over });
+  const seed = async () => {
+    const w = await world();
+    await make(w.at.org, { key: "DB_URL", kind: "plain", value: "postgres://org" });
+    await make(w.at.project, { key: "db_pool", kind: "plain", value: "10" });
+    await make(w.at.project, { key: "DB_PASSWORD", kind: "secret", value: `pw-${CANARY}` });
+    await make(w.at.env, { key: "API_URL", kind: "plain", value: "https://api.example" });
+    await make(w.at.env, { key: "A_B", kind: "plain", value: "100%_sure" });
+    return w;
+  };
+  const keysOf = (r: Awaited<ReturnType<typeof find>>) => r.items.map((v) => v.key);
+
+  test("finds by part of the key, in any case, over every level, ordered by key", async () => {
+    const w = await seed();
+    expect(keysOf(await find(w, { key: "db" })).sort()).toEqual([
+      "DB_PASSWORD",
+      "DB_URL",
+      "db_pool",
+    ]); // the order is the database's collation
+    expect(keysOf(await find(w, { key: "_URL" }))).toEqual(["API_URL", "DB_URL"]);
+    expect(keysOf(await find(w, { key: "zzz" }))).toEqual([]);
+    expect(keysOf(await find(w))).toHaveLength(5);
+  });
+
+  test("% and _ are what they are, not wildcards", async () => {
+    const w = await seed();
+    expect(keysOf(await find(w, { key: "_" }))).toHaveLength(5); // every key has one
+    expect(keysOf(await find(w, { key: "%" }))).toEqual([]);
+    expect(keysOf(await find(w, { key: "A_B" }))).toEqual(["A_B"]);
+    expect(keysOf(await find(w, { value: "%_" }))).toEqual(["A_B"]);
+    expect(keysOf(await find(w, { value: "0%" }))).toEqual(["A_B"]);
+    expect(keysOf(await find(w, { value: "0_" }))).toEqual([]);
+  });
+
+  test("a value is looked for in plain variables only, case-sensitively; a secret is never opened", async () => {
+    const w = await seed();
+    expect(keysOf(await find(w, { value: "postgres" }))).toEqual(["DB_URL"]);
+    expect(keysOf(await find(w, { value: "POSTGRES" }))).toEqual([]);
+    expect(keysOf(await find(w, { value: "api.example" }))).toEqual(["API_URL"]);
+    expect(await find(w, { value: CANARY })).toEqual({ items: [], more: false });
+    expect(await find(w, { value: CANARY, kind: "secret" })).toEqual({ items: [], more: false });
+    expect(await find(w, { value: "postgres", kind: "secret" })).toEqual({
+      items: [],
+      more: false,
+    });
+    // with the key gone nothing could be opened: proof the search did not need to
+    const none = envKeyProvider(`k9:${key(9)}`);
+    const secretsOnly = await searchVariables(t.db, none, {
+      organizationId: w.org.id,
+      projects: true,
+      kind: "secret",
+      limit: 10,
+    });
+    expect(keysOf(secretsOnly)).toEqual(["DB_PASSWORD"]);
+    expect(secretsOnly.items[0]?.value).toBeNull();
+  });
+
+  test("kind narrows, projects: false keeps the organization's own, and plain values come back", async () => {
+    const w = await seed();
+    expect(keysOf(await find(w, { kind: "secret" }))).toEqual(["DB_PASSWORD"]);
+    const own = await find(w, { projects: false });
+    expect(own.items.map((v) => [v.key, v.value])).toEqual([["DB_URL", "postgres://org"]]);
+    expect(keysOf(await find(w, { key: "pool", projects: false }))).toEqual([]);
+  });
+
+  test("never leaves the organization, and skips what is deleted", async () => {
+    const w = await seed();
+    const w2 = await seed();
+    const gone = await make(w.at.project, { key: "DB_GONE", kind: "plain", value: "x" });
+    await deleteVariable(t.db, w.at.project, gone.id);
+    expect(keysOf(await find(w, { key: "gone" }))).toEqual([]);
+    expect((await find(w, { key: "db" })).items.every((v) => v.organizationId === w.org.id)).toBe(
+      true,
+    );
+    expect((await find(w2, { key: "db" })).items.every((v) => v.organizationId === w2.org.id)).toBe(
+      true,
+    );
+  });
+
+  test("a full page says there is more, an exact one does not", async () => {
+    const w = await seed();
+    const page = await find(w, { key: "db", limit: 2 });
+    expect([keysOf(page), page.more]).toEqual([["DB_PASSWORD", "DB_URL"], true]);
+    const exact = await find(w, { key: "db", limit: 3 });
+    expect([keysOf(exact).length, exact.more]).toEqual([3, false]);
+  });
+
+  test("a search by value stops after its scan and says so", async () => {
+    const w = await world();
+    for (const k of ["A1", "A2", "A3", "A4"])
+      await make(w.at.project, { key: k, kind: "plain", value: "hit" });
+    const cut = await find(w, { value: "hit", scan: 2 });
+    expect([keysOf(cut), cut.more]).toEqual([["A1", "A2"], true]);
+    const whole = await find(w, { value: "hit", scan: 4 });
+    expect([keysOf(whole).length, whole.more]).toEqual([4, false]);
+    const limited = await find(w, { value: "hit", scan: 4, limit: 3 });
+    expect([keysOf(limited).length, limited.more]).toEqual([3, true]);
+  });
+
+  test("secrets and files do not use up the scan of a search by value", async () => {
+    const w = await world();
+    for (const k of ["A1", "A2", "A3"])
+      await make(w.at.project, { key: k, kind: "secret", value: "hit" });
+    await make(w.at.project, { key: "B1", kind: "plain", value: "hit" });
+    const found = await find(w, { value: "hit", scan: 1 });
+    expect([keysOf(found), found.more]).toEqual([["B1"], false]);
   });
 });

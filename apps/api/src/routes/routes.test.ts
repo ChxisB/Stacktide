@@ -570,6 +570,8 @@ describe("audit coverage", () => {
           "variable.create",
           "variable.update",
           "variable.import",
+          // many changes at once (the per-change rows reuse create, update and delete)
+          ...["create", "update", "delete", "bulk"].map((v) => `variable.${v}`),
         ]),
       ].sort(),
     );

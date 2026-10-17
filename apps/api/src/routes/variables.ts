@@ -1,4 +1,6 @@
 import {
+  type BulkOp,
+  bulkKeys,
   can,
   DomainError,
   type ImportEntry,
@@ -11,6 +13,9 @@ import {
 } from "@orch/core";
 import { CryptoError, type KeyProvider } from "@orch/crypto";
 import {
+  type Bulked,
+  bulkLevel,
+  bulkPlan,
   createVariable,
   deleteVariable,
   describeVariable,
@@ -28,6 +33,7 @@ import {
   restorePlan,
   revealVariable,
   type Scope,
+  searchVariables,
   setVariable,
   snapshotLevel,
   type Variable,
@@ -132,10 +138,11 @@ const value = z
   .refine((s) => s.isWellFormed(), "must be valid Unicode text");
 const description = z.string().max(1000);
 const reason = z.string().max(500);
+const keyName = z
+  .string()
+  .regex(KEY_PATTERN, "letters, digits and underscores, not starting with a digit, up to 255");
 const create = z.strictObject({
-  key: z
-    .string()
-    .regex(KEY_PATTERN, "letters, digits and underscores, not starting with a digit, up to 255"),
+  key: keyName,
   kind: z.enum(VARIABLE_KINDS),
   value,
   description: description.optional(),
@@ -237,6 +244,80 @@ const importedSchema = z.object({
   ),
 });
 
+// Many steps at once, all or none, a dry run first by default. A key is named by one step only, so
+// the order never matters, and the values of one request are held to what an import may carry.
+const MAX_BULK = 1000;
+const bulkOp = z.discriminatedUnion("op", [
+  z.strictObject({
+    op: z.literal("set"),
+    key: keyName,
+    kind: z.enum(VARIABLE_KINDS).optional(),
+    value,
+  }),
+  z.strictObject({ op: z.literal("rename"), key: keyName, to: keyName }),
+  z.strictObject({ op: z.literal("delete"), key: keyName }),
+]);
+const bulkBody = z.strictObject({
+  ops: z
+    .array(bulkOp)
+    .min(1)
+    .max(MAX_BULK)
+    .refine((ops) => {
+      const named = ops.flatMap(bulkKeys);
+      return new Set(named).size === named.length;
+    }, "a key may be named by one step only")
+    .refine(
+      (ops) => ops.reduce((n, o) => n + (o.op === "set" ? o.value.length : 0), 0) <= MAX_CONTENT,
+      "the values of one request may total 1 MiB",
+    ),
+  dryRun: z.boolean().optional(),
+});
+const bulkedSchema = z.object({
+  dryRun: z.boolean(),
+  changes: z.array(
+    z.object({
+      change: z.enum([
+        "create",
+        "update",
+        "unchanged",
+        "kind_mismatch",
+        "rename",
+        "delete",
+        "missing",
+        "conflict",
+      ]),
+      key: z.string(),
+      /** The new key of a rename. */
+      to: z.string().optional(),
+      /** The kind the key has or will have; none for a key that is not there. */
+      kind: z.enum(VARIABLE_KINDS).nullable(),
+      applied: z.boolean(),
+    }),
+  ),
+});
+
+// A POST so that what is searched for stays out of URLs, access logs and history.
+const searchBody = z
+  .strictObject({
+    key: z.string().min(1).max(255).optional(),
+    value: z.string().min(1).max(1000).optional(),
+    kind: z.enum(VARIABLE_KINDS).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  })
+  .refine(
+    (o) => o.key !== undefined || o.value !== undefined || o.kind !== undefined,
+    "a key, a value or a kind is required",
+  )
+  .refine(
+    (o) => o.value === undefined || o.kind === undefined || o.kind === "plain",
+    "a value is searched for in plain variables only",
+  );
+const searchedSchema = z.object({
+  items: z.array(variableSchema),
+  /** There were more matches than this, or the search stopped before it had looked at everything. */
+  truncated: z.boolean(),
+});
+
 // One schema for all three levels: the path says which ids exist.
 const params = z.object({
   orgId: z.uuid(),
@@ -262,6 +343,7 @@ interface Level {
     reveal: string;
     restore: string;
     import: string;
+    bulk: string;
   };
   /** Throws the 404 for a parent that is not there. */
   parent: (db: RouteDeps["db"], p: Params) => Promise<unknown>;
@@ -274,6 +356,7 @@ const projectActions = {
   reveal: "secret.reveal",
   restore: "variable.restore",
   import: "variable.import",
+  bulk: "variable.bulk",
 };
 const organizationLevel: Level = {
   level: "organization",
@@ -286,6 +369,7 @@ const organizationLevel: Level = {
     reveal: "secret.reveal.org",
     restore: "variable.org.restore",
     import: "variable.org.import",
+    bulk: "variable.org.bulk",
   },
   parent: async (db, p) =>
     (await getOrganization(db, p.orgId)) ?? Promise.reject(notFound("Organization")),
@@ -810,6 +894,96 @@ const levelRoutes = (
         audit: ["variable.create", "variable.update", "variable.import"],
         guard: actions.import,
       },
+    )
+    .post(
+      "/bulk",
+      async ({ params: p, body, audit, set, principal: caller }) => {
+        const k = sealing();
+        const actor = actorOf(caller);
+        await spec.parent(db, p);
+        const dryRun = body.dryRun !== false;
+        const ops: BulkOp[] = body.ops;
+        const done = await db
+          .transaction(async (tx) => {
+            const changes = dryRun
+              ? (await bulkPlan(tx, k, scopeOf(p), ops)).map(
+                  (c): Bulked => ({
+                    change: c.change,
+                    key: c.key,
+                    kind: c.kind,
+                    applied: false,
+                    ...(c.to !== undefined && { to: c.to }),
+                  }),
+                )
+              : await bulkLevel(tx, k, scopeOf(p), ops, { actor });
+            for (const c of changes) {
+              const v = c.variable;
+              if (!v) continue;
+              const extra = { source: "bulk" };
+              if (c.change === "delete") {
+                await audit(tx, audited("variable.delete", level, v, extra));
+              } else if (c.change === "rename") {
+                await audit(
+                  tx,
+                  audited("variable.update", level, v, {
+                    ...extra,
+                    fields: ["key"],
+                    previousKey: c.key,
+                  }),
+                );
+              } else {
+                await audit(
+                  tx,
+                  audited(c.change === "create" ? "variable.create" : "variable.update", level, v, {
+                    ...extra,
+                    ...(c.change === "update" && { fields: ["value"] }),
+                    version: v.currentVersion,
+                  }),
+                );
+              }
+            }
+            const count = (change: string) => changes.filter((c) => c.change === change).length;
+            // One row per request, a dry run too: it opens every secret of the level to compare.
+            await audit(tx, {
+              action: "variable.bulk",
+              resourceType: "variable",
+              organizationId: p.orgId,
+              ...(p.projectId && { projectId: p.projectId }),
+              metadata: {
+                level,
+                ...(p.envId && { environmentId: p.envId }),
+                dryRun,
+                plannedCount: changes.length,
+                createdCount: changes.filter((c) => c.change === "create" && c.applied).length,
+                updatedCount: changes.filter((c) => c.change === "update" && c.applied).length,
+                renamedCount: changes.filter((c) => c.change === "rename" && c.applied).length,
+                deletedCount: changes.filter((c) => c.change === "delete" && c.applied).length,
+                conflictCount: count("conflict") + count("kind_mismatch"),
+                missingCount: count("missing"),
+              },
+            });
+            return changes;
+          })
+          .catch(failingWith(set));
+        return {
+          dryRun,
+          changes: done.map(({ change, key, to, kind, applied }) => ({
+            change,
+            key,
+            ...(to !== undefined && { to }),
+            kind,
+            applied,
+          })),
+        };
+      },
+      {
+        params,
+        body: bulkBody,
+        parse: "json",
+        response: { 200: bulkedSchema, ...writes },
+        audit: ["variable.create", "variable.update", "variable.delete", "variable.bulk"],
+        guard: actions.bulk,
+      },
     );
 };
 
@@ -818,7 +992,8 @@ export const variableRoutes = (deps: RouteDeps & { keys?: KeyProvider; logger: L
     .use(levelRoutes(deps, organizationLevel))
     .use(levelRoutes(deps, projectLevel))
     .use(levelRoutes(deps, environmentLevel))
-    .use(resolvedRoute(deps));
+    .use(resolvedRoute(deps))
+    .use(searchRoute(deps));
 
 /** What an environment sees: the three levels laid over each other, references filled in. */
 const resolvedRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =>
@@ -855,5 +1030,45 @@ const resolvedRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger })
         params: z.object({ orgId: z.uuid(), projectId: z.uuid(), envId: z.uuid() }),
         response: { 200: resolvedSchema, ...reads },
         guard: "variable.read",
+      },
+    );
+
+const levelOf = (v: VariableInfo): VariableLevel =>
+  v.environmentId ? "environment" : v.projectId ? "project" : "organization";
+
+/**
+ * Variables of an organization by part of the key and, for plain ones, of the value: one request
+ * over its three levels. The caller needs `variable.org.read`, which carries read access to every
+ * project (the project role the organization role brings), so the projects' and environments'
+ * variables are in unless a token's scopes leave out `variable.read`.
+ */
+const searchRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =>
+  new Elysia()
+    .use(auditPlugin(deps.principal))
+    .use(guardPlugin)
+    .post(
+      "/organizations/:orgId/variable-search",
+      async ({ params: { orgId }, body, set, principal: caller }) => {
+        if (!deps.keys) throw noKeys();
+        if (!(await getOrganization(deps.db, orgId))) throw notFound("Organization");
+        const projects =
+          !caller ||
+          !("subject" in caller) ||
+          can(caller.subject, "variable.read", { organizationId: orgId, projectId: orgId });
+        const { items, more } = await searchVariables(deps.db, deps.keys, {
+          ...body,
+          organizationId: orgId,
+          projects,
+          limit: body.limit ?? 50,
+        }).catch(failing(deps.logger)(set));
+        return { items: items.map((v) => dto(levelOf(v), v)), truncated: more };
+      },
+      {
+        params: z.object({ orgId: z.uuid() }),
+        body: searchBody,
+        parse: "json",
+        response: { 200: searchedSchema, ...reads, 415: problemSchema },
+        noAudit: "read-only: a search changes nothing, and what it looks for stays out of the log",
+        guard: "variable.org.read",
       },
     );

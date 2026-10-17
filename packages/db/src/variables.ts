@@ -1,6 +1,9 @@
 import {
+  type BulkChange,
+  type BulkOp,
   type ImportChange,
   type ImportEntry,
+  planBulk,
   planImport,
   planRestore,
   type RestoreChange,
@@ -652,4 +655,153 @@ export function importLevel(
     }
     return done;
   });
+}
+
+/** Gives a live variable another key; its versions stay. Undefined when it is not there. A key held by another live variable at the level is a unique violation (23505). */
+async function renameVariable(
+  db: Executor,
+  scope: Scope,
+  id: string,
+  to: string,
+): Promise<VariableInfo | undefined> {
+  const [row] = await db
+    .update(variables)
+    .set({ key: to })
+    .where(live(scope, id))
+    .returning(visible);
+  return row;
+}
+
+/** What `bulkLevel` would do: every value of the level is opened to compare. */
+export async function bulkPlan(
+  db: Executor,
+  keys: KeyProvider,
+  scope: Scope,
+  ops: readonly BulkOp[],
+): Promise<BulkChange<Held>[]> {
+  return planBulk(ops, await holdings(db, keys, scope));
+}
+
+export interface Bulked {
+  change: BulkChange["change"];
+  key: string;
+  to?: string;
+  kind: VariableKind | null;
+  applied: boolean;
+  /** What the change made, changed, renamed or removed, for the audit trail. A rename shows the new key. */
+  variable?: VariableInfo;
+}
+
+/**
+ * Does `ops` to the level in one transaction: a `set` makes the key or gives it a new version if
+ * the value differs, a `rename` changes the key, a `delete` marks it deleted. Anything else
+ * (`unchanged`, `missing`, `conflict`, `kind_mismatch`) is left alone. Idempotent: the same call
+ * again changes nothing. Keys named by two steps are the caller's to refuse. Nothing is locked, so
+ * a concurrent edit may be overwritten by a `set`.
+ */
+export function bulkLevel(
+  db: Executor,
+  keys: KeyProvider,
+  scope: Scope,
+  ops: readonly BulkOp[],
+  opts: { actor: Actor },
+): Promise<Bulked[]> {
+  const { actor } = opts;
+  const reason = "bulk edit";
+  return db.transaction(async (tx) => {
+    const done: Bulked[] = [];
+    for (const c of await bulkPlan(tx, keys, scope, ops)) {
+      const step = {
+        change: c.change,
+        key: c.key,
+        kind: c.kind,
+        ...(c.to !== undefined && { to: c.to }),
+      };
+      const { op, current } = c;
+      if (c.change === "create" && op.op === "set" && c.kind) {
+        const v = await createVariable(tx, keys, {
+          ...scope,
+          key: c.key,
+          kind: c.kind,
+          value: op.value,
+          actor,
+          reason,
+        });
+        done.push({ ...step, applied: true, variable: bare(v) });
+      } else if (c.change === "update" && op.op === "set" && current) {
+        const v = await setVariable(tx, keys, scope, current.id, {
+          value: op.value,
+          actor,
+          reason,
+        });
+        done.push({ ...step, applied: v !== undefined, ...(v && { variable: bare(v) }) });
+      } else if (c.change === "rename" && op.op === "rename" && current) {
+        const v = await renameVariable(tx, scope, current.id, op.to);
+        done.push({ ...step, applied: v !== undefined, ...(v && { variable: v }) });
+      } else if (c.change === "delete" && current) {
+        const v = await describeVariable(tx, scope, current.id);
+        const gone = v !== undefined && (await deleteVariable(tx, scope, current.id));
+        done.push({ ...step, applied: gone, ...(v && { variable: v }) });
+      } else {
+        done.push({ ...step, applied: false });
+      }
+    }
+    return done;
+  });
+}
+
+export interface VariableSearch {
+  organizationId: string;
+  /** False: the organization's own variables only, not those of its projects and environments. */
+  projects: boolean;
+  /** Part of the key, any case. */
+  key?: string;
+  /** Part of a `plain` value, case-sensitive. Secrets and files are never opened to look. */
+  value?: string;
+  kind?: VariableKind;
+  limit: number;
+  /** How many rows a search by value opens before it stops; {@link SEARCH_SCAN} unless a test says otherwise. */
+  scan?: number;
+}
+
+/** How many `plain` rows a search by value opens before it gives up. */
+export const SEARCH_SCAN = 2000;
+
+/**
+ * Live variables of an organization (and its projects and environments) whose key contains `key`
+ * and, for `plain` ones, whose value contains `value`; ordered by key, then id. A search by value
+ * is `plain` only: no secret is opened to look. `more` means there were more than `limit` matches,
+ * or, for a value search, that the first {@link SEARCH_SCAN} rows were not enough to say.
+ */
+export async function searchVariables(
+  db: Executor,
+  keys: KeyProvider,
+  q: VariableSearch,
+): Promise<{ items: Variable[]; more: boolean }> {
+  const kind = q.value === undefined ? q.kind : "plain";
+  if (q.value !== undefined && q.kind !== undefined && q.kind !== "plain") {
+    return { items: [], more: false };
+  }
+  const scan = q.value === undefined ? q.limit : (q.scan ?? SEARCH_SCAN);
+  const rows = await db
+    .select(sealedColumns)
+    .from(variables)
+    .innerJoin(variableVersions, currentVersion)
+    .where(
+      and(
+        eq(variables.organizationId, q.organizationId),
+        isNull(variables.deletedAt),
+        q.projects ? undefined : isNull(variables.projectId),
+        kind === undefined ? undefined : eq(variables.kind, kind),
+        q.key === undefined
+          ? undefined
+          : sql`strpos(lower(${variables.key}), ${q.key.toLowerCase()}) > 0`,
+      ),
+    )
+    .orderBy(asc(variables.key), asc(variables.id))
+    .limit(scan + 1);
+  const found = await readVariables(db, keys, rows.slice(0, scan));
+  const hits =
+    q.value === undefined ? found : found.filter((v) => v.value?.includes(q.value ?? ""));
+  return { items: hits.slice(0, q.limit), more: hits.length > q.limit || rows.length > scan };
 }

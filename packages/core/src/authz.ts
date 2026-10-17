@@ -44,6 +44,8 @@ export const RULES = {
   "variable.restore": { project: "maintainer" },
   // Bringing in a file or a GitLab project's variables compares the incoming values with the secrets held: the same people who may reveal, and a name of its own.
   "variable.import": { project: "maintainer" },
+  // Setting, renaming and deleting many at once, previewed first (the preview compares values with the secrets held): one action, so a token is given the whole bundle by name.
+  "variable.bulk": { project: "maintainer" },
   "variable.org.read": { org: "viewer" },
   "variable.org.create": { org: "admin" },
   "variable.org.update": { org: "admin" },
@@ -51,6 +53,7 @@ export const RULES = {
   "secret.reveal.org": { org: "admin" },
   "variable.org.restore": { org: "admin" },
   "variable.org.import": { org: "admin" },
+  "variable.org.bulk": { org: "admin" },
   // Credentials for outside systems: org admins only, also to read (what they connect to is theirs to know).
   "connection.create": { org: "admin" },
   "connection.read": { org: "admin" },

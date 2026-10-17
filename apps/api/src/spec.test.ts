@@ -25,17 +25,19 @@ test("every API operation documents its guard, audit action and the problems it 
         op,
       })),
     );
-  expect(ops.length).toBe(62); // 5 per resource (list, get, create, update, delete) + 3 for tokens + 4 for connections + 2 for imports + 1 webhook secret + 12 per level of variables (3 levels) + the resolved set
+  expect(ops.length).toBe(66); // 5 per resource (list, get, create, update, delete) + 3 for tokens + 4 for connections + 2 for imports + 1 webhook secret + 13 per level of variables (3 levels) + the resolved set + the search
   for (const { id, method, op } of ops) {
     const codes = Object.keys(op.responses as object).sort();
     const writes = method !== "get";
+    // A POST that is exempt from audit is a read with a body (a search): it has no conflicts to report.
+    const readOnly = op["x-no-audit"] !== undefined;
     const expected = writes
-      ? ["400", "401", "403", "404", "409", "415", "422"]
+      ? ["400", "401", "403", "404", ...(readOnly ? [] : ["409"]), "415", "422"]
       : ["400", "401", "403", "404", "422"];
     // Success codes differ per operation (200, 201, 204); the errors must all be there.
     expect([id, expected.filter((c) => !codes.includes(c))]).toEqual([id, []]);
     expect([id, codes.some((c) => c.startsWith("2"))]).toEqual([id, true]);
-    expect([id, writes ? Boolean(op["x-audit"]) : true]).toEqual([id, true]);
+    expect([id, writes ? Boolean(op["x-audit"] ?? op["x-no-audit"]) : true]).toEqual([id, true]);
     expect([id, Boolean(op["x-guard"] ?? op["x-signed-in"])]).toEqual([id, true]);
   }
 });
