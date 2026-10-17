@@ -18,6 +18,8 @@ const payloadSchema = z.object({
   organizationId: z.uuid(),
   projectId: z.uuid(),
   targetId: z.uuid(),
+  /** Asked for by a drift check (SYNC-8) of a target that opted in to remediation. */
+  remediate: z.boolean().optional(),
 });
 
 const WRITES = new Set(["create", "update"]);
@@ -39,8 +41,8 @@ export const syncAutoHandler =
     const ids = payloadSchema.parse(ctx.payload);
     const { db } = deps;
     const target = await getSyncTarget(db, ids.organizationId, ids.projectId, ids.targetId);
-    // gone, or switched to manual since the change
-    if (!target?.autoSync) return;
+    // gone, or switched off since the job was queued
+    if (!target || !(target.autoSync || (ids.remediate && target.autoRemediate))) return;
 
     let planned: Awaited<ReturnType<typeof planTarget>>;
     try {
@@ -71,6 +73,6 @@ export const syncAutoHandler =
       if (pgConstraint(e) !== "sync_runs_one_applying") throw e;
       // shortcut: planned again every 30 s while the other apply lasts; a pre-check that also reaps dead applies would save the reads
       ctx.log.info("auto-sync waits: the target is applying", { target: target.id });
-      return queueTargetSync(db, target);
+      return queueTargetSync(db, target, ids.remediate);
     }
   };

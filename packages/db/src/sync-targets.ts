@@ -8,7 +8,10 @@ export type NewSyncTarget = Pick<
   "organizationId" | "projectId" | "name" | "type" | "connectionId" | "config"
 > &
   Partial<
-    Pick<typeof syncTargets.$inferInsert, "environmentMapping" | "unmanagedPolicy" | "autoSync">
+    Pick<
+      typeof syncTargets.$inferInsert,
+      "environmentMapping" | "unmanagedPolicy" | "autoSync" | "autoRemediate"
+    >
   >;
 
 /** What a PATCH may change. The type is fixed for life: a different target is a different row. */
@@ -19,6 +22,7 @@ export interface SyncTargetPatch {
   environmentMapping?: Record<string, string>;
   unmanagedPolicy?: "ignore" | "adopt" | "prune";
   autoSync?: boolean;
+  autoRemediate?: boolean;
 }
 
 /** Drops `undefined` entries; a patch is applied only for the fields that were given. */

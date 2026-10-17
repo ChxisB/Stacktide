@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: `${KEY}` is the reference syntax under test
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createLogger, type Subject } from "@orch/core";
-import { envKeyProvider } from "@orch/crypto";
+import { envKeyProvider, type KeyProvider } from "@orch/crypto";
 import {
   AUTO_SYNC_DELAY_MS,
   AUTO_SYNC_QUEUE,
@@ -13,10 +13,14 @@ import {
   createOrganization,
   createProject,
   createSession,
+  DRIFT_CHECK_QUEUE,
+  DRIFT_TICK_QUEUE,
   deleteEnvironment,
   enqueue,
   jobs,
+  queueTargetSync,
   recordSyncItem,
+  syncDrift,
   syncRunItems,
   syncRuns,
   syncTargets,
@@ -32,6 +36,7 @@ import { createApp } from "./app";
 import { callerPrincipal } from "./credentials";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
 import { syncAutoHandler } from "./sync-auto";
+import { driftCheckHandler, driftTickHandler } from "./sync-drift";
 import { hashToken, randomToken } from "./tokens";
 import { createWorker, type JobContext, type Worker } from "./worker";
 
@@ -146,7 +151,7 @@ async function call(who: Who | null, method: string, path: string, body?: unknow
   );
   const text = await res.text();
   // plain values are shown by the variables routes; the plan routes must show none
-  if (/\/(plan|apply|runs\/)/.test(path)) seen.push(text);
+  if (/\/(plan|apply|runs\/|drift)/.test(path)) seen.push(text);
   return {
     status: res.status,
     text,
@@ -1497,6 +1502,357 @@ describe("auto-sync on change (SYNC-7)", () => {
       // the organization is shared by the other tests: its plans must not see this
       await call("alice", "DELETE", `/organizations/${w.org}/variables/${made.json.id}`);
     }
+  });
+});
+
+describe("drift detection (SYNC-8)", () => {
+  const ctxFor = (w: World, queue: string, over: Partial<JobContext> = {}): JobContext => ({
+    id: Bun.randomUUIDv7(),
+    queue,
+    payload: { organizationId: w.org, projectId: w.project, targetId: w.target },
+    attempt: 1,
+    maxAttempts: 5,
+    log: logger,
+    signal: new AbortController().signal,
+    ...over,
+  });
+  /** One drift check of the target, as the worker would run it. */
+  const check = (w: World, provider = keys, db = t.db, over: Partial<JobContext> = {}) =>
+    driftCheckHandler({ db, keys: provider, logger })(ctxFor(w, DRIFT_CHECK_QUEUE, over));
+  const driftOf = (w: World, who: Who | null = "alice") =>
+    call(who, "GET", `${w.targets}/${w.target}/drift`);
+  const driftEvents = async (w: World) =>
+    (await events("sync_target.drift")).filter((e) => e.resourceId === w.target);
+  const queuedFor = async (queue: string, w: World) =>
+    (await t.db.select().from(jobs).where(eq(jobs.queue, queue))).filter(
+      (j) => j.payload.targetId === w.target && j.status === "queued",
+    );
+  const applyOnce = async (w: World) => {
+    const planned = await w.plan();
+    expect((await w.apply(planned.json.id)).status).toBe(202);
+    expect((await w.finished(planned.json.id)).json.status).toBe("applied");
+  };
+
+  test("a change made directly on the target is found by the next check, and nothing is written", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    await w.put("project", "B", "secret", sekrit("b"));
+    await applyOnce(w);
+    expect((await driftOf(w)).json).toEqual({ status: "unchecked", counts: {}, checkedAt: null });
+
+    await check(w);
+    const clean = (await driftOf(w)).json;
+    expect(clean).toMatchObject({ status: "in_sync", counts: { ...emptyCounts, noop: 2 } });
+    expect(await driftEvents(w)).toEqual([]);
+
+    // someone edits the target by hand
+    await w.gitlab.variables.update(w.of, { key: "A" }, { value: "edited" });
+    const writes = w.writes();
+    const stored = (await w.runs()).length;
+    await Bun.sleep(5);
+    await check(w);
+    const drifted = (await driftOf(w)).json;
+    expect(drifted).toMatchObject({
+      status: "drifted",
+      counts: { ...emptyCounts, update: 1, noop: 1 },
+    });
+    expect(Date.parse(drifted.checkedAt)).toBeGreaterThan(Date.parse(clean.checkedAt));
+    const [event, ...more] = await driftEvents(w);
+    expect(more).toEqual([]);
+    expect(event).toMatchObject({
+      actorKind: "job",
+      resourceType: "sync_target",
+      organizationId: w.org,
+      projectId: w.project,
+      metadata: { name: "main", status: "drifted", counts: { ...emptyCounts, update: 1, noop: 1 } },
+    });
+    // read only: no write to the target, no plan stored
+    expect(w.writes()).toEqual(writes);
+    expect(await w.runs()).toHaveLength(stored);
+
+    // the same finding again is not news
+    await check(w);
+    expect(await driftEvents(w)).toHaveLength(1);
+
+    // put right by hand: news again
+    await w.gitlab.variables.update(w.of, { key: "A" }, { value: "a" });
+    await check(w);
+    expect((await driftOf(w)).json).toMatchObject({ status: "in_sync" });
+    expect(await driftEvents(w)).toHaveLength(2);
+    expect((await driftEvents(w)).at(-1)?.metadata).toMatchObject({ status: "in_sync" });
+  });
+
+  test("a variable missing from the target, or extra on it, is drift only when an apply would write", async () => {
+    // ignore: what the variables do not want is not drift
+    const ignore = await world();
+    await ignore.put("project", "A", "plain", "a");
+    await ignore.seed("A", "a");
+    await ignore.seed("STRAY", "s");
+    await check(ignore);
+    expect((await driftOf(ignore)).json).toMatchObject({ status: "in_sync", counts: { noop: 1 } });
+
+    // adopt: reported, but an apply would write nothing
+    const adopt = await world({ policy: "adopt" });
+    await adopt.put("project", "A", "plain", "a");
+    await adopt.seed("A", "a");
+    await adopt.seed("STRAY", "s");
+    await check(adopt);
+    expect((await driftOf(adopt)).json).toMatchObject({
+      status: "in_sync",
+      counts: { ...emptyCounts, noop: 1, adopt: 1 },
+    });
+
+    // prune: the apply would delete it
+    const prune = await world({ policy: "prune" });
+    await prune.put("project", "A", "plain", "a");
+    await prune.seed("A", "a");
+    await prune.seed("STRAY", "s");
+    await check(prune);
+    expect((await driftOf(prune)).json).toMatchObject({
+      status: "drifted",
+      counts: { ...emptyCounts, noop: 1, delete: 1 },
+    });
+
+    // a variable the target lacks
+    const missing = await world();
+    await missing.put("project", "A", "plain", "a");
+    await check(missing);
+    expect((await driftOf(missing)).json).toMatchObject({
+      status: "drifted",
+      counts: { create: 1 },
+    });
+  });
+
+  test("shows unchecked before the first check, to readers only, for targets of that project only", async () => {
+    const w = await world();
+    const other = await world();
+    expect(await driftOf(w, "alice")).toMatchObject({ status: 200, json: { status: "unchecked" } });
+    expect((await driftOf(w, "carol")).status).toBe(200);
+    expect((await driftOf(w, "erin")).status).toBe(404);
+    expect((await driftOf(w, null)).status).toBe(401);
+    const path = (project: string, target: string) =>
+      `/organizations/${w.org}/projects/${project}/sync-targets/${target}/drift`;
+    expect((await call("alice", "GET", path(w.project, Bun.randomUUIDv7()))).status).toBe(404);
+    expect((await call("alice", "GET", path(w.project, other.target))).status).toBe(404);
+  });
+
+  test("a tick asks for one check of the target, with ids only, and asking again adds none", async () => {
+    const w = await world();
+    const tick = driftTickHandler({ db: t.db });
+    const ctx = ctxFor(w, DRIFT_TICK_QUEUE, { payload: {} });
+    await tick(ctx);
+    const [job, ...more] = await queuedFor(DRIFT_CHECK_QUEUE, w);
+    expect(more).toEqual([]);
+    expect(job?.payload).toEqual({
+      organizationId: w.org,
+      projectId: w.project,
+      targetId: w.target,
+    });
+    await tick(ctx);
+    expect(await queuedFor(DRIFT_CHECK_QUEUE, w)).toHaveLength(1);
+
+    // once a worker has taken it, the next tick asks again
+    await claimJob(t.db, { queues: [DRIFT_CHECK_QUEUE], workerId: "test", limit: 10_000 });
+    expect(await queuedFor(DRIFT_CHECK_QUEUE, w)).toHaveLength(0);
+    await tick(ctx);
+    expect(await queuedFor(DRIFT_CHECK_QUEUE, w)).toHaveLength(1);
+  });
+
+  test("remediation is off until a target opts in; then it syncs creates and updates and never deletes", async () => {
+    const w = await world({ policy: "prune" });
+    await w.put("project", "NEW", "plain", "new");
+    await w.put("project", "OLD", "plain", "new-value");
+    await w.seed("OLD", "old-value");
+    await w.seed("STRAY", "stray");
+    const seeded = w.writes();
+
+    await check(w);
+    expect((await driftOf(w)).json).toMatchObject({
+      status: "drifted",
+      counts: { ...emptyCounts, create: 1, update: 1, delete: 1 },
+    });
+    expect(await queuedFor(AUTO_SYNC_QUEUE, w)).toEqual([]);
+    expect(w.writes()).toEqual(seeded);
+    expect(await w.runs()).toEqual([]);
+
+    const on = await w.patchTarget({ autoRemediate: true });
+    expect(on.json).toMatchObject({ autoRemediate: true, autoSync: false });
+    await check(w);
+    const [job, ...more] = await queuedFor(AUTO_SYNC_QUEUE, w);
+    expect(more).toEqual([]);
+    expect(job?.payload).toEqual({
+      organizationId: w.org,
+      projectId: w.project,
+      targetId: w.target,
+      remediate: true,
+    });
+    await runAuto(w);
+    const [run, ...rest] = await w.runs();
+    expect(rest).toEqual([]);
+    expect((await w.finished(run?.id ?? "")).json).toMatchObject({
+      status: "applied",
+      counts: { ...emptyCounts, create: 1, update: 1 },
+    });
+    expect(await onGitlab(w)).toEqual(["NEW", "OLD", "STRAY"]);
+
+    // what is left is a delete, which only a person does: still drift, nothing more is queued
+    await check(w);
+    expect((await driftOf(w)).json).toMatchObject({
+      status: "drifted",
+      counts: { ...emptyCounts, noop: 2, delete: 1 },
+    });
+    expect(await queuedFor(AUTO_SYNC_QUEUE, w)).toEqual([]);
+  });
+
+  test("a remediation job runs only while the target still opts in, and a plain job never does", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    expect((await w.patchTarget({ autoRemediate: true })).status).toBe(200);
+    await check(w);
+    expect(await queuedFor(AUTO_SYNC_QUEUE, w)).toHaveLength(1);
+    expect((await w.patchTarget({ autoRemediate: false })).status).toBe(200);
+    await runAuto(w);
+    expect(await w.runs()).toEqual([]);
+    expect(w.writes()).toEqual([]);
+
+    // opted in to remediation but not to auto-sync: a job of the change hook is not for it
+    expect((await w.patchTarget({ autoRemediate: true })).status).toBe(200);
+    await queueTargetSync(t.db, { id: w.target, organizationId: w.org, projectId: w.project });
+    await runAuto(w);
+    expect(await w.runs()).toEqual([]);
+    expect(w.writes()).toEqual([]);
+
+    // and one that asks for remediation does
+    await queueTargetSync(
+      t.db,
+      { id: w.target, organizationId: w.org, projectId: w.project },
+      true,
+    );
+    await runAuto(w);
+    const [run] = await w.runs();
+    expect((await w.finished(run?.id ?? "")).json.status).toBe("applied");
+    expect(await onGitlab(w)).toEqual(["A"]);
+  });
+
+  test("a target that is applying is left alone", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const planned = await w.plan();
+    const release = pause();
+    try {
+      expect((await w.apply(planned.json.id)).status).toBe(202);
+      await check(w);
+      expect((await driftOf(w)).json.status).toBe("unchecked");
+    } finally {
+      release();
+    }
+    expect((await w.finished(planned.json.id)).json.status).toBe("applied");
+    await check(w);
+    expect((await driftOf(w)).json).toMatchObject({ status: "in_sync" });
+  });
+
+  test("a target that cannot be checked keeps its last result, and says so in the log", async () => {
+    const dead = await world({ connection: conns.dead });
+    await dead.put("project", "A", "plain", "a");
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    await check(w);
+    const before = (await driftOf(w)).json;
+    expect(before.status).toBe("drifted");
+    await w.put("project", "TOO_SHORT", "secret", "short");
+
+    const mark = lines.length;
+    await check(dead); // the target does not answer
+    await check(w, OTHER_KEYS); // a stored secret cannot be opened
+    await check(w); // the target cannot hold a value
+    expect((await driftOf(dead)).json.status).toBe("unchecked");
+    expect((await driftOf(w)).json).toEqual(before);
+    const said = lines.slice(mark).filter((l) => l.includes("drift not checked"));
+    expect(said).toHaveLength(3);
+    expect(said.join("\n")).not.toMatch(/"short"/);
+    expect(await driftEvents(dead)).toEqual([]);
+  });
+
+  test("a remediation that finds the target busy waits as a remediation", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    expect((await w.patchTarget({ autoRemediate: true })).status).toBe(200);
+    const planned = await w.plan();
+    const release = pause();
+    try {
+      expect((await w.apply(planned.json.id)).status).toBe(202);
+      await queueTargetSync(
+        t.db,
+        { id: w.target, organizationId: w.org, projectId: w.project },
+        true,
+      );
+      await runAuto(w);
+      expect(await queuedFor(AUTO_SYNC_QUEUE, w)).toMatchObject([{ payload: { remediate: true } }]);
+    } finally {
+      release();
+    }
+    expect((await w.finished(planned.json.id)).json.status).toBe("applied");
+  });
+
+  test("a plan that fails for a reason other than the target's is the queue's to retry", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const flaky: KeyProvider = {
+      currentKeyId: keys.currentKeyId,
+      wrap: keys.wrap,
+      unwrap: () => Promise.reject(new Error("key service down")),
+    };
+    await expect(check(w, flaky)).rejects.toThrow("key service down");
+    expect((await driftOf(w)).json.status).toBe("unchecked");
+  });
+
+  test("a failure that is not the target's is the queue's to retry", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    await expect(
+      check(
+        w,
+        keys,
+        new Proxy(t.db, {
+          get: (db, prop) =>
+            prop === "transaction"
+              ? (run: never, config?: never) =>
+                  config ? db.transaction(run, config) : Promise.reject(new Error("store failed"))
+              : Reflect.get(db, prop),
+        }),
+      ),
+    ).rejects.toThrow("store failed");
+    expect((await driftOf(w)).json.status).toBe("unchecked");
+  });
+
+  test("a target that is gone is ignored, and a payload that is not ids is refused", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    await check(w);
+    expect((await call("alice", "DELETE", `${w.targets}/${w.target}`)).status).toBe(204);
+    await check(w);
+    expect(await t.db.select().from(syncDrift).where(eq(syncDrift.targetId, w.target))).toEqual([]);
+    await expect(check(w, keys, t.db, { payload: { targetId: w.target } })).rejects.toThrow();
+  });
+
+  test("holds no value: not in the row, the audit event, the answer or the log", async () => {
+    const w = await world();
+    const mine = sekrit("drift-mine");
+    const theirs = sekrit("drift-theirs");
+    await w.put("project", "LEAK_SECRET", "secret", mine);
+    await w.put("project", "LEAK_PLAIN", "plain", sekrit("drift-plain"));
+    await w.seed("LEAK_SECRET", theirs, { masked: true });
+    const mark = lines.length;
+    await check(w);
+    const answer = await driftOf(w);
+    expect(answer.json).toMatchObject({ status: "drifted" });
+    const everything = JSON.stringify([
+      answer.text,
+      await t.db.select().from(syncDrift).where(eq(syncDrift.targetId, w.target)),
+      await driftEvents(w),
+      lines.slice(mark),
+    ]);
+    for (const m of markers) expect(everything).not.toContain(m);
   });
 });
 

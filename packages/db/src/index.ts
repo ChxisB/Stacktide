@@ -16,6 +16,7 @@ export * from "./pg-error";
 export * from "./repo";
 export * from "./schedules";
 export * from "./schema";
+export * from "./sync-drift";
 export * from "./sync-runs";
 export * from "./sync-targets";
 export * from "./variables";

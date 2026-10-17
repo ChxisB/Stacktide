@@ -6,6 +6,7 @@ export * from "./jobs";
 export * from "./organizations";
 export * from "./projects";
 export * from "./schedules";
+export * from "./sync-drift";
 export * from "./sync-runs";
 export * from "./sync-targets";
 export * from "./variables";

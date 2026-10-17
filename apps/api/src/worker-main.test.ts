@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { schedules } from "@orch/db";
 import { createTestDb } from "@orch/db/testing";
 
 const script = fileURLToPath(new URL("./worker-main.ts", import.meta.url));
@@ -45,11 +46,39 @@ describe("worker entrypoint", () => {
       return await child.out;
     };
     const withKeys = await run({ ORCH_MASTER_KEYS: keys });
-    expect(withKeys).toContain('"queues":["sync.apply","sync.auto"]');
+    expect(withKeys).toContain(
+      '"queues":["sync.apply","sync.auto","sync.drift.tick","sync.drift"]',
+    );
     expect(withKeys).not.toContain(keys);
     const without = await run({});
     expect(without).toContain('"queues":[]');
     expect(without).toContain("ORCH_MASTER_KEYS is not set");
+  });
+
+  test("the drift schedule is stated with keys, off at 0, and a value in between is refused", async () => {
+    const keys = `k1:${Buffer.alloc(32, 7).toString("base64")}`;
+    const run = async (extra: Record<string, string>) => {
+      const child = start({ DATABASE_URL: t.url, ORCH_MASTER_KEYS: keys, ...extra });
+      await Bun.sleep(500);
+      child.proc.kill("SIGTERM");
+      await child.proc.exited;
+    };
+    const drift = async () =>
+      (await t.db.select().from(schedules)).find((s) => s.name === "sync.drift");
+    await run({});
+    expect(await drift()).toMatchObject({
+      intervalSeconds: 900,
+      queue: "sync.drift.tick",
+      enabled: true,
+    });
+    await run({ DRIFT_CHECK_SECONDS: "120" });
+    expect(await drift()).toMatchObject({ intervalSeconds: 120, enabled: true });
+    await run({ DRIFT_CHECK_SECONDS: "0" });
+    expect((await drift())?.enabled).toBe(false);
+
+    const child = start({ DATABASE_URL: t.url, DRIFT_CHECK_SECONDS: "30" });
+    expect(await child.proc.exited).not.toBe(0);
+    expect(await child.err).toContain("DRIFT_CHECK_SECONDS");
   });
 
   test("keys that do not parse stop the start", async () => {

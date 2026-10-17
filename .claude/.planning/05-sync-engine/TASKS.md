@@ -28,6 +28,6 @@ Done when: tests cover stale plan, concurrent apply (second rejects), partial fa
 Do: A variable change enqueues a coalesced (debounced) sync job for targets with `auto_sync`; protected environments stay manual until GOV-3.
 Done when: 10 rapid changes produce one run; manual-only targets are untouched.
 
-### SYNC-8 - Drift detection  `[ ]` M - deps: SYNC-6, API-7
+### SYNC-8 - Drift detection  `[x]` M - deps: SYNC-6, API-7
 Do: Scheduled read-only plan per target; non-empty plan marks the target `drifted` with counts; optional auto-remediate (default off).
 Done when: a mutation made directly on the mock is detected on the next tick; no writes happen with auto-remediate off.

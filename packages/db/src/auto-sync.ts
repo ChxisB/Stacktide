@@ -40,10 +40,17 @@ export async function queueAutoSync(db: Executor, owner: Owner): Promise<void> {
 export async function queueTargetSync(
   db: Executor,
   t: { id: string; organizationId: string; projectId: string },
+  /** The job is to put right drift (SYNC-8), which a target that is not `auto_sync` may also want. */
+  remediate = false,
 ): Promise<void> {
   await enqueueOnce(db, {
     queue: AUTO_SYNC_QUEUE,
-    payload: { organizationId: t.organizationId, projectId: t.projectId, targetId: t.id },
+    payload: {
+      organizationId: t.organizationId,
+      projectId: t.projectId,
+      targetId: t.id,
+      ...(remediate && { remediate }),
+    },
     runAt: new Date(Date.now() + AUTO_SYNC_DELAY_MS),
     dedupeKey: t.id,
   });

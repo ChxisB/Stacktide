@@ -5,6 +5,7 @@ import {
   type Executor,
   getConnection,
   getProject,
+  getSyncDrift,
   getSyncTarget,
   listEnvironments,
   listSyncTargets,
@@ -51,7 +52,17 @@ const targetSchema = z.object({
   environmentMapping: z.record(z.string(), z.string()),
   unmanagedPolicy: z.enum(POLICIES),
   autoSync: z.boolean(),
+  /** Drift is put right by an automatic sync of creates and updates; it never deletes. */
+  autoRemediate: z.boolean(),
   ...stamps,
+});
+const driftSchema = z.object({
+  /** `unchecked` until the first drift check has run. */
+  status: z.enum(["unchecked", "in_sync", "drifted"]),
+  /** How many lines of each action applying a fresh plan would have; empty while unchecked. */
+  counts: z.record(z.string(), z.number().int()),
+  /** When the last check found this; empty while unchecked. */
+  checkedAt: z.iso.datetime().nullable(),
 });
 const targetDto = (t: SyncTarget): z.infer<typeof targetSchema> => ({
   id: t.id,
@@ -64,6 +75,7 @@ const targetDto = (t: SyncTarget): z.infer<typeof targetSchema> => ({
   environmentMapping: t.environmentMapping,
   unmanagedPolicy: t.unmanagedPolicy as (typeof POLICIES)[number],
   autoSync: t.autoSync,
+  autoRemediate: t.autoRemediate,
   createdAt: iso(t.createdAt),
   updatedAt: iso(t.updatedAt),
 });
@@ -95,6 +107,7 @@ const create = z.strictObject({
   environmentMapping: mapping.optional(),
   unmanagedPolicy: policy.optional(),
   autoSync: z.boolean().optional(),
+  autoRemediate: z.boolean().optional(),
 });
 // The type is fixed for life: another type is another target.
 const patch = z
@@ -105,6 +118,7 @@ const patch = z
     environmentMapping: mapping.optional(),
     unmanagedPolicy: policy.optional(),
     autoSync: z.boolean().optional(),
+    autoRemediate: z.boolean().optional(),
   })
   .refine(nonEmpty, atLeastOne);
 
@@ -208,6 +222,23 @@ export const syncTargetRoutes = ({ db, principal }: RouteDeps) =>
         guard: "sync.target.read",
       },
     )
+    .get(
+      "/:targetId/drift",
+      async ({ params: { orgId, projectId, targetId } }) => {
+        if (!(await getSyncTarget(db, orgId, projectId, targetId))) throw notFound("Sync target");
+        const drift = await getSyncDrift(db, orgId, projectId, targetId);
+        return {
+          status: (drift?.status ?? "unchecked") as z.infer<typeof driftSchema>["status"],
+          counts: drift?.counts ?? {},
+          checkedAt: drift ? iso(drift.updatedAt) : null,
+        };
+      },
+      {
+        params: itemParams,
+        response: { 200: driftSchema, ...readErrors },
+        guard: "sync.target.read",
+      },
+    )
     .post(
       "",
       async ({ params: { orgId, projectId }, body, audit, set }) => {
@@ -232,6 +263,7 @@ export const syncTargetRoutes = ({ db, principal }: RouteDeps) =>
                 connectionId: target.connectionId,
                 unmanagedPolicy: target.unmanagedPolicy,
                 autoSync: target.autoSync,
+                autoRemediate: target.autoRemediate,
               }),
             );
             return target;
@@ -278,6 +310,7 @@ export const syncTargetRoutes = ({ db, principal }: RouteDeps) =>
                 ...(body.connectionId && { connectionId: body.connectionId }),
                 ...(body.unmanagedPolicy && { unmanagedPolicy: body.unmanagedPolicy }),
                 ...(body.autoSync !== undefined && { autoSync: body.autoSync }),
+                ...(body.autoRemediate !== undefined && { autoRemediate: body.autoRemediate }),
               }),
             );
             return target;

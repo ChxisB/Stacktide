@@ -33,6 +33,8 @@ export const syncTargets = pgTable(
     environmentMapping: jsonb().$type<Record<string, string>>().notNull().default({}),
     unmanagedPolicy: text().notNull().default("ignore"),
     autoSync: boolean().notNull().default(false),
+    /** Drift (SYNC-8) is put right by an automatic apply of creates and updates; never deletes. */
+    autoRemediate: boolean().notNull().default(false),
     ...timestamps(),
   },
   (t) => [

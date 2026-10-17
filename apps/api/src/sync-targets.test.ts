@@ -145,9 +145,11 @@ describe("creating a target", () => {
       environmentMapping: {},
       unmanagedPolicy: "ignore",
       autoSync: false,
+      autoRemediate: false,
     });
     expect(Object.keys(res.json).sort()).toEqual(
       [
+        "autoRemediate",
         "autoSync",
         "config",
         "connectionId",
@@ -174,6 +176,7 @@ describe("creating a target", () => {
         environmentMapping: { prod: "production", dev: "development" },
         unmanagedPolicy: "prune",
         autoSync: true,
+        autoRemediate: true,
       }),
     );
     expect(res.status).toBe(201);
@@ -182,6 +185,7 @@ describe("creating a target", () => {
       environmentMapping: { prod: "production", dev: "development" },
       unmanagedPolicy: "prune",
       autoSync: true,
+      autoRemediate: true,
     });
   });
 
@@ -225,6 +229,7 @@ describe("creating a target", () => {
       { token: TOKEN },
       { unmanagedPolicy: "delete" },
       { autoSync: "yes" },
+      { autoRemediate: "yes" },
       { name: "   " },
       { connectionId: "not-a-uuid" },
     ]) {
@@ -345,6 +350,7 @@ describe("changing a target", () => {
       config: { group: 3 },
       environmentMapping: { prod: "production" },
       autoSync: true,
+      autoRemediate: true,
     });
     expect(res.status).toBe(200);
     expect(res.json).toMatchObject({
@@ -355,13 +361,15 @@ describe("changing a target", () => {
       environmentMapping: { prod: "production" },
       unmanagedPolicy: "adopt", // untouched
       autoSync: true,
+      autoRemediate: true,
       connectionId: conn,
     });
     const [e] = (await events(x.id)).filter((v) => v.action === "sync_target.update");
     expect(e?.metadata).toMatchObject({
       name: "renamed",
-      fields: ["name", "config", "environmentMapping", "autoSync"],
+      fields: ["name", "config", "environmentMapping", "autoSync", "autoRemediate"],
       autoSync: true,
+      autoRemediate: true,
     });
   });
 

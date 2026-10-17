@@ -249,10 +249,16 @@ export async function planTarget(
   }
 }
 
-/** Stores a plan as a run that can be applied for a while. The caller audits it. */
-export function storePlan(tx: Executor, target: SyncTarget, { desired, items }: Planned) {
+/** How many lines a plan has of each action. */
+export function countActions(items: Planned["items"]) {
   const counts = Object.fromEntries(ACTIONS.map((a) => [a, 0])) as Record<PlanAction, number>;
   for (const item of items) counts[item.action]++;
+  return counts;
+}
+
+/** Stores a plan as a run that can be applied for a while. The caller audits it. */
+export function storePlan(tx: Executor, target: SyncTarget, { desired, items }: Planned) {
+  const counts = countActions(items);
   return createSyncRun(
     tx,
     {
