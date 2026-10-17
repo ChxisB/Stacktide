@@ -16,7 +16,7 @@ Done when: tests show a thrown domain error maps to the right status/code, and a
 Do: REST endpoints with zod validation and cursor pagination; every mutation writes an audit event.
 Done when: endpoint tests cover validation errors, pagination edges, not-found and audit rows.
 
-### API-5 - OpenAPI and typed client  `[ ]` S - deps: API-4
+### API-5 - OpenAPI and typed client  `[x]` S - deps: API-4
 Do: Generate OpenAPI from the routes; export a typed client package that CLI and UI share.
 Done when: a test calls the API through the typed client; CI fails if the generated spec is stale.
 

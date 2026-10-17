@@ -115,6 +115,53 @@ describe("request id", () => {
   });
 });
 
+describe("request media type", () => {
+  const app = () =>
+    setup()
+      .app.post("/echo", ({ body }) => body, {
+        body: t.Object({ name: t.String() }),
+        parse: "json",
+      })
+      .post("/ping", () => "pong");
+  const post = (type: string | undefined, body?: string) =>
+    app().handle(
+      new Request("http://localhost/echo", {
+        method: "POST",
+        headers: type ? { "content-type": type } : {},
+        body,
+      }),
+    );
+
+  test("a body that is not JSON is a 415 problem, whatever it looks like", async () => {
+    // text/plain and urlencoded are what a cross-site form can send without a preflight.
+    for (const [type, body] of [
+      ["text/plain", '{"name":"x"}'],
+      ["application/x-www-form-urlencoded", "name=x"],
+      [
+        "multipart/form-data; boundary=b",
+        '--b\r\ncontent-disposition: form-data; name="name"\r\n\r\nx\r\n--b--',
+      ],
+      [undefined, '{"name":"x"}'],
+    ] as const) {
+      const res = await post(type, body);
+      expect([type, res.status]).toEqual([type, 415]);
+      expect(await res.json()).toMatchObject({ code: "unsupported_media_type" });
+    }
+  });
+
+  test("JSON, with or without parameters, passes; so does no body at all", async () => {
+    for (const type of [
+      "application/json",
+      "application/json; charset=utf-8",
+      "Application/JSON",
+    ]) {
+      expect([type, (await post(type, '{"name":"x"}')).status]).toEqual([type, 200]);
+    }
+    const res = await app().handle(new Request("http://localhost/ping", { method: "POST" }));
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("error mapping", () => {
   const withRoutes = () => {
     const s = setup();

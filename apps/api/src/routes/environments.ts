@@ -12,19 +12,33 @@ import { z } from "zod";
 import { auditPlugin } from "../audit";
 import {
   atLeastOne,
+  deleteResponses,
   iso,
   mapDbError,
   name,
   nonEmpty,
   notFound,
   paged,
+  pageOf,
   pageQuery,
   type RouteDeps,
+  readErrors,
   slug,
+  stamps,
   taken,
+  writeErrors,
 } from "./shared";
 
-const envDto = (e: typeof environments.$inferSelect) => ({
+const envSchema = z.object({
+  id: z.uuid(),
+  organizationId: z.uuid(),
+  projectId: z.uuid(),
+  name: z.string(),
+  slug: z.string(),
+  sortOrder: z.number().int(),
+  ...stamps,
+});
+const envDto = (e: typeof environments.$inferSelect): z.infer<typeof envSchema> => ({
   id: e.id,
   organizationId: e.organizationId,
   projectId: e.projectId,
@@ -61,7 +75,7 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
   new Elysia({ prefix: "/organizations/:orgId/projects/:projectId/environments" })
     .use(auditPlugin(principal))
     .get(
-      "/",
+      "",
       async ({ params: { orgId, projectId }, query }) => {
         if (!(await getProject(db, orgId, projectId))) throw notFound("Project");
         return paged(query, {
@@ -71,7 +85,7 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
           dto: envDto,
         });
       },
-      { params, query: pageQuery },
+      { params, query: pageQuery, response: { 200: pageOf(envSchema), ...readErrors } },
     )
     .get(
       "/:envId",
@@ -80,10 +94,10 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
         if (!env) throw notFound("Environment");
         return envDto(env);
       },
-      { params: itemParams },
+      { params: itemParams, response: { 200: envSchema, ...readErrors } },
     )
     .post(
-      "/",
+      "",
       async ({ params: { orgId, projectId }, body, audit, set }) => {
         const env = await db
           .transaction(async (tx) => {
@@ -105,7 +119,13 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
         set.status = 201;
         return envDto(env);
       },
-      { params, body: create, audit: "environment.create" },
+      {
+        params,
+        body: create,
+        parse: "json",
+        response: { 201: envSchema, ...writeErrors },
+        audit: "environment.create",
+      },
     )
     .patch(
       "/:envId",
@@ -116,7 +136,13 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
           await audit(tx, audited("environment.update", env, { fields: Object.keys(body) }));
           return envDto(env);
         }),
-      { params: itemParams, body: patch, audit: "environment.update" },
+      {
+        params: itemParams,
+        body: patch,
+        parse: "json",
+        response: { 200: envSchema, ...writeErrors },
+        audit: "environment.update",
+      },
     )
     .delete(
       "/:envId",
@@ -130,5 +156,5 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
         });
         set.status = 204;
       },
-      { params: itemParams, audit: "environment.delete" },
+      { params: itemParams, response: deleteResponses, audit: "environment.delete" },
     );

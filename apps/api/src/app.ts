@@ -3,10 +3,13 @@ import type { Db } from "@orch/db";
 import { Elysia } from "elysia";
 import { auditPlugin } from "./audit";
 import { http } from "./http";
+import { openapiPlugin } from "./openapi";
 import type { PrincipalResolver } from "./principal";
 import { environmentRoutes } from "./routes/environments";
 import { organizationRoutes } from "./routes/organizations";
 import { projectRoutes } from "./routes/projects";
+
+export type { Problem } from "./routes/shared";
 
 export interface AppDeps {
   logger: Logger;
@@ -50,6 +53,7 @@ export function createApp(deps: AppDeps) {
 
   return new Elysia({ name: "orch.api" })
     .use(http(logger))
+    .use(openapiPlugin())
     .get("/health", () => ({ status: "ok" as const }))
     .get("/ready", async ({ log }) => {
       try {

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createLogger } from "@orch/core";
-import { auditEvents } from "@orch/db";
+import { auditEvents, organizations } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { and, eq } from "drizzle-orm";
 import { createApp } from "../app";
@@ -432,6 +432,64 @@ describe("environments", () => {
     ]) {
       expect((await call("POST", envPath(org.id, p.id), body)).status).toBe(422);
     }
+  });
+});
+
+describe("paths", () => {
+  test("collections answer with and without a trailing slash", async () => {
+    expect((await call("GET", "/organizations/")).status).toBe(200);
+    expect((await call("GET", "/organizations")).status).toBe(200);
+  });
+});
+
+describe("request bodies", () => {
+  test("any case of application/json is accepted", async () => {
+    const res = await server.handle(
+      new Request("http://localhost/organizations", {
+        method: "POST",
+        headers: { "content-type": "Application/JSON" },
+        body: JSON.stringify({ slug: `up-${uniq()}`, name: "Upper" }),
+      }),
+    );
+    expect(res.status).toBe(201);
+  });
+
+  // A cross-site form can send text/plain or urlencoded without a CORS preflight: only a real
+  // application/json request may change anything.
+  test("a body that is not declared JSON is refused on every writing route, and changes nothing", async () => {
+    const org = await newOrg();
+    const p = await newProject(org.id);
+    const e = await newEnv(org.id, p.id, "e1");
+    const slug = `csrf-${Bun.randomUUIDv7().slice(-8)}`;
+    const routes = [
+      ["POST", "/organizations", { slug, name: "X" }],
+      ["PATCH", `/organizations/${org.id}`, { name: "changed" }],
+      ["POST", `/organizations/${org.id}/projects`, { name: "csrf" }],
+      ["PATCH", `/organizations/${org.id}/projects/${p.id}`, { name: "changed" }],
+      ["POST", envPath(org.id, p.id), { name: "csrf", slug: "csrf" }],
+      ["PATCH", `${envPath(org.id, p.id)}/${e.id}`, { name: "changed" }],
+    ] as const;
+    for (const [method, path, body] of routes) {
+      for (const [type, text] of [
+        ["text/plain", JSON.stringify(body)],
+        ["application/x-www-form-urlencoded", new URLSearchParams(body).toString()],
+      ] as const) {
+        const res = await server.handle(
+          new Request(`http://localhost${path}`, {
+            method,
+            headers: { "content-type": type },
+            body: text,
+          }),
+        );
+        expect([method, path, type, res.status]).toEqual([method, path, type, 415]);
+      }
+    }
+    expect((await call("GET", `/organizations/${org.id}`)).json.name).toBe("Org");
+    expect((await call("GET", `/organizations/${org.id}/projects/${p.id}`)).json.name).toBe(p.name);
+    expect((await call("GET", `${envPath(org.id, p.id)}/${e.id}`)).json.name).toBe("E1");
+    expect((await call("GET", `/organizations/${org.id}/projects`)).json.items).toHaveLength(1);
+    expect((await call("GET", envPath(org.id, p.id))).json.items).toHaveLength(1);
+    expect(await t.db.select().from(organizations).where(eq(organizations.slug, slug))).toEqual([]);
   });
 });
 

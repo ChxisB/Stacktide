@@ -13,19 +13,25 @@ import { z } from "zod";
 import { auditPlugin } from "../audit";
 import {
   atLeastOne,
+  deleteResponses,
   iso,
   mapDbError,
   name,
   nonEmpty,
   notFound,
   paged,
+  pageOf,
   pageQuery,
   type RouteDeps,
+  readErrors,
   slug,
+  stamps,
   taken,
+  writeErrors,
 } from "./shared";
 
-const orgDto = (o: typeof organizations.$inferSelect) => ({
+const orgSchema = z.object({ id: z.uuid(), slug: z.string(), name: z.string(), ...stamps });
+const orgDto = (o: typeof organizations.$inferSelect): z.infer<typeof orgSchema> => ({
   id: o.id,
   slug: o.slug,
   name: o.name,
@@ -54,7 +60,7 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
   new Elysia({ prefix: "/organizations" })
     .use(auditPlugin(principal))
     .get(
-      "/",
+      "",
       ({ query }) =>
         paged(query, {
           key: z.tuple([z.uuid()]),
@@ -62,7 +68,7 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
           fetch: (after, limit) => listOrganizations(db, { after: after?.[0], limit }),
           dto: orgDto,
         }),
-      { query: pageQuery },
+      { query: pageQuery, response: { 200: pageOf(orgSchema), ...readErrors } },
     )
     .get(
       "/:orgId",
@@ -71,10 +77,10 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
         if (!org) throw notFound("Organization");
         return orgDto(org);
       },
-      { params },
+      { params, response: { 200: orgSchema, ...readErrors } },
     )
     .post(
-      "/",
+      "",
       async ({ body, audit, set }) => {
         const org = await db
           .transaction(async (tx) => {
@@ -86,7 +92,12 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
         set.status = 201;
         return orgDto(org);
       },
-      { body: create, audit: "organization.create" },
+      {
+        body: create,
+        parse: "json",
+        response: { 201: orgSchema, ...writeErrors },
+        audit: "organization.create",
+      },
     )
     .patch(
       "/:orgId",
@@ -97,7 +108,13 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
           await audit(tx, audited("organization.update", org, { fields: Object.keys(body) }));
           return orgDto(org);
         }),
-      { params, body: patch, audit: "organization.update" },
+      {
+        params,
+        body: patch,
+        parse: "json",
+        response: { 200: orgSchema, ...writeErrors },
+        audit: "organization.update",
+      },
     )
     .delete(
       "/:orgId",
@@ -121,5 +138,5 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
           });
         set.status = 204;
       },
-      { params, audit: "organization.delete" },
+      { params, response: deleteResponses, audit: "organization.delete" },
     );

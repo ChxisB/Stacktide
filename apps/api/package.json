@@ -6,6 +6,7 @@
     ".": "./src/app.ts"
   },
   "dependencies": {
+    "@elysiajs/openapi": "1.4.16",
     "@orch/core": "workspace:*",
     "@orch/db": "workspace:*",
     "elysia": "1.4.30",

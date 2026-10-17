@@ -39,6 +39,16 @@ export const http = (logger: Logger) => {
           startedAt: performance.now(),
         });
       })
+      // Elysia parses urlencoded and multipart bodies on its own. The API speaks JSON only: a cross-site
+      // form could otherwise send a state-changing request without a CORS preflight. Routes also say
+      // `parse: "json"`, which makes the OpenAPI document list JSON only. A route that must take
+      // another body type (an upload, a form-posting webhook) has to relax this first.
+      .onRequest(({ request }) => {
+        if (request.body === null) return;
+        const type = request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+        if (type === "application/json") return;
+        return problem(415, "unsupported_media_type", stateOf(request).id, "Send JSON bodies");
+      })
       .derive({ as: "global" }, ({ request, set }) => {
         const { id, log } = stateOf(request);
         set.headers["x-request-id"] = id;

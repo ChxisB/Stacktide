@@ -13,18 +13,31 @@ import { auditPlugin } from "../audit";
 import {
   atLeastOne,
   defaultBranch,
+  deleteResponses,
   iso,
   mapDbError,
   name,
   nonEmpty,
   notFound,
   paged,
+  pageOf,
   pageQuery,
   type RouteDeps,
+  readErrors,
+  stamps,
   taken,
+  writeErrors,
 } from "./shared";
 
-export const projectDto = (p: typeof projects.$inferSelect) => ({
+const projectSchema = z.object({
+  id: z.uuid(),
+  organizationId: z.uuid(),
+  name: z.string(),
+  gitlabProjectId: z.number().int().nullable(),
+  defaultBranch: z.string(),
+  ...stamps,
+});
+export const projectDto = (p: typeof projects.$inferSelect): z.infer<typeof projectSchema> => ({
   id: p.id,
   organizationId: p.organizationId,
   name: p.name,
@@ -73,7 +86,7 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
   new Elysia({ prefix: "/organizations/:orgId/projects" })
     .use(auditPlugin(principal))
     .get(
-      "/",
+      "",
       async ({ params: { orgId }, query }) => {
         if (!(await getOrganization(db, orgId))) throw notFound("Organization");
         return paged(query, {
@@ -83,7 +96,7 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
           dto: projectDto,
         });
       },
-      { params, query: pageQuery },
+      { params, query: pageQuery, response: { 200: pageOf(projectSchema), ...readErrors } },
     )
     .get(
       "/:projectId",
@@ -92,10 +105,10 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
         if (!project) throw notFound("Project");
         return projectDto(project);
       },
-      { params: itemParams },
+      { params: itemParams, response: { 200: projectSchema, ...readErrors } },
     )
     .post(
-      "/",
+      "",
       async ({ params: { orgId }, body, audit, set }) => {
         const project = await db
           .transaction(async (tx) => {
@@ -112,7 +125,13 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
         set.status = 201;
         return projectDto(project);
       },
-      { params, body: create, audit: "project.create" },
+      {
+        params,
+        body: create,
+        parse: "json",
+        response: { 201: projectSchema, ...writeErrors },
+        audit: "project.create",
+      },
     )
     .patch(
       "/:projectId",
@@ -127,7 +146,13 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
           .catch(mapDbError(known));
         return projectDto(project);
       },
-      { params: itemParams, body: patch, audit: "project.update" },
+      {
+        params: itemParams,
+        body: patch,
+        parse: "json",
+        response: { 200: projectSchema, ...writeErrors },
+        audit: "project.update",
+      },
     )
     .delete(
       "/:projectId",
@@ -139,5 +164,5 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
         });
         set.status = 204;
       },
-      { params: itemParams, audit: "project.delete" },
+      { params: itemParams, response: deleteResponses, audit: "project.delete" },
     );

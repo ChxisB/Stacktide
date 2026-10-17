@@ -89,3 +89,26 @@ export async function paged<Row, Key extends unknown[], Dto>(
 }
 
 export const iso = (d: Date) => d.toISOString();
+
+// ---- output schemas (they also feed the OpenAPI document and the typed client)
+
+export const stamps = { createdAt: z.iso.datetime(), updatedAt: z.iso.datetime() };
+export const pageOf = <T extends z.ZodType>(item: T) =>
+  z.object({ items: z.array(item), nextCursor: z.string().nullable() });
+
+/** What `problem()` in ../problem.ts sends. */
+export const problemSchema = z.object({
+  type: z.string(),
+  title: z.string(),
+  status: z.number().int(),
+  code: z.string(),
+  detail: z.string().optional(),
+  request_id: z.string(),
+  errors: z.array(z.object({ path: z.string(), message: z.string() })).optional(),
+});
+export type Problem = z.infer<typeof problemSchema>;
+// 400: unreadable body or bad cursor, 422: input that fails validation.
+export const readErrors = { 400: problemSchema, 404: problemSchema, 422: problemSchema } as const;
+export const writeErrors = { ...readErrors, 409: problemSchema, 415: problemSchema } as const;
+/** Deletes: no body on success; they conflict (409), and 415 if a client sends a non-JSON body. */
+export const deleteResponses = { 204: z.undefined(), ...writeErrors } as const;

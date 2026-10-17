@@ -13,10 +13,25 @@
     "apps/api": {
       "name": "@orch/api",
       "dependencies": {
+        "@elysiajs/openapi": "1.4.16",
         "@orch/core": "workspace:*",
         "@orch/db": "workspace:*",
         "elysia": "1.4.30",
         "zod": "4.6.7",
+      },
+    },
+    "packages/api-client": {
+      "name": "@orch/api-client",
+      "dependencies": {
+        "@elysiajs/eden": "1.4.9",
+      },
+      "devDependencies": {
+        "@orch/api": "workspace:*",
+        "@orch/core": "workspace:*",
+        "@orch/db": "workspace:*",
+      },
+      "peerDependencies": {
+        "elysia": "1.4.30",
       },
     },
     "packages/core": {
@@ -69,6 +84,10 @@
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
 
     "@drizzle-team/brocli": ["@drizzle-team/brocli@0.10.2", "", {}, "sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w=="],
+
+    "@elysiajs/eden": ["@elysiajs/eden@1.4.9", "", { "peerDependencies": { "elysia": ">=1.4.19" } }, "sha512-3CKVD4ycVjB8nCNssfmhnUuq3SzSHkUES3v5PNCFr9LxIrx39/HVRAZ8z2sLxrFqzUs48dCBZaxoZzJ5UUVHDA=="],
+
+    "@elysiajs/openapi": ["@elysiajs/openapi@1.4.16", "", { "peerDependencies": { "@sinclair/typebox": ">= 0.34.0 < 1", "elysia": ">= 1.4.0", "typescript": ">= 5.0.0" } }, "sha512-kj8RBffE4J6myjm7nPPj6Dw1ujWt45NkdGW5sG9u3T0OfUzKN71s630/LEjajGo5jRZqFF3VHyk40lwXH2AbmQ=="],
 
     "@esbuild-kit/core-utils": ["@esbuild-kit/core-utils@3.3.2", "", { "dependencies": { "esbuild": "~0.18.20", "source-map-support": "^0.5.21" } }, "sha512-sPRAnw9CdSsRmEtnsl2WXWdyquogVpB3yZ3dgwJfe8zrOzTsV7cJvmwrKVa+0ma5BoiGJ+BoqkMvawbayKUsqQ=="],
 
@@ -127,6 +146,8 @@
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
     "@orch/api": ["@orch/api@workspace:apps/api"],
+
+    "@orch/api-client": ["@orch/api-client@workspace:packages/api-client"],
 
     "@orch/core": ["@orch/core@workspace:packages/core"],
 
