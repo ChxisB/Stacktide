@@ -28,3 +28,14 @@ export function newApiToken() {
   const token = `${prefix}.${randomToken(32)}`;
   return { token, prefix, tokenHash: hashToken(token) };
 }
+
+const CI_TOKEN = /^orchci_[A-Za-z0-9_-]{8}\.[A-Za-z0-9_-]{43}$/;
+
+/** Does `value` have the shape of a CI token (see `newCiToken`)? It never matches an API token. */
+export const isCiToken = (value: string) => CI_TOKEN.test(value);
+
+/** A new CI token, `orchci_<8 random chars>.<256 random bits>`: the plaintext and the hash that is stored. */
+export function newCiToken() {
+  const token = `orchci_${randomToken(6)}.${randomToken(32)}`;
+  return { token, tokenHash: hashToken(token) };
+}

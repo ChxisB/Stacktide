@@ -228,6 +228,53 @@ describe("scopes", () => {
   });
 });
 
+describe("a subject tied to an environment", () => {
+  const ENV = "env-1";
+  const ci = (over: Partial<Subject> = {}): Subject => ({
+    kind: "ci",
+    orgRoles: {},
+    projectRoles: { [PROJECT]: "maintainer" },
+    scopes: ["*"],
+    environmentId: ENV,
+    ...over,
+  });
+
+  test("acts on the environment it is tied to", () => {
+    expect(can(ci(), "environment.read", { ...res, environmentId: ENV })).toBe(true);
+    expect(can(ci(), "environment.update", { ...res, environmentId: ENV })).toBe(true);
+  });
+
+  test("not on another environment, nor on a request that names none", () => {
+    expect(can(ci(), "environment.read", { ...res, environmentId: "env-2" })).toBe(false);
+    expect(can(ci(), "environment.read", res)).toBe(false);
+    expect(can(ci(), "environment.read", { ...res, environmentId: "" })).toBe(false);
+  });
+
+  test("outside its environment it may read the project and nothing else", () => {
+    expect(can(ci(), "project.read", res)).toBe(true);
+    expect(can(ci(), "project.read", { ...res, environmentId: "env-2" })).toBe(true);
+    for (const action of Object.keys(RULES).filter((a) => a !== "project.read")) {
+      expect([action, can(ci(), action, res)]).toEqual([action, false]);
+    }
+    expect(can(ci(), "secret.reveal", { ...res, environmentId: "env-2" })).toBe(false);
+  });
+
+  test("roles and scopes still apply on its own environment", () => {
+    const own = { ...res, environmentId: ENV };
+    expect(can(ci({ projectRoles: { [PROJECT]: "reporter" } }), "environment.update", own)).toBe(
+      false,
+    );
+    expect(can(ci({ scopes: ["project.read"] }), "environment.read", own)).toBe(false);
+    expect(can(ci({ scopes: undefined }), "project.read", res)).toBe(false);
+  });
+
+  test("a subject tied to no environment is not held to one", () => {
+    const free = ci({ environmentId: undefined });
+    expect(can(free, "environment.read", res)).toBe(true);
+    expect(can(free, "environment.read", { ...res, environmentId: "env-2" })).toBe(true);
+  });
+});
+
 describe("visibleOrganizations", () => {
   const roles = { "org-a": "viewer", "org-b": "owner" } as const;
 

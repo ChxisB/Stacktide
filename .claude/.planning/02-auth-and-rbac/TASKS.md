@@ -20,6 +20,6 @@ Done when: tests prove the plaintext is never stored or logged, expired/revoked 
 Do: Map GitLab group/project access levels to platform roles; cache with TTL; fail closed when GitLab is unreachable.
 Done when: tests cover each access level, cache expiry and the fail-closed path.
 
-### AUTH-6 - CI OIDC exchange  `[ ]` M - deps: AUTH-3, GL-1
+### AUTH-6 - CI OIDC exchange  `[x]` M - deps: AUTH-3, GL-1
 Do: `POST /auth/ci/exchange` verifies the `id_token` (JWKS fetch + cache, `iss`, `aud`, `exp`, `nbf`), maps claims to a project/environment-scoped ci principal, returns a short-lived token.
 Done when: tests with locally signed JWTs cover valid, wrong `aud`, wrong `iss`, expired, unknown project and unprotected-ref-to-protected-env cases.

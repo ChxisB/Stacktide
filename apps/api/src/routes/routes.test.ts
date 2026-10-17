@@ -547,6 +547,7 @@ describe("audit coverage", () => {
       .sort();
     expect(declared).toEqual(
       [
+        "auth.ci_exchange",
         "auth.login",
         "auth.logout",
         "token.create",

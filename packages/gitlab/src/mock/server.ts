@@ -178,6 +178,8 @@ export function createMockGitlab(opts: MockOptions = {}) {
   let approvedUser: number | undefined;
   const codes = new Map<string, { userId: number; challenge: string; used: boolean }>();
   const accessTokens = new Map<string, number>();
+  // The signing keys `/oauth/discovery/keys` publishes (job id_tokens).
+  let jwks: unknown[] = [];
   let seq = 0;
 
   const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -213,6 +215,8 @@ export function createMockGitlab(opts: MockOptions = {}) {
       const origin = u.origin;
       const bearer = req.headers.get("authorization");
       const oauth = opts.oauth;
+      if (u.pathname === "/oauth/discovery/keys" && req.method === "GET")
+        return json({ keys: jwks });
       if (oauth && u.pathname === "/oauth/authorize" && req.method === "GET") {
         // Stricter than GitLab on purpose: a client that forgets PKCE or `state` must fail here.
         const p = u.searchParams;
@@ -786,6 +790,10 @@ export function createMockGitlab(opts: MockOptions = {}) {
     addUser(u: MockUser) {
       users.set(u.id, u);
       return u;
+    },
+    /** Replaces the keys `/oauth/discovery/keys` publishes. */
+    setJwks(keys: unknown[]) {
+      jwks = keys;
     },
     /** Whose account the next `/oauth/authorize` calls sign in; `undefined` denies them. */
     approveAs(userId: number | undefined) {

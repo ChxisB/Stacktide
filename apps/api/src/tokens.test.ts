@@ -13,7 +13,26 @@ import { eq } from "drizzle-orm";
 import { createApp } from "./app";
 import { callerPrincipal } from "./credentials";
 import { devPrincipal } from "./principal";
-import { hashToken, isApiToken, newApiToken, randomToken } from "./tokens";
+import { hashToken, isApiToken, isCiToken, newApiToken, newCiToken, randomToken } from "./tokens";
+
+describe("newCiToken", () => {
+  test("is orchci_<id>.<secret> with the hash of the whole token, and not an API token", () => {
+    const a = newCiToken();
+    expect(isCiToken(a.token)).toBe(true);
+    expect(isApiToken(a.token)).toBe(false);
+    expect(isCiToken(newApiToken().token)).toBe(false);
+    expect(a.tokenHash).toBe(hashToken(a.token));
+    expect(a.token.split(".")[1]).toHaveLength(43); // 256 bits
+    expect(newCiToken().token).not.toBe(a.token);
+  });
+
+  test("only that shape is worth a lookup", () => {
+    const { token } = newCiToken();
+    for (const bad of ["", "x", `${token}x`, token.replace("orchci_", "orchcx_"), ` ${token}`]) {
+      expect(isCiToken(bad)).toBe(false);
+    }
+  });
+});
 
 describe("newApiToken", () => {
   test("is orch_<id>.<secret> with the hash of the whole token and its own prefix", () => {

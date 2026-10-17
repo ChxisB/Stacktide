@@ -1,9 +1,11 @@
 import type { Logger } from "@orch/core";
 import type { Db } from "@orch/db";
-import { createGitlab, gitlabOAuth } from "@orch/gitlab";
+import { createGitlab, gitlabKeys, gitlabOAuth } from "@orch/gitlab";
 import { z } from "zod";
+import { keyCache } from "./id-token";
 import { gitlabRoles } from "./membership";
 import type { AuthDeps } from "./routes/auth";
+import type { CiDeps } from "./routes/ci";
 
 const KEYS = [
   "GITLAB_URL",
@@ -15,7 +17,8 @@ const KEYS = [
 /**
  * Sign in with GitLab: all four settings or none, so a half-set deploy fails at start, not at login.
  * `GITLAB_MEMBERSHIP_TOKEN` (needs the four) is what reads who is a member of the linked
- * groups and projects; without it nobody holds a role.
+ * groups and projects; without it nobody holds a role. `ORCH_CI_AUDIENCE` (needs `GITLAB_URL`,
+ * so the four) turns on the CI `id_token` exchange: the `aud` jobs ask for.
  */
 export const authEnv = z
   .object({
@@ -24,8 +27,12 @@ export const authEnv = z
     GITLAB_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
     GITLAB_OAUTH_REDIRECT_URI: z.url().optional(),
     GITLAB_MEMBERSHIP_TOKEN: z.string().min(1).optional(),
+    ORCH_CI_AUDIENCE: z.string().min(1).optional(),
   })
   .superRefine((c, ctx) => {
+    if (c.ORCH_CI_AUDIENCE !== undefined && c.GITLAB_URL === undefined) {
+      ctx.addIssue({ code: "custom", path: ["GITLAB_URL"], message: "required" });
+    }
     if (c.GITLAB_MEMBERSHIP_TOKEN === undefined && KEYS.every((k) => c[k] === undefined)) return;
     for (const k of KEYS) {
       if (c[k] === undefined) ctx.addIssue({ code: "custom", path: [k], message: "required" });
@@ -65,4 +72,16 @@ export function rolesFromEnv(c: z.output<typeof authEnv>, db: Db, logger: Logger
   if (!baseUrl || !token) return undefined;
   const gitlab = createGitlab({ baseUrl, auth: { type: "private-token", token } });
   return gitlabRoles({ db, gitlab, logger });
+}
+
+/** The CI `id_token` exchange, or nothing (it then answers 503) when no audience is set. */
+export function ciFromEnv(c: z.output<typeof authEnv>): CiDeps | undefined {
+  const { GITLAB_URL: baseUrl, ORCH_CI_AUDIENCE: audience } = c;
+  if (!baseUrl || !audience) return undefined;
+  const keys = gitlabKeys({ baseUrl });
+  return {
+    key: keyCache({ fetch: () => keys.jwks() }),
+    issuer: baseUrl.replace(/\/+$/, ""), // GitLab's `iss` has no trailing slash
+    audience,
+  };
 }

@@ -55,6 +55,8 @@ export interface Subject {
    * them (none means nothing is allowed); for users they are optional.
    */
   scopes?: readonly string[];
+  /** Ties the subject to one environment (a CI job's): see `can()`. */
+  environmentId?: string;
 }
 
 /**
@@ -65,6 +67,8 @@ export interface Subject {
 export interface Resource {
   organizationId?: string;
   projectId?: string;
+  /** The environment the request names, from the path. */
+  environmentId?: string;
 }
 
 const KINDS: readonly string[] = ["user", "token", "ci"];
@@ -83,10 +87,24 @@ const scopeMatches = (scope: string, action: string) =>
 const inScope = (scopes: unknown, action: string) =>
   Array.isArray(scopes) && scopes.some((s) => typeof s === "string" && scopeMatches(s, action));
 
-/** Pure and total: bad input, an unknown action or an unknown role is a no. */
+/** What a subject tied to one environment may do outside that environment. */
+const BEYOND_ENVIRONMENT: readonly string[] = ["project.read"];
+
+/**
+ * Pure and total: bad input, an unknown action or an unknown role is a no. A subject tied to an
+ * environment may do nothing but read the project, except on resources that name that environment
+ * (so a list of environments is not for it either).
+ */
 export function can(subject: Subject, action: string, resource: Resource = {}): boolean {
   if (!isAction(action) || !KINDS.includes(subject.kind)) return false;
   if (subject.scopes === undefined ? subject.kind !== "user" : !inScope(subject.scopes, action)) {
+    return false;
+  }
+  if (
+    subject.environmentId !== undefined &&
+    resource.environmentId !== subject.environmentId &&
+    !BEYOND_ENVIRONMENT.includes(action)
+  ) {
     return false;
   }
   const rule: Rule = RULES[action];

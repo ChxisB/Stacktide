@@ -388,12 +388,13 @@ describe("schema conventions", () => {
     expect(rows.map((r) => r.name)).toEqual([]);
   });
 
-  // Append-only tables have a single timestamp (`at`): an `updated_at` could never change.
+  // Append-only tables have a single timestamp (`at`, `created_at`): an `updated_at` could never change.
+  // ci_tokens rows are written once and then only expire or cascade away.
   test("every table has created_at and updated_at, append-only ones excepted", async () => {
     const rows = await t.db.execute(sql`
       SELECT t.table_name AS name FROM information_schema.tables t
       WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE'
-        AND t.table_name NOT IN ('audit_events')
+        AND t.table_name NOT IN ('audit_events', 'ci_tokens')
         AND (SELECT count(*) FROM information_schema.columns c
              WHERE c.table_schema = 'public' AND c.table_name = t.table_name
                AND c.column_name IN ('created_at', 'updated_at')) < 2`);

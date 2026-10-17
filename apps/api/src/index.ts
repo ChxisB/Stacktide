@@ -2,7 +2,7 @@ import { createLogger, loadConfig } from "@orch/core";
 import { createDb, pingDb } from "@orch/db";
 import { z } from "zod";
 import { createApp } from "./app";
-import { accessEnv, authEnv, authFromEnv, rolesFromEnv } from "./auth-config";
+import { accessEnv, authEnv, authFromEnv, ciFromEnv, rolesFromEnv } from "./auth-config";
 import { callerPrincipal } from "./credentials";
 import { devPrincipal } from "./principal";
 
@@ -53,6 +53,7 @@ const app = createApp({
       }),
   ready: () => pingDb(db),
   auth: authFromEnv(config),
+  ci: ciFromEnv(config),
 }).listen({
   hostname: config.HOST,
   port: config.PORT,

@@ -57,6 +57,13 @@
       "when": 1792230124898,
       "tag": "0007_org_gitlab_group",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792230937583,
+      "tag": "0008_ci_tokens",
+      "breakpoints": true
     }
   ]
 }

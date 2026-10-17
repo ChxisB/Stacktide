@@ -161,6 +161,7 @@ describe("coverage", () => {
       "GET /auth/me",
       "GET /health",
       "GET /ready",
+      "POST /auth/ci/exchange",
       "POST /auth/logout",
     ]);
     expect(marked("x-signed-in").sort()).toEqual([

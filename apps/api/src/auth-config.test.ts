@@ -4,7 +4,7 @@ import { createOrganization, upsertUser } from "@orch/db";
 import { createTestDb } from "@orch/db/testing";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import { z } from "zod";
-import { accessEnv, authEnv, authFromEnv, rolesFromEnv } from "./auth-config";
+import { accessEnv, authEnv, authFromEnv, ciFromEnv, rolesFromEnv } from "./auth-config";
 
 const SECRET = "client-secret-CANARY-8812";
 const full = {
@@ -14,6 +14,36 @@ const full = {
   GITLAB_OAUTH_REDIRECT_URI: "https://orch.example.com/auth/callback",
 };
 const load = (env: Record<string, string>) => authFromEnv(loadConfig(authEnv, env));
+
+describe("CI exchange config", () => {
+  const ci = (env: Record<string, string>) => ciFromEnv(loadConfig(authEnv, env));
+
+  test("without an audience the exchange is off", () => {
+    expect(ci({})).toBeUndefined();
+    expect(ci(full)).toBeUndefined();
+  });
+
+  test("the audience needs the GitLab settings it is checked against", () => {
+    try {
+      ci({ ORCH_CI_AUDIENCE: "orch.example.com" });
+      expect.unreachable();
+    } catch (e) {
+      expect((e as ConfigError).keys).toEqual(["GITLAB_URL"]);
+    }
+    expect(() => ci({ ORCH_CI_AUDIENCE: "" })).toThrow(ConfigError);
+  });
+
+  test("the issuer is the instance URL without a trailing slash", () => {
+    const env = { ...full, ORCH_CI_AUDIENCE: "orch.example.com" };
+    expect(ci(env)).toMatchObject({
+      issuer: "https://gitlab.example.com",
+      audience: "orch.example.com",
+    });
+    expect(ci({ ...env, GITLAB_URL: "https://gitlab.example.com/gl/" })?.issuer).toBe(
+      "https://gitlab.example.com/gl",
+    );
+  });
+});
 
 describe("auth config", () => {
   test("nothing set: sign-in is simply off", () => {

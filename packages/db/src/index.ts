@@ -7,6 +7,7 @@ import * as schema from "./schema";
 
 export * from "./audit";
 export * from "./auth";
+export * from "./ci";
 export * from "./jobs";
 export * from "./pg-error";
 export * from "./repo";

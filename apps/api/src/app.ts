@@ -7,6 +7,7 @@ import { http } from "./http";
 import { openapiPlugin } from "./openapi";
 import type { PrincipalResolver } from "./principal";
 import { type AuthDeps, authRoutes } from "./routes/auth";
+import { type CiDeps, ciRoutes } from "./routes/ci";
 import { environmentRoutes } from "./routes/environments";
 import { organizationRoutes } from "./routes/organizations";
 import { projectRoutes } from "./routes/projects";
@@ -23,6 +24,8 @@ export interface AppDeps {
   readyTimeoutMs?: number;
   /** GitLab sign-in and sessions (see `AuthDeps`). */
   auth?: AuthDeps;
+  /** CI jobs exchange their GitLab `id_token` for a token (see `CiDeps`). Left out, the exchange answers 503. */
+  ci?: CiDeps;
 }
 
 // Registered by the OpenAPI plugin, which cannot carry route options. The document describes the
@@ -81,6 +84,7 @@ export function createApp(deps: AppDeps) {
     )
     .use(auditPlugin(principal))
     .use(authRoutes(deps))
+    .use(ciRoutes(deps))
     .use(organizationRoutes(deps))
     .use(projectRoutes(deps))
     .use(environmentRoutes(deps))

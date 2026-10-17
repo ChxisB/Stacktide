@@ -20,7 +20,7 @@ export function checkSessionTtl(ttlMs: number) {
   }
 }
 
-function checkHash(tokenHash: string) {
+export function checkHash(tokenHash: string) {
   // Only a hash may reach the table: a caller that passes the cookie value itself is a bug.
   if (!SHA256_HEX.test(tokenHash))
     throw new AuthStoreError("tokenHash must be a SHA-256 hex digest");

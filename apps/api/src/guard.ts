@@ -52,7 +52,11 @@ interface Ctx {
 function enforce({ principal, params }: Ctx, action: string) {
   if (!principal) throw unauthenticated();
   if (principal.kind === "dev") return;
-  const resource = { organizationId: params?.orgId, projectId: params?.projectId };
+  const resource = {
+    organizationId: params?.orgId,
+    projectId: params?.projectId,
+    environmentId: params?.envId,
+  };
   if (can(principal.subject, action, resource)) return;
   const parent = resource.projectId ? "project.read" : "organization.read";
   if (resource.organizationId && !can(principal.subject, parent, resource)) {
