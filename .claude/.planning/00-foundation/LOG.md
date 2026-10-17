@@ -21,3 +21,11 @@
 - New deps (exact-pinned, devDependencies): `@biomejs/biome` 2.5.15 (ADR-0012 lint+format), `typescript` 7.0.2 (typecheck gate), `@types/bun` 1.4.3 (types for `bun:test`/Bun APIs).
 - Biome 2.5 deprecates `linter.rules.recommended`; omitted since recommended is the default.
 - Config + one constant only: no `/code-review`.
+
+## 2026-10-17 FND-4
+- `packages/core`: `loadConfig(schema, env)` -> throws `ConfigError` carrying key names + a value-free reason (`missing` or the zod issue code), never values or zod issues. `createLogger({write, level, bindings})` -> JSON lines; `redact()` masks sensitive keys at any depth (arrays, Headers, Map, Set, Errors incl. `cause`/`code`), scrubs secrets inside strings (URL userinfo, `Bearer`, sensitive query params), masks binary buffers (future DEKs) as `[Binary]`, stringifies BigInt, survives cycles and throwing getters.
+- Gate: `bun run check` green, 23 tests. Includes canary leak tests (invariant 1).
+- `/code-review` (medium) found 9; fixed: key-name coverage, string scrubbing incl. error message/stack, error cause/code, unknown level now falls back to info (was: everything incl. debug), Map/Set/URL, throwing getter, config reasons, one vacuous test. Not changed: `key`/`value` over-redaction (SPEC mandates it); built-ins `time/level/msg` win over same-named caller fields (intentional); per-task completion doc (the skill writes it in Phase 4).
+- Security review (inline): `/security-review` diffs against `origin/HEAD` and this repo has no remote, so it cannot run. Reviewed by hand instead and found a real ReDoS in the query-param scrubber (1.2s on 200KB, quadratic); bounded the quantifiers and added a timing test. **Process note: `/security-review` is unusable until a remote exists; I do an inline review and record it here.**
+- Known limit: redaction is key-name and pattern based. A secret under an innocuous key (`content`, `data`) is not caught. Callers must still never log secret values.
+- New dep: `zod` 4.6.7 in `packages/core` (SPEC: one zod schema per app).

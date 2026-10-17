@@ -12,7 +12,7 @@ Done when: `bun install` succeeds; `git status` shows no ignored secrets.
 Do: Biome config; scripts `typecheck`, `lint`, `test`, `check`; one smoke test in `packages/core`.
 Done when: `bun run check` is green, and a deliberate type error, lint error and failing test each turn it red (verify once, then revert).
 
-### FND-4 - Config loader and redacting logger  `[ ]` S - deps: FND-3
+### FND-4 - Config loader and redacting logger  `[x]` S - deps: FND-3
 Do: In `packages/core`: `loadConfig(schema, env)` and `createLogger()`.
 Done when: tests prove invalid env throws listing all bad keys without values; logger redacts nested objects and headers.
 
