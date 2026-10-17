@@ -1,4 +1,5 @@
 import { SyncError } from "./errors";
+import { byKeyThenScope, refId as idOf } from "./ref";
 import type { SyncAdapter } from "./types";
 import { ALL_SCOPES, type Capabilities, type ItemInput, type ItemRef, type Remote } from "./types";
 
@@ -6,10 +7,6 @@ export interface FakeConfig {
   /** Which in-memory target: two names are two targets. */
   store: string;
 }
-
-const idOf = ({ key, scope }: ItemRef) => JSON.stringify([scope, key]);
-const byKeyThenScope = (a: ItemRef, b: ItemRef) =>
-  a.key === b.key ? (a.scope < b.scope ? -1 : a.scope > b.scope ? 1 : 0) : a.key < b.key ? -1 : 1;
 
 /**
  * An adapter over memory, for tests of the engine and as the reference the conformance suite is

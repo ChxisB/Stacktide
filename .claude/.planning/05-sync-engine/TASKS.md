@@ -4,7 +4,7 @@
 Do: `packages/sync` types, an in-memory fake adapter and a reusable conformance suite (`runAdapterConformance(factory)`).
 Done when: the fake passes the suite; the suite covers create/update/delete/idempotency/not-found/scope isolation.
 
-### SYNC-2 - Diff and plan engine  `[ ]` M - deps: SYNC-1
+### SYNC-2 - Diff and plan engine  `[x]` M - deps: SYNC-1
 Do: pure `plan(desired, actual, policy)` with unmanaged-key policy, deterministic ordering, value comparison via equality or last-applied HMAC when `canReadValues` is false.
 Done when: table + property tests cover each action, each policy, hidden-value targets, and that the plan type has no value fields.
 
