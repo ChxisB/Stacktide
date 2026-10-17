@@ -8,7 +8,7 @@ Done when: a test runs a migration against a fresh DB and two test files run in 
 Do: `organizations`, `projects` (name, gitlab_project_id nullable, default_branch), `environments` (name, slug, order; unique per project) + repo functions.
 Done when: repo tests cover insert, unique violations and cascade rules.
 
-### API-3 - HTTP skeleton  `[ ]` M - deps: FND-4
+### API-3 - HTTP skeleton  `[x]` M - deps: FND-4
 Do: `apps/api` bootstrap; request-id; logger per request; error -> problem+json mapper; `/health`, `/ready` (checks DB); graceful shutdown; `ctx.principal` with a dev stub.
 Done when: tests show a thrown domain error maps to the right status/code, and an unknown error returns a generic 500 body with no internals.
 

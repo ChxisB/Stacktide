@@ -14,6 +14,10 @@ bun run check      # typecheck + lint + test
 bun run dev:db     # local Postgres on 127.0.0.1:5433 (needs Docker)
 ```
 
+## API
+
+`bun run dev:db && bun run db:migrate && bun run dev` starts the API on `127.0.0.1:3000` (`HOST`, `PORT`, `LOG_LEVEL` override). `GET /health` is liveness, `GET /ready` checks the database. Errors are `application/problem+json` with a stable `code` and a `request_id` that is also in the logs. Until real authentication exists (AUTH-3) every caller is the dev principal: keep it on loopback, and it refuses to start with `NODE_ENV=production`.
+
 ## Local database
 
 `bun run dev:db` starts Postgres 18 from [docker-compose.yml](docker-compose.yml) using the throwaway defaults in [.env.example](.env.example), and returns once it is healthy. Data lives in the named volume `orch_pgdata`.

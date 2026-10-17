@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { SQL } from "bun";
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import { migrate } from "drizzle-orm/bun-sql/migrator";
 import * as schema from "./schema";
@@ -14,6 +15,11 @@ export function createDb(url: string, max = 10) {
 }
 
 export type Db = ReturnType<typeof createDb>;
+
+/** Resolves when the database answers; rejects otherwise. */
+export function pingDb(db: Db) {
+  return db.execute(sql`SELECT 1`);
+}
 
 /** Forward-only: applies pending SQL files from `packages/db/drizzle`. */
 export function migrateDb(db: Db): Promise<void> {
