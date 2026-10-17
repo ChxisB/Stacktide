@@ -9,3 +9,8 @@
 - Wrote `docs/adr/0001..0012` from ROADMAP D1-D12 (all Accepted). ROADMAP decisions table marked confirmed.
 - Gate: docs only, no code; `/code-review` and `/security-review` not applicable.
 - Follow-ups: API-1 verifies Drizzle on `Bun.sql` (ADR-0004); UI-1 revisits ADR-0011.
+
+## 2026-10-17 FND-2
+- `git init -b main`; `.gitignore`; root `package.json` (workspaces `apps/*`, `packages/*`); `tsconfig.base.json`; README quickstart.
+- Gate: `bun install` ok (no packages yet); `git check-ignore` confirms `.env*`, `*.pem`, `*.key`, `secrets.json` ignored and `.env.example` not. Config-only task: no `/code-review` (nothing to review beyond the invariants, which it does not touch).
+- Deps added: none. `@types/bun` + `typescript` come with FND-3.

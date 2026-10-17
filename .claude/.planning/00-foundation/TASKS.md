@@ -4,7 +4,7 @@
 Do: Walk the user through ROADMAP D1-D12, record each answer as a short `docs/adr/000N-title.md` (context, decision, consequences). Mark the ROADMAP table "confirmed".
 Done when: user confirmed every row; ADR files exist; ROADMAP matches. **Human gate.**
 
-### FND-2 - Bootstrap repo  `[~]` S - deps: FND-1
+### FND-2 - Bootstrap repo  `[x]` S - deps: FND-1
 Do: `git init` (branch `main`); `.gitignore` (node_modules, dist, `.env*` except `.env.example`, `*.pem`, `*.key`, `secrets.json`); root `package.json` with workspaces; `tsconfig.base.json` (strict, `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, bundler resolution); README quickstart.
 Done when: `bun install` succeeds; `git status` shows no ignored secrets.
 
