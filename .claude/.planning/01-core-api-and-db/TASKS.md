@@ -1,6 +1,6 @@
 # 01 Core API and DB - Tasks
 
-### API-1 - DB package, migrations, test helper  `[ ]` M - deps: FND-4, FND-5
+### API-1 - DB package, migrations, test helper  `[x]` M - deps: FND-4, FND-5
 Do: `packages/db` with Drizzle on `Bun.sql`; `db:migrate` / `db:generate` scripts; test helper that gives each test file an isolated database and drops it after.
 Done when: a test runs a migration against a fresh DB and two test files run in parallel without interfering.
 

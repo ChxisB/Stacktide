@@ -8,9 +8,11 @@
   ],
   "scripts": {
     "dev:db": "docker compose --env-file .env.example up -d --wait db",
+    "db:generate": "cd packages/db && drizzle-kit generate",
+    "db:migrate": "bun --env-file=.env.example packages/db/src/migrate.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test",
+    "test": "bun test --env-file=.env.example",
     "check": "bun run typecheck && bun run lint && bun run test"
   },
   "devDependencies": {
