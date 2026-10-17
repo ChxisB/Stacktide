@@ -24,6 +24,7 @@ Done when: tests cover success and wrong-audience failure; docs snippet for `.gi
 Do: `orch sync plan|apply`, `orch pipeline detect|setup <template>` as thin wrappers.
 Done when: golden-output tests with the typed client stubbed.
 
-### CLI-7 - Release binaries  `[ ]` S - deps: CLI-1, FND-6
+### CLI-7 - Release binaries  `[!]` S - deps: CLI-1, FND-6
 Do: CI job building all targets, checksums, and an install script that verifies them.
 Done when: a pipeline produces four binaries plus `SHA256SUMS`, and the install script rejects a tampered binary in a test.
+Blocked: built and tested locally (four binaries + `SHA256SUMS` built here; tampered binary rejected in `release.test.ts`). Remaining human step: push a `v0.1.0` tag to the real GitLab project and check the `release` job (needs FND-6 verified).
