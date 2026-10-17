@@ -203,6 +203,12 @@ a:focus-visible {
 input[type="checkbox"] {
   padding: 0;
 }
+fieldset.bare {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
 fieldset.list {
   border: 1px solid var(--border);
   border-radius: var(--radius);

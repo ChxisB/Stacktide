@@ -1,19 +1,30 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { auditEvents, createProject } from "@orch/db";
+import { createProject } from "@orch/db";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { and, eq } from "drizzle-orm";
 import { Providers } from "./app";
 import { AuthGate } from "./auth";
 import { OrgProvider, RequireOrg } from "./org";
 import { type Backend, clientVia, down, mount, pathOf, startBackend } from "./testing";
 import { VariablesPage } from "./variables";
+import {
+  cellOf,
+  holding as holdingOn,
+  must,
+  ref,
+  SECRET,
+  scene as sceneOn,
+  tagsOf,
+} from "./variables.fixture";
 
 let backend: Backend;
 beforeAll(async () => {
   backend = await startBackend();
 });
 afterAll(() => backend.stop());
+const scene = (options?: { reporter?: boolean; environments?: string[] }) =>
+  sceneOn(backend, options);
+const holding = (cookie: string) => holdingOn(backend, cookie);
 beforeEach(() => {
   window.location.hash = "#/variables";
   try {
@@ -22,101 +33,6 @@ beforeEach(() => {
     // the page copes without it
   }
 });
-
-const SECRET = "s3cr3t-value-9f2c41";
-
-/** A reference to another variable, as a value holds it. */
-const ref = (name: string) => `\${${name}}`;
-
-/** What a call must have answered: a test that sets up through the API fails loudly when it did not. */
-function must<T>(res: { data: T | null; error: unknown }): T {
-  if (res.data === null) throw new Error(`setup failed: ${JSON.stringify(res.error)}`);
-  return res.data;
-}
-
-/**
- * An organization with a project, two environments (dev, staging), an admin and, when asked for,
- * a project reporter (who may read variables but not reveal a secret).
- */
-async function scene(options: { reporter?: boolean; environments?: string[] } = {}) {
-  const org = await backend.organization();
-  const project = await createProject(backend.t.db, { organizationId: org.id, name: "acme/web" });
-  const admin = await backend.signIn(`admin of ${org.slug}`, {
-    orgRoles: { [org.id]: "admin" },
-    projectRoles: {},
-  });
-  const reporter = options.reporter
-    ? await backend.signIn(`reporter of ${org.slug}`, {
-        orgRoles: { [org.id]: "member" },
-        projectRoles: { [project.id]: "reporter" },
-      })
-    : undefined;
-  const orgScope = admin.client.organizations({ orgId: org.id });
-  const scope = orgScope.projects({ projectId: project.id });
-  const envs: Record<string, string> = {};
-  for (const name of options.environments ?? ["dev", "staging"]) {
-    const slug = name.toLowerCase();
-    envs[name] = must(await scope.environments.post({ name, slug })).id;
-  }
-  const kind = (secret: boolean) => (secret ? "secret" : "plain") as "secret" | "plain";
-  return {
-    org,
-    project,
-    client: (reporter ?? admin).client,
-    cookie: (reporter ?? admin).cookie,
-    envs,
-    scope,
-    /** Variables made through the API, at the organization, the project or one environment. */
-    put: {
-      org: async (key: string, value: string, secret = false) =>
-        must(await orgScope.variables.post({ key, kind: kind(secret), value })),
-      project: async (key: string, value: string, secret = false) =>
-        must(await scope.variables.post({ key, kind: kind(secret), value })),
-      env: async (name: string, key: string, value: string, secret = false) =>
-        must(
-          await scope
-            .environments({ envId: envs[name] ?? "" })
-            .variables.post({ key, kind: kind(secret), value }),
-        ),
-    },
-    audit: (action: string) =>
-      backend.t.db
-        .select()
-        .from(auditEvents)
-        .where(and(eq(auditEvents.action, action), eq(auditEvents.organizationId, org.id))),
-  };
-}
-
-/** The table cell of a variable in an environment. */
-function cellOf(key: string, env: string) {
-  const column = screen.getAllByRole("columnheader").findIndex((h) => h.textContent === env);
-  if (column < 1) throw new Error(`no column ${env}`);
-  const row = screen.getByRole("rowheader", { name: key }).closest("tr");
-  if (!row) throw new Error(`no row ${key}`);
-  return within(row).getAllByRole("cell")[column - 1] as HTMLElement;
-}
-
-const tagsOf = (cell: HTMLElement) =>
-  Array.from(cell.querySelectorAll(".tag")).map((t) => t.textContent);
-
-/** A client that can hold every read of a resolved set, to look at the screen between a write and its refresh. */
-function holding(cookie: string) {
-  let gate: Promise<void> | undefined;
-  let open: (() => void) | undefined;
-  const client = clientVia(backend.api, cookie, async (request, send) => {
-    if (gate && pathOf(request).endsWith("/resolved-variables")) await gate;
-    return send();
-  });
-  return {
-    client,
-    hold: () => {
-      gate = new Promise((resolve) => {
-        open = resolve;
-      });
-    },
-    release: () => open?.(),
-  };
-}
 
 /** The page alone, with a short time before a revealed value hides again. */
 function mountPage(client: ReturnType<Backend["anonymous"]>, revealMs: number) {

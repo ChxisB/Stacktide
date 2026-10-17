@@ -12,7 +12,7 @@ Done when: component tests cover bad token, empty list and partial import errors
 Do: environment matrix (rows = keys, columns = environments) with inherited/overridden markers, add/edit/delete, masked secrets with audited reveal that auto-hides.
 Done when: tests cover reveal flow, inheritance display and delete confirmation.
 
-### UI-4 - Variable history and import  `[ ]` M - deps: UI-3, VAR-5, VAR-6
+### UI-4 - Variable history and import  `[x]` M - deps: UI-3, VAR-5, VAR-6
 Do: version history drawer with rollback; `.env` paste/upload import with dry-run preview.
 Done when: tests cover rollback confirmation and that the import preview shows key names and conflicts, not secret values.
 
