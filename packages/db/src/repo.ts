@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { BunSQLQueryResultHKT } from "drizzle-orm/bun-sql";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import type * as schema from "./schema";
@@ -35,12 +35,17 @@ export async function getOrganization(db: Executor, id: string) {
   return (await db.select().from(organizations).where(eq(organizations.id, id)))[0];
 }
 
-/** Ordered by id, which is time-ordered (v7): creation order. */
-export function listOrganizations(db: Executor, page: Page<string>) {
+/** Ordered by id, which is time-ordered (v7): creation order. `only` limits the list to these ids. */
+export function listOrganizations(db: Executor, page: Page<string>, only?: readonly string[]) {
   return db
     .select()
     .from(organizations)
-    .where(page.after ? gt(organizations.id, page.after) : undefined)
+    .where(
+      and(
+        page.after ? gt(organizations.id, page.after) : undefined,
+        only ? inArray(organizations.id, [...only]) : undefined,
+      ),
+    )
     .orderBy(asc(organizations.id))
     .limit(page.limit);
 }

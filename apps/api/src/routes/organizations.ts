@@ -1,4 +1,4 @@
-import { DomainError } from "@orch/core";
+import { DomainError, visibleOrganizations } from "@orch/core";
 import {
   createOrganization,
   deleteOrganization,
@@ -11,6 +11,7 @@ import {
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
+import { guardPlugin } from "../guard";
 import {
   atLeastOne,
   deleteResponses,
@@ -59,16 +60,25 @@ const audited = (
 export const organizationRoutes = ({ db, principal }: RouteDeps) =>
   new Elysia({ prefix: "/organizations" })
     .use(auditPlugin(principal))
+    .use(guardPlugin)
     .get(
       "",
-      ({ query }) =>
-        paged(query, {
+      ({ query, principal }) => {
+        // Only the organizations the caller holds a role in (the dev principal sees all).
+        const only =
+          principal?.kind === "dev" ? undefined : visibleOrganizations(principal?.subject);
+        return paged(query, {
           key: z.tuple([z.uuid()]),
           keyOf: (o) => [o.id],
-          fetch: (after, limit) => listOrganizations(db, { after: after?.[0], limit }),
+          fetch: (after, limit) => listOrganizations(db, { after: after?.[0], limit }, only),
           dto: orgDto,
-        }),
-      { query: pageQuery, response: { 200: pageOf(orgSchema), ...readErrors } },
+        });
+      },
+      {
+        query: pageQuery,
+        response: { 200: pageOf(orgSchema), ...readErrors },
+        signedIn: "lists only the organizations the caller holds a role in",
+      },
     )
     .get(
       "/:orgId",
@@ -77,7 +87,7 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
         if (!org) throw notFound("Organization");
         return orgDto(org);
       },
-      { params, response: { 200: orgSchema, ...readErrors } },
+      { params, response: { 200: orgSchema, ...readErrors }, guard: "organization.read" },
     )
     .post(
       "",
@@ -97,6 +107,7 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
         parse: "json",
         response: { 201: orgSchema, ...writeErrors },
         audit: "organization.create",
+        guard: "organization.create",
       },
     )
     .patch(
@@ -114,6 +125,7 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
         parse: "json",
         response: { 200: orgSchema, ...writeErrors },
         audit: "organization.update",
+        guard: "organization.update",
       },
     )
     .delete(
@@ -138,5 +150,10 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
           });
         set.status = 204;
       },
-      { params, response: deleteResponses, audit: "organization.delete" },
+      {
+        params,
+        response: deleteResponses,
+        audit: "organization.delete",
+        guard: "organization.delete",
+      },
     );

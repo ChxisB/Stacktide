@@ -8,7 +8,7 @@ Done when: tests against the mock GitLab cover happy path, bad `state`, replayed
 Do: Role/permission tables in code (not DB) and a pure `can(principal, action, resource)`.
 Done when: a table-driven test covers every role x action pair; unknown action denies.
 
-### AUTH-3 - Authorization middleware and guard coverage  `[ ]` M - deps: AUTH-1, AUTH-2
+### AUTH-3 - Authorization middleware and guard coverage  `[x]` M - deps: AUTH-1, AUTH-2
 Do: Replace the dev principal stub; route-level `guard(action)`; unauthenticated -> 401, unauthorised -> 403 (404 where existence must not leak).
 Done when: a test enumerates every registered route and fails if any lacks a guard or an explicit `public` marker.
 

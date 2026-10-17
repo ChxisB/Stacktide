@@ -10,6 +10,7 @@ import {
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
+import { guardPlugin } from "../guard";
 import {
   atLeastOne,
   deleteResponses,
@@ -74,6 +75,7 @@ const audited = (
 export const environmentRoutes = ({ db, principal }: RouteDeps) =>
   new Elysia({ prefix: "/organizations/:orgId/projects/:projectId/environments" })
     .use(auditPlugin(principal))
+    .use(guardPlugin)
     .get(
       "",
       async ({ params: { orgId, projectId }, query }) => {
@@ -85,7 +87,12 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
           dto: envDto,
         });
       },
-      { params, query: pageQuery, response: { 200: pageOf(envSchema), ...readErrors } },
+      {
+        params,
+        query: pageQuery,
+        response: { 200: pageOf(envSchema), ...readErrors },
+        guard: "environment.read",
+      },
     )
     .get(
       "/:envId",
@@ -94,7 +101,11 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
         if (!env) throw notFound("Environment");
         return envDto(env);
       },
-      { params: itemParams, response: { 200: envSchema, ...readErrors } },
+      {
+        params: itemParams,
+        response: { 200: envSchema, ...readErrors },
+        guard: "environment.read",
+      },
     )
     .post(
       "",
@@ -125,6 +136,7 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
         parse: "json",
         response: { 201: envSchema, ...writeErrors },
         audit: "environment.create",
+        guard: "environment.create",
       },
     )
     .patch(
@@ -142,6 +154,7 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
         parse: "json",
         response: { 200: envSchema, ...writeErrors },
         audit: "environment.update",
+        guard: "environment.update",
       },
     )
     .delete(
@@ -156,5 +169,10 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
         });
         set.status = 204;
       },
-      { params: itemParams, response: deleteResponses, audit: "environment.delete" },
+      {
+        params: itemParams,
+        response: deleteResponses,
+        audit: "environment.delete",
+        guard: "environment.delete",
+      },
     );

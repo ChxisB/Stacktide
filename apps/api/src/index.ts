@@ -2,39 +2,46 @@ import { createLogger, loadConfig } from "@orch/core";
 import { createDb, pingDb } from "@orch/db";
 import { z } from "zod";
 import { createApp } from "./app";
-import { authEnv, authFromEnv } from "./auth-config";
+import { accessEnv, authEnv, authFromEnv } from "./auth-config";
 import { devPrincipal } from "./principal";
+import { sessionPrincipal } from "./session";
 
 const config = loadConfig(
   z
     .object({
       DATABASE_URL: z.string().min(1),
-      // Loopback by default: the dev principal trusts every caller that can reach the port.
+      // Loopback by default: with ORCH_DEV_AUTH every caller that can reach the port is trusted.
       HOST: z.string().min(1).default("127.0.0.1"),
       PORT: z.coerce.number().int().min(0).max(65535).default(3000),
       LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
       NODE_ENV: z.string().default("development"),
     })
-    .and(authEnv),
+    .and(authEnv)
+    .and(accessEnv),
 );
 const logger = createLogger({ level: config.LOG_LEVEL });
 
-// Fail closed: until AUTH-3 every caller is the dev principal, so only run it where that is safe.
+// Fail closed: callers are the users behind a session, unless ORCH_DEV_AUTH turns authentication
+// off, and that is only safe in development on this machine.
+const devAuth = config.ORCH_DEV_AUTH !== undefined;
 const LOOPBACK = ["127.0.0.1", "localhost", "::1", "[::1]"];
-if (!["development", "test"].includes(config.NODE_ENV.toLowerCase())) {
-  logger.error("refusing to start outside development: no authentication provider is configured");
+if (devAuth && !["development", "test"].includes(config.NODE_ENV.toLowerCase())) {
+  logger.error("refusing to start outside development: ORCH_DEV_AUTH turns authentication off");
   process.exit(1);
 }
-if (!LOOPBACK.includes(config.HOST)) {
-  logger.error("refusing to start: the dev principal may only listen on a loopback address");
+if (devAuth && !LOOPBACK.includes(config.HOST)) {
+  logger.error("refusing to start: ORCH_DEV_AUTH may only listen on a loopback address");
   process.exit(1);
 }
+if (devAuth) logger.warn("authentication is off: every caller is the dev principal");
 
 const db = createDb(config.DATABASE_URL, 5);
 const app = createApp({
   logger,
   db,
-  principal: devPrincipal,
+  principal: devAuth
+    ? devPrincipal
+    : sessionPrincipal({ db, platformAdmins: config.ORCH_PLATFORM_ADMIN_GITLAB_IDS }),
   ready: () => pingDb(db),
   auth: authFromEnv(config),
 }).listen({

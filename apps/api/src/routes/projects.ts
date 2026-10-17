@@ -10,6 +10,7 @@ import {
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
+import { guardPlugin } from "../guard";
 import {
   atLeastOne,
   defaultBranch,
@@ -85,6 +86,7 @@ const audited = (
 export const projectRoutes = ({ db, principal }: RouteDeps) =>
   new Elysia({ prefix: "/organizations/:orgId/projects" })
     .use(auditPlugin(principal))
+    .use(guardPlugin)
     .get(
       "",
       async ({ params: { orgId }, query }) => {
@@ -96,7 +98,12 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
           dto: projectDto,
         });
       },
-      { params, query: pageQuery, response: { 200: pageOf(projectSchema), ...readErrors } },
+      {
+        params,
+        query: pageQuery,
+        response: { 200: pageOf(projectSchema), ...readErrors },
+        guard: "organization.read", // an org reader reads all of its projects
+      },
     )
     .get(
       "/:projectId",
@@ -105,7 +112,11 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
         if (!project) throw notFound("Project");
         return projectDto(project);
       },
-      { params: itemParams, response: { 200: projectSchema, ...readErrors } },
+      {
+        params: itemParams,
+        response: { 200: projectSchema, ...readErrors },
+        guard: "project.read",
+      },
     )
     .post(
       "",
@@ -131,6 +142,7 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
         parse: "json",
         response: { 201: projectSchema, ...writeErrors },
         audit: "project.create",
+        guard: "project.create",
       },
     )
     .patch(
@@ -152,6 +164,7 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
         parse: "json",
         response: { 200: projectSchema, ...writeErrors },
         audit: "project.update",
+        guard: "project.update",
       },
     )
     .delete(
@@ -164,5 +177,10 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
         });
         set.status = 204;
       },
-      { params: itemParams, response: deleteResponses, audit: "project.delete" },
+      {
+        params: itemParams,
+        response: deleteResponses,
+        audit: "project.delete",
+        guard: "project.delete",
+      },
     );

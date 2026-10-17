@@ -7,7 +7,7 @@ test("docs/openapi.json is current (regenerate with `bun run openapi`)", async (
   expect(await committed.text()).toBe(await buildSpec());
 });
 
-test("every API operation documents its audit action and the problems it can answer", async () => {
+test("every API operation documents its guard, audit action and the problems it can answer", async () => {
   const spec = JSON.parse(await buildSpec()) as {
     paths: Record<string, Record<string, Record<string, unknown>>>;
   };
@@ -24,11 +24,14 @@ test("every API operation documents its audit action and the problems it can ans
   for (const { id, method, op } of ops) {
     const codes = Object.keys(op.responses as object).sort();
     const writes = method !== "get";
-    const expected = writes ? ["400", "404", "409", "415", "422"] : ["400", "404", "422"];
+    const expected = writes
+      ? ["400", "401", "403", "404", "409", "415", "422"]
+      : ["400", "401", "403", "404", "422"];
     // Success codes differ per operation (200, 201, 204); the errors must all be there.
     expect([id, expected.filter((c) => !codes.includes(c))]).toEqual([id, []]);
     expect([id, codes.some((c) => c.startsWith("2"))]).toEqual([id, true]);
     expect([id, writes ? Boolean(op["x-audit"]) : true]).toEqual([id, true]);
+    expect([id, Boolean(op["x-guard"] ?? op["x-signed-in"])]).toEqual([id, true]);
   }
 });
 

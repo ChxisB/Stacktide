@@ -1,18 +1,23 @@
+import type { Subject } from "@orch/core";
 import { Elysia } from "elysia";
 
-/** Who is calling. AUTH-1/AUTH-3 own the final shape; handlers only rely on `id` and `kind`. */
-export interface Principal {
-  id: string;
-  kind: "dev";
-}
-
-/** Resolves the caller or throws a `DomainError` (401). */
-export type PrincipalResolver = (request: Request) => Promise<Principal> | Principal;
+/**
+ * Who is calling. `dev` is the local-development stand-in and may do anything; every other kind
+ * is held to its `subject` by the route guards.
+ */
+export type Principal =
+  | { id: string; kind: "dev" }
+  | { id: string; kind: Subject["kind"]; subject: Subject };
 
 /**
- * Dev-only stand-in: everyone is the same principal. AUTH-3 replaces it, and `index.ts` refuses
- * to start with it in production.
+ * Resolves the caller: nothing for an anonymous request (a guard turns that into 401), a
+ * `DomainError` for a credential that is present but unusable.
  */
+export type PrincipalResolver = (
+  request: Request,
+) => Promise<Principal | undefined> | Principal | undefined;
+
+/** Everyone is the same all-powerful principal: tests and `ORCH_DEV_AUTH` only (see `index.ts`). */
 export const devPrincipal: PrincipalResolver = () => ({ id: "dev", kind: "dev" });
 
 /**

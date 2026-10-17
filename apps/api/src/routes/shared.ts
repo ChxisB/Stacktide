@@ -107,8 +107,14 @@ export const problemSchema = z.object({
   errors: z.array(z.object({ path: z.string(), message: z.string() })).optional(),
 });
 export type Problem = z.infer<typeof problemSchema>;
-// 400: unreadable body or bad cursor, 422: input that fails validation.
-export const readErrors = { 400: problemSchema, 404: problemSchema, 422: problemSchema } as const;
+// 400: unreadable body or bad cursor, 401: no session, 403: not allowed, 422: input that fails validation.
+export const readErrors = {
+  400: problemSchema,
+  401: problemSchema,
+  403: problemSchema,
+  404: problemSchema,
+  422: problemSchema,
+} as const;
 export const writeErrors = { ...readErrors, 409: problemSchema, 415: problemSchema } as const;
 /** Deletes: no body on success; they conflict (409), and 415 if a client sends a non-JSON body. */
 export const deleteResponses = { 204: z.undefined(), ...writeErrors } as const;

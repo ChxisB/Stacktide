@@ -24,6 +24,19 @@ export const authEnv = z
     }
   });
 
+/** Who may do what, beyond the GitLab sign-in itself. */
+export const accessEnv = z.object({
+  /** `1` turns authentication off: every caller is the dev principal. `index.ts` allows it only on loopback in development. */
+  ORCH_DEV_AUTH: z.literal("1").optional(),
+  /** GitLab user ids (comma separated) that may create organizations. */
+  ORCH_PLATFORM_ADMIN_GITLAB_IDS: z
+    .string()
+    .regex(/^(\d+(\s*,\s*\d+)*)?$/, "comma separated GitLab user ids")
+    .transform((list) => (list ? list.split(",").map(Number) : [])) // empty means none
+    .refine((ids) => ids.every(Number.isSafeInteger), "GitLab user id too large")
+    .optional(),
+});
+
 /** An https redirect URI means browsers reach the API over https: cookies get `Secure`. */
 export function authFromEnv(c: z.output<typeof authEnv>): AuthDeps {
   const { GITLAB_URL: baseUrl, GITLAB_OAUTH_CLIENT_ID: clientId } = c;

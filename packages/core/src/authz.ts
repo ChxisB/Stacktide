@@ -54,7 +54,11 @@ export interface Subject {
   scopes?: readonly string[];
 }
 
-/** Ids come from the stored row of the thing being touched, never from the request. */
+/**
+ * The ids the caller's request is held to: a handler may take them from the path only if every
+ * query it runs repeats them (so `/organizations/A/projects/P` with a P that is in B finds
+ * nothing). Never an id from a body.
+ */
 export interface Resource {
   organizationId?: string;
   projectId?: string;
@@ -95,4 +99,12 @@ export function can(subject: Subject, action: string, resource: Resource = {}): 
     own(subject.projectRoles, resource.projectId) as ProjectRole,
   );
   return Math.max(inherited, direct) >= PROJECT_ROLES.indexOf(rule.project);
+}
+
+/** The organizations `subject` may read, for narrowing a list. A subject without roles sees none. */
+export function visibleOrganizations(subject: Subject | undefined): string[] {
+  if (!subject) return [];
+  return Object.keys(subject.orgRoles).filter((id) =>
+    can(subject, "organization.read", { organizationId: id }),
+  );
 }

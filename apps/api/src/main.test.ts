@@ -1,7 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createSession, upsertUser } from "@orch/db";
 import { createTestDb } from "@orch/db/testing";
+import { hashToken, randomToken } from "./tokens";
 
 const script = fileURLToPath(new URL("./index.ts", import.meta.url));
 const t = await createTestDb();
@@ -85,8 +87,51 @@ describe("api entrypoint", () => {
     await child.proc.exited;
   });
 
-  test("refuses to start in production while only the dev principal exists", async () => {
+  test("callers are checked by default: no session, no access; the probes stay open", async () => {
+    // Production is fine here: nothing runs as the dev principal.
     const child = start({ DATABASE_URL: t.url, NODE_ENV: "production" });
+    const base = `http://127.0.0.1:${await child.port()}`;
+    expect((await fetch(`${base}/health`)).status).toBe(200);
+    const res = await fetch(`${base}/organizations`);
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { code: string }).code).toBe("unauthenticated");
+    expect(
+      (await fetch(`${base}/organizations`, { headers: { cookie: "orch_session=x" } })).status,
+    ).toBe(401);
+    child.proc.kill("SIGTERM");
+    await child.proc.exited;
+  });
+
+  test("ORCH_PLATFORM_ADMIN_GITLAB_IDS decides who may create an organization", async () => {
+    const user = await upsertUser(t.db, { gitlabId: 424242, username: "pa", name: "PA" });
+    const token = randomToken();
+    await createSession(t.db, { userId: user.id, tokenHash: hashToken(token), ttlMs: 60_000 });
+    const create = async (extra: Record<string, string>) => {
+      const child = start({ DATABASE_URL: t.url, NODE_ENV: "production", ...extra });
+      const res = await fetch(`http://127.0.0.1:${await child.port()}/organizations`, {
+        method: "POST",
+        headers: { cookie: `orch_session=${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ slug: `pa-${crypto.randomUUID().slice(0, 8)}`, name: "PA" }),
+      });
+      child.proc.kill("SIGTERM");
+      await child.proc.exited;
+      return res.status;
+    };
+    expect(await create({})).toBe(403);
+    expect(await create({ ORCH_PLATFORM_ADMIN_GITLAB_IDS: "1, 424242" })).toBe(201);
+  });
+
+  test("ORCH_DEV_AUTH=1 turns authentication off, and says so", async () => {
+    const child = start({ DATABASE_URL: t.url, ORCH_DEV_AUTH: "1" });
+    const base = `http://127.0.0.1:${await child.port()}`;
+    expect((await fetch(`${base}/organizations`)).status).toBe(200);
+    child.proc.kill("SIGTERM");
+    await child.proc.exited;
+    expect(await child.output()).toContain("authentication is off");
+  });
+
+  test("refuses to start in production with authentication off", async () => {
+    const child = start({ DATABASE_URL: t.url, NODE_ENV: "production", ORCH_DEV_AUTH: "1" });
     expect(await child.proc.exited).not.toBe(0);
     const out = await child.output();
     expect(out).toContain("refusing to start outside development");
@@ -95,18 +140,26 @@ describe("api entrypoint", () => {
 
   test("refuses any environment that is not explicitly development or test", async () => {
     for (const NODE_ENV of ["Production", "staging", "prod"]) {
-      const child = start({ DATABASE_URL: t.url, NODE_ENV });
+      const child = start({ DATABASE_URL: t.url, NODE_ENV, ORCH_DEV_AUTH: "1" });
       expect(await child.proc.exited).not.toBe(0);
       expect(await child.output()).not.toContain('"listening"');
     }
   });
 
-  test("refuses to expose the dev principal on a non-loopback address", async () => {
-    const child = start({ DATABASE_URL: t.url, HOST: "0.0.0.0" });
+  test("refuses to turn authentication off on a non-loopback address", async () => {
+    const child = start({ DATABASE_URL: t.url, HOST: "0.0.0.0", ORCH_DEV_AUTH: "1" });
     expect(await child.proc.exited).not.toBe(0);
     const out = await child.output();
     expect(out).toContain("loopback");
     expect(out).not.toContain('"listening"');
+  });
+
+  test("a non-loopback address is fine while callers are checked", async () => {
+    const child = start({ DATABASE_URL: t.url, HOST: "0.0.0.0" });
+    const port = await child.port();
+    expect((await fetch(`http://127.0.0.1:${port}/organizations`)).status).toBe(401);
+    child.proc.kill("SIGTERM");
+    await child.proc.exited;
   });
 
   test("a missing DATABASE_URL exits non-zero naming the key", async () => {

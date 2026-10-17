@@ -148,6 +148,46 @@ describe("declared audit", () => {
     expect(row).toMatchObject({ actorKind: "dev", actorId: "someone-else" });
   });
 
+  test("an anonymous request has no actor: a route must name one, or the audit is refused", async () => {
+    const lines: string[] = [];
+    const anon = createApp({
+      logger: createLogger({ write: (line) => lines.push(line) }),
+      db: t.db,
+      principal: () => undefined,
+      ready: async () => {},
+    })
+      .post(
+        "/nobody",
+        ({ audit }) =>
+          t.db.transaction((tx) => audit(tx, { action: "thing.one", resourceType: "thing" })),
+        { audit: "thing.one" },
+      )
+      .post(
+        "/named",
+        ({ audit }) =>
+          t.db.transaction((tx) =>
+            audit(tx, { action: "thing.one", resourceType: "thing" }, { kind: "user", id: "u-1" }),
+          ),
+        { audit: "thing.one" },
+      );
+    const post = (path: string, id: string) =>
+      anon.handle(
+        new Request(`http://localhost${path}`, { method: "POST", headers: { "x-request-id": id } }),
+      );
+    expect((await post("/nobody", "req-anon-1")).status).toBe(500);
+    // The refusal is ours, not the database's not-null constraint.
+    expect(lines.join("\n")).toContain("audit has no actor");
+    expect(
+      await t.db.select().from(auditEvents).where(eq(auditEvents.requestId, "req-anon-1")),
+    ).toEqual([]);
+    expect((await post("/named", "req-anon-2")).status).toBe(200);
+    const [row] = await t.db
+      .select()
+      .from(auditEvents)
+      .where(eq(auditEvents.requestId, "req-anon-2"));
+    expect(row).toMatchObject({ actorKind: "user", actorId: "u-1" });
+  });
+
   test("a route may declare several actions and write each", async () => {
     const { call } = setup();
     expect((await call("POST", "/multi", { "x-request-id": "req-multi" })).status).toBe(200);

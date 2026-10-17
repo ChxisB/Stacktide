@@ -16,7 +16,7 @@ bun run dev:db     # local Postgres on 127.0.0.1:5433 (needs Docker)
 
 ## API
 
-`bun run dev:db && bun run db:migrate && bun run dev` starts the API on `127.0.0.1:3000` (`HOST`, `PORT`, `LOG_LEVEL` override). `GET /health` is liveness, `GET /ready` checks the database. Errors are `application/problem+json` with a stable `code` and a `request_id` that is also in the logs. Until real authentication exists (AUTH-3) every caller is the dev principal: keep it on loopback, and it refuses to start with `NODE_ENV=production`.
+`bun run dev:db && bun run db:migrate && bun run dev` starts the API on `127.0.0.1:3000` (`HOST`, `PORT`, `LOG_LEVEL` override). `GET /health` is liveness, `GET /ready` checks the database. Errors are `application/problem+json` with a stable `code` and a `request_id` that is also in the logs. Callers are checked: a GitLab sign-in session (cookie `orch_session`) and a role per organization or project; nobody holds a role yet (AUTH-5), so only organization creation by `ORCH_PLATFORM_ADMIN_GITLAB_IDS` works. `bun run dev` sets `ORCH_DEV_AUTH=1`, which turns that off (every caller is the dev principal); the API refuses it outside `NODE_ENV=development|test` and on a non-loopback `HOST`.
 
 ## Local database
 

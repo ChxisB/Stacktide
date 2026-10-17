@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { can, isAction, type OrgRole, type ProjectRole, RULES, type Subject } from "./authz";
+import {
+  can,
+  isAction,
+  type OrgRole,
+  type ProjectRole,
+  RULES,
+  type Subject,
+  visibleOrganizations,
+} from "./authz";
 
 const ORG = "org-1";
 const PROJECT = "proj-1";
@@ -216,5 +224,37 @@ describe("scopes", () => {
   test("a user's scopes, when given, narrow too; none means no narrowing", () => {
     expect(can(user({ ...owner, scopes: ["project.read"] }), "project.update", res)).toBe(false);
     expect(can(user({ ...owner }), "project.update", res)).toBe(true);
+  });
+});
+
+describe("visibleOrganizations", () => {
+  const roles = { "org-a": "viewer", "org-b": "owner" } as const;
+
+  test("lists the organizations the subject holds a role in", () => {
+    expect(visibleOrganizations(user({ orgRoles: roles })).sort()).toEqual(["org-a", "org-b"]);
+  });
+
+  test("nothing without roles, with a project role alone, or without a subject", () => {
+    expect(visibleOrganizations(user())).toEqual([]);
+    expect(visibleOrganizations(projectRole("maintainer"))).toEqual([]);
+    expect(visibleOrganizations(user({ platformAdmin: true }))).toEqual([]);
+    expect(visibleOrganizations(undefined)).toEqual([]);
+  });
+
+  test("a role name nobody defined lists nothing", () => {
+    const bad = user({ orgRoles: { "org-a": "superadmin" as OrgRole } });
+    expect(visibleOrganizations(bad)).toEqual([]);
+  });
+
+  test("scopes narrow the list like they narrow everything else", () => {
+    const token = (scopes?: string[]): Subject => ({
+      kind: "token",
+      orgRoles: roles,
+      projectRoles: {},
+      scopes,
+    });
+    expect(visibleOrganizations(token()).length).toBe(0);
+    expect(visibleOrganizations(token(["project.read"])).length).toBe(0);
+    expect(visibleOrganizations(token(["organization.read"])).sort()).toEqual(["org-a", "org-b"]);
   });
 });

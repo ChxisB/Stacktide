@@ -21,12 +21,11 @@ export const auditPlugin = (resolve: PrincipalResolver) =>
   new Elysia({ name: "orch.audit" })
     .use(principalPlugin(resolve))
     .resolve({ as: "scoped" }, ({ principal, request, server, set }) => {
-      // The context types mark values from a plugin's hooks as optional; at runtime it is set.
-      if (!principal) throw new Error("audit needs the principal plugin");
       const state = { declared: [] as string[], written: 0 }; // the macro fills `declared`
       const requestId = set.headers["x-request-id"]; // set by the `http` plugin
       const ctx = {
-        actor: { kind: principal.kind, id: principal.id },
+        // Anonymous requests (sign-in) have no actor until the route names one.
+        actor: principal && { kind: principal.kind, id: principal.id },
         requestId: requestId === undefined ? undefined : String(requestId),
         ip: server?.requestIP(request)?.address,
       };
@@ -40,7 +39,9 @@ export const auditPlugin = (resolve: PrincipalResolver) =>
           if (!state.declared.includes(event.action)) {
             throw new Error(`route did not declare audit action ${event.action}`);
           }
-          await writeAudit(tx, actor ? { ...ctx, actor } : ctx, event);
+          const who = actor ?? ctx.actor;
+          if (!who) throw new Error("audit has no actor: the request is anonymous");
+          await writeAudit(tx, { ...ctx, actor: who }, event);
           state.written++;
         },
       };

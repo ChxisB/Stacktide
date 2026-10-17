@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ConfigError, loadConfig } from "@orch/core";
 import { z } from "zod";
-import { authEnv, authFromEnv } from "./auth-config";
+import { accessEnv, authEnv, authFromEnv } from "./auth-config";
 
 const SECRET = "client-secret-CANARY-8812";
 const full = {
@@ -53,5 +53,36 @@ describe("auth config", () => {
       PORT: 8080,
       GITLAB_URL: full.GITLAB_URL,
     });
+  });
+});
+
+describe("access config", () => {
+  const access = (env: Record<string, string>) => loadConfig(accessEnv, env);
+
+  test("nothing set: no dev auth, no platform admins", () => {
+    expect(access({})).toEqual({});
+  });
+
+  test("dev auth is the exact value 1; anything else is refused by key", () => {
+    expect(access({ ORCH_DEV_AUTH: "1" }).ORCH_DEV_AUTH).toBe("1");
+    for (const v of ["0", "true", "yes", ""]) {
+      expect(() => access({ ORCH_DEV_AUTH: v })).toThrow(ConfigError);
+    }
+  });
+
+  test("platform admins are a comma separated list of ids", () => {
+    expect(access({ ORCH_PLATFORM_ADMIN_GITLAB_IDS: "12" }).ORCH_PLATFORM_ADMIN_GITLAB_IDS).toEqual(
+      [12],
+    );
+    expect(
+      access({ ORCH_PLATFORM_ADMIN_GITLAB_IDS: "12, 34 ,5" }).ORCH_PLATFORM_ADMIN_GITLAB_IDS,
+    ).toEqual([12, 34, 5]);
+    for (const v of ["12,", ",12", "12,abc", "alice", "-1", "1.5", " ", "9007199254740993"]) {
+      expect(() => access({ ORCH_PLATFORM_ADMIN_GITLAB_IDS: v })).toThrow(ConfigError);
+    }
+    // An exported-but-empty variable means nobody, not a failed start.
+    expect(access({ ORCH_PLATFORM_ADMIN_GITLAB_IDS: "" }).ORCH_PLATFORM_ADMIN_GITLAB_IDS).toEqual(
+      [],
+    );
   });
 });

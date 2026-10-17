@@ -4,6 +4,7 @@ import { GitlabError, type GitlabOAuth, pkceChallenge } from "@orch/gitlab";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
+import { guardPlugin, unauthenticated } from "../guard";
 import { problem } from "../problem";
 import { hashToken, randomToken, safeEqual } from "../tokens";
 import { problemSchema, type RouteDeps } from "./shared";
@@ -19,19 +20,17 @@ export interface AuthDeps {
   now?: () => number;
 }
 
-const SESSION_COOKIE = "orch_session";
+export const SESSION_COOKIE = "orch_session";
 const LOGIN_COOKIE = "orch_login";
 const LOGIN_TTL_MS = 10 * 60_000;
 export const DEFAULT_SESSION_TTL_MS = 12 * 3_600_000;
 const GITLAB_DOWN = new Set(["server", "timeout", "network", "rate_limited"]);
 
-const unauthenticated = () => new DomainError("unauthenticated", 401, "Sign in first");
-
 /** A path on this site, nothing else: an absolute or protocol-relative URL would be an open redirect. */
 const safeReturnTo = (raw: string | undefined) =>
   raw && /^\/(?!\/)[\x21-\x7e]*$/.test(raw) && !raw.includes("\\") ? raw : "/";
 
-function readCookie(request: Request, name: string): string | undefined {
+export function readCookie(request: Request, name: string): string | undefined {
   for (const part of (request.headers.get("cookie") ?? "").split(";")) {
     const [k, ...v] = part.trim().split("=");
     if (k === name) return v.join("=") || undefined;
@@ -65,6 +64,7 @@ export const authRoutes = ({
 
   return new Elysia({ prefix: "/auth" })
     .use(auditPlugin(principal))
+    .use(guardPlugin)
     .get(
       "/login",
       ({ query }) => {
@@ -87,6 +87,7 @@ export const authRoutes = ({
       {
         query: z.object({ return_to: z.string().max(500).optional() }),
         response: { 302: z.undefined(), 422: problemSchema, 503: problemSchema },
+        public: "starts the sign-in: the caller has no session yet",
       },
     )
     .get(
@@ -176,6 +177,7 @@ export const authRoutes = ({
           503: problemSchema,
         },
         audit: "auth.login",
+        public: "completes the sign-in: the caller has no session yet",
       },
     )
     .get(
@@ -198,6 +200,7 @@ export const authRoutes = ({
           }),
           401: problemSchema,
         },
+        public: "answers 401 itself when the cookie holds no live session",
       },
     )
     .post(
@@ -232,6 +235,7 @@ export const authRoutes = ({
       {
         response: { 204: z.undefined(), 401: problemSchema, 415: problemSchema },
         audit: "auth.logout",
+        public: "ends the session in the cookie, or answers 401 itself and clears it",
       },
     );
 };
