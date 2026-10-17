@@ -383,7 +383,8 @@ export async function revealVariable(
 
 /** What `resolveVariables` in `@orch/core` takes: the types are one, so they cannot drift apart. */
 export type ChainLevel = VariableLevel;
-export type ChainEntry = VariableInput;
+/** The version is there to tell, later, that a variable has changed since: it is not part of the resolution. */
+export type ChainEntry = VariableInput & { version: number };
 
 /**
  * Every live variable that applies to an environment (or, without `environmentId`, to a project):
@@ -432,6 +433,7 @@ export async function openChain(
     key: row.key,
     kind: row.kind,
     value: values[i] ?? "",
+    version: row.version,
   }));
 }
 

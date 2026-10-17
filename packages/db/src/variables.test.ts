@@ -571,16 +571,17 @@ describe("the chain an environment resolves from", () => {
     const chain = await openChain(t.db, keys, w.at.env);
     const by = (level: string) => chain.filter((r) => r.level === level);
     expect(by("organization")).toEqual([
-      { id: org.id, level: "organization", key: "ORG", kind: "plain", value: "org-v" },
+      { id: org.id, level: "organization", key: "ORG", kind: "plain", value: "org-v", version: 1 },
     ]);
-    expect(by("project").map((r) => [r.id, r.key, r.value])).toEqual(
+    // the version is what a later check uses to see that a variable has changed
+    expect(by("project").map((r) => [r.id, r.key, r.value, r.version])).toEqual(
       [
-        [shadow.id, "ORG", "shadow"],
-        [proj.id, "PROJ", "proj-v2"],
+        [shadow.id, "ORG", "shadow", 1],
+        [proj.id, "PROJ", "proj-v2", 2],
       ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
     );
     expect(by("environment")).toEqual([
-      { id: env.id, level: "environment", key: "ENV", kind: "file", value: "env-v" },
+      { id: env.id, level: "environment", key: "ENV", kind: "file", value: "env-v", version: 1 },
     ]);
     expect(chain).toHaveLength(4);
 

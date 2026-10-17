@@ -557,6 +557,7 @@ describe("audit coverage", () => {
         "connection.delete",
         "connection.webhook_secret",
         "project.import",
+        "sync_run.plan",
         ...["organization", "project", "environment", "sync_target"].flatMap((r) =>
           ["create", "update", "delete"].map((v) => `${r}.${v}`),
         ),

@@ -449,7 +449,7 @@ const fail = (logger: Logger, requestId: unknown) => (e: unknown) => {
   );
 };
 
-const failing = (logger: Logger) => (set: { headers: Record<string, unknown> }) =>
+export const failing = (logger: Logger) => (set: { headers: Record<string, unknown> }) =>
   fail(logger, set.headers["x-request-id"]);
 
 /**

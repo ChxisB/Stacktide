@@ -68,6 +68,9 @@ export const RULES = {
   "sync.target.create": { org: "admin" },
   "sync.target.update": { org: "admin" },
   "sync.target.delete": { org: "admin" },
+  // Planning opens every secret of the project and the connection token and compares them with the target: an equality oracle, so the people who may reveal a secret. A stored plan holds keys, scopes and actions only.
+  "sync.plan": { project: "maintainer" },
+  "sync.run.read": { project: "reporter" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

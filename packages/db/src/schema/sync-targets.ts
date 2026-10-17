@@ -37,6 +37,8 @@ export const syncTargets = pgTable(
   },
   (t) => [
     unique("sync_targets_project_name_key").on(t.projectId, t.name),
+    // The target of a run: its id together with where it lives, so a run cannot name a target of another project.
+    unique("sync_targets_id_scope_key").on(t.id, t.organizationId, t.projectId),
     // CASCADE: a project's targets are its configuration and go with it.
     foreignKey({
       name: "sync_targets_project_org_fk",
