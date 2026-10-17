@@ -28,7 +28,12 @@ if (!LOOPBACK.includes(config.HOST)) {
 }
 
 const db = createDb(config.DATABASE_URL, 5);
-const app = createApp({ logger, principal: devPrincipal, ready: () => pingDb(db) }).listen({
+const app = createApp({
+  logger,
+  db,
+  principal: devPrincipal,
+  ready: () => pingDb(db),
+}).listen({
   hostname: config.HOST,
   port: config.PORT,
 });

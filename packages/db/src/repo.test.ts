@@ -5,10 +5,18 @@ import {
   createEnvironment,
   createOrganization,
   createProject,
+  deleteEnvironment,
   deleteOrganization,
   deleteProject,
+  getEnvironment,
+  getOrganization,
   getProject,
   listEnvironments,
+  listOrganizations,
+  listProjects,
+  updateEnvironment,
+  updateOrganization,
+  updateProject,
 } from "./repo";
 import { projects } from "./schema";
 import { createTestDb, type TestDb } from "./testing";
@@ -222,6 +230,130 @@ describe("listEnvironments", () => {
       "dev",
       "staging",
       "prod",
+    ]);
+  });
+});
+
+describe("update", () => {
+  test("changes only the given fields, and a patch with nothing in it changes nothing", async () => {
+    const org = await newOrg();
+    const p = await createProject(t.db, {
+      organizationId: org.id,
+      name: "old",
+      gitlabProjectId: 7,
+    });
+    const updated = await updateProject(t.db, org.id, p.id, { name: "new", gitlabProjectId: null });
+    expect(updated).toMatchObject({ name: "new", gitlabProjectId: null, defaultBranch: "main" });
+    expect(await updateProject(t.db, org.id, p.id, {})).toEqual(updated);
+    expect(await updateProject(t.db, org.id, p.id, { name: undefined })).toEqual(updated);
+    expect((await updateOrganization(t.db, org.id, { name: "Renamed" }))?.name).toBe("Renamed");
+    expect((await getOrganization(t.db, org.id))?.slug).toBe(org.slug);
+  });
+
+  test("another organization, or a missing id, matches nothing", async () => {
+    const [a, b] = [await newOrg(), await newOrg()];
+    const p = await createProject(t.db, { organizationId: a.id, name: "mine" });
+    expect(await updateProject(t.db, b.id, p.id, { name: "stolen" })).toBeUndefined();
+    expect((await getProject(t.db, a.id, p.id))?.name).toBe("mine");
+    expect(await updateOrganization(t.db, Bun.randomUUIDv7(), { name: "x" })).toBeUndefined();
+    expect(await updateOrganization(t.db, Bun.randomUUIDv7(), {})).toBeUndefined();
+  });
+
+  test("environments are addressed by organization, project and id", async () => {
+    const org = await newOrg();
+    const p = await createProject(t.db, { organizationId: org.id, name: "api" });
+    const other = await createProject(t.db, { organizationId: org.id, name: "web" });
+    const env = await createEnvironment(t.db, {
+      organizationId: org.id,
+      projectId: p.id,
+      name: "Prod",
+      slug: "prod",
+    });
+    expect(await getEnvironment(t.db, org.id, other.id, env.id)).toBeUndefined();
+    expect(await updateEnvironment(t.db, org.id, other.id, env.id, { name: "x" })).toBeUndefined();
+    expect(await deleteEnvironment(t.db, org.id, other.id, env.id)).toBe(false);
+    expect(await updateEnvironment(t.db, org.id, p.id, env.id, { sortOrder: 3 })).toMatchObject({
+      name: "Prod",
+      sortOrder: 3,
+    });
+    expect(await deleteEnvironment(t.db, org.id, p.id, env.id)).toBe(true);
+    expect(await getEnvironment(t.db, org.id, p.id, env.id)).toBeUndefined();
+  });
+});
+
+describe("keyset pagination", () => {
+  /** Walks every page and returns what each page held. */
+  async function walk<T, K>(
+    fetch: (after: K | undefined) => Promise<T[]>,
+    key: (row: T) => K,
+  ): Promise<T[][]> {
+    const pages: T[][] = [];
+    for (let after: K | undefined, i = 0; i < 20; i++) {
+      const page = await fetch(after);
+      if (page.length === 0) break;
+      pages.push(page);
+      after = key(page[page.length - 1] as T);
+    }
+    return pages;
+  }
+
+  test("projects come back in creation order, none skipped or repeated", async () => {
+    const org = await newOrg();
+    for (let i = 0; i < 5; i++) {
+      await createProject(t.db, { organizationId: org.id, name: `p${i}` });
+    }
+    const other = await newOrg();
+    await createProject(t.db, { organizationId: other.id, name: "elsewhere" });
+    const pages = await walk(
+      (after?: string) => listProjects(t.db, org.id, { after, limit: 2 }),
+      (p) => p.id,
+    );
+    expect(pages.map((p) => p.length)).toEqual([2, 2, 1]);
+    expect(pages.flat().map((p) => p.name)).toEqual(["p0", "p1", "p2", "p3", "p4"]);
+    expect(await listProjects(t.db, org.id, { limit: 100 })).toHaveLength(5);
+  });
+
+  test("organizations page by id", async () => {
+    const made = [await newOrg(), await newOrg(), await newOrg()];
+    const first = await listOrganizations(t.db, { limit: 1000 });
+    const ids = first.map((o) => o.id);
+    expect(ids).toEqual([...ids].sort());
+    const from = made[0]?.id;
+    const rest = await listOrganizations(t.db, { after: from, limit: 1000 });
+    expect(rest.map((o) => o.id)).toEqual(ids.slice(ids.indexOf(from as string) + 1));
+  });
+
+  test("environments page by (sort_order, slug), also across equal sort orders", async () => {
+    const org = await newOrg();
+    const p = await createProject(t.db, { organizationId: org.id, name: "api" });
+    const specs: [string, number][] = [
+      ["b", 1],
+      ["a", 1],
+      ["z", 0],
+      ["c", 1],
+      ["y", 2],
+    ];
+    for (const [slug, sortOrder] of specs) {
+      await createEnvironment(t.db, {
+        organizationId: org.id,
+        projectId: p.id,
+        name: slug,
+        slug,
+        sortOrder,
+      });
+    }
+    const pages = await walk(
+      (after?: [number, string]) => listEnvironments(t.db, org.id, p.id, { after, limit: 2 }),
+      (e): [number, string] => [e.sortOrder, e.slug],
+    );
+    expect(pages.flat().map((e) => e.slug)).toEqual(["z", "a", "b", "c", "y"]);
+    expect(pages.map((x) => x.length)).toEqual([2, 2, 1]);
+    expect((await listEnvironments(t.db, org.id, p.id)).map((e) => e.slug)).toEqual([
+      "z",
+      "a",
+      "b",
+      "c",
+      "y",
     ]);
   });
 });

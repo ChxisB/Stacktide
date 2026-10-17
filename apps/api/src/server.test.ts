@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import { createLogger } from "@orch/core";
+import { createDb } from "@orch/db";
 import { createApp } from "./app";
 import { devPrincipal } from "./principal";
 
 test("stop() lets an in-flight request finish and then refuses new connections", async () => {
   const app = createApp({
     logger: createLogger({ write: () => {} }),
+    db: createDb("postgres://unused:unused@127.0.0.1:1/unused", 1),
     principal: devPrincipal,
     ready: async () => {},
   })

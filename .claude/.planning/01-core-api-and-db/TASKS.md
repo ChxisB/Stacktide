@@ -12,7 +12,7 @@ Done when: repo tests cover insert, unique violations and cascade rules.
 Do: `apps/api` bootstrap; request-id; logger per request; error -> problem+json mapper; `/health`, `/ready` (checks DB); graceful shutdown; `ctx.principal` with a dev stub.
 Done when: tests show a thrown domain error maps to the right status/code, and an unknown error returns a generic 500 body with no internals.
 
-### API-4 - Org / project / environment CRUD  `[ ]` M - deps: API-2, API-3, API-8
+### API-4 - Org / project / environment CRUD  `[x]` M - deps: API-2, API-3, API-8
 Do: REST endpoints with zod validation and cursor pagination; every mutation writes an audit event.
 Done when: endpoint tests cover validation errors, pagination edges, not-found and audit rows.
 

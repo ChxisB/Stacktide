@@ -1,15 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import { createLogger, DomainError } from "@orch/core";
+import { createDb } from "@orch/db";
 import { Elysia, status, t } from "elysia";
 import { createApp } from "./app";
 import { devPrincipal, principalPlugin } from "./principal";
 
 const CANARY = "SECRET-CANARY-9f3a";
+// These tests never reach a route that queries; the client connects lazily, so none opens.
+const unusedDb = createDb("postgres://unused:unused@127.0.0.1:1/unused", 1);
 
 function setup(over: Partial<Parameters<typeof createApp>[0]> = {}) {
   const lines: Record<string, unknown>[] = [];
   const logger = createLogger({ write: (l) => lines.push(JSON.parse(l)), level: "debug" });
-  const app = createApp({ logger, principal: devPrincipal, ready: async () => {}, ...over });
+  const app = createApp({
+    logger,
+    db: unusedDb,
+    principal: devPrincipal,
+    ready: async () => {},
+    ...over,
+  });
   const call = (path: string, init?: RequestInit) =>
     app.handle(new Request(`http://localhost${path}`, init));
   return { app, call, lines };

@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, gt, sql } from "drizzle-orm";
 import type { BunSQLQueryResultHKT } from "drizzle-orm/bun-sql";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import type * as schema from "./schema";
@@ -21,6 +21,38 @@ export async function createOrganization(db: Executor, input: NewOrganization) {
   return one(await db.insert(organizations).values(input).returning());
 }
 
+/** Drops `undefined` entries; a patch is applied only for the fields that were given. */
+const given = <T extends object>(patch: T) =>
+  Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)) as T;
+
+export interface Page<K> {
+  /** Keyset position: the last row of the previous page. */
+  after?: K;
+  limit: number;
+}
+
+export async function getOrganization(db: Executor, id: string) {
+  return (await db.select().from(organizations).where(eq(organizations.id, id)))[0];
+}
+
+/** Ordered by id, which is time-ordered (v7): creation order. */
+export function listOrganizations(db: Executor, page: Page<string>) {
+  return db
+    .select()
+    .from(organizations)
+    .where(page.after ? gt(organizations.id, page.after) : undefined)
+    .orderBy(asc(organizations.id))
+    .limit(page.limit);
+}
+
+/** The updated row, or undefined when there is none. */
+export async function updateOrganization(db: Executor, id: string, patch: { name?: string }) {
+  const set = given(patch);
+  if (Object.keys(set).length === 0) return getOrganization(db, id);
+  const rows = await db.update(organizations).set(set).where(eq(organizations.id, id)).returning();
+  return rows[0];
+}
+
 /** True when a row was deleted. Fails (RESTRICT) while the organization still has projects. */
 export async function deleteOrganization(db: Executor, id: string) {
   const rows = await db.delete(organizations).where(eq(organizations.id, id)).returning();
@@ -39,6 +71,32 @@ export async function getProject(db: Executor, organizationId: string, id: strin
   return (await db.select().from(projects).where(inOrg(organizationId, id)))[0];
 }
 
+export function listProjects(db: Executor, organizationId: string, page: Page<string>) {
+  return db
+    .select()
+    .from(projects)
+    .where(
+      and(
+        eq(projects.organizationId, organizationId),
+        page.after ? gt(projects.id, page.after) : undefined,
+      ),
+    )
+    .orderBy(asc(projects.id))
+    .limit(page.limit);
+}
+
+export async function updateProject(
+  db: Executor,
+  organizationId: string,
+  id: string,
+  patch: { name?: string; gitlabProjectId?: number | null; defaultBranch?: string },
+) {
+  const set = given(patch);
+  if (Object.keys(set).length === 0) return getProject(db, organizationId, id);
+  const rows = await db.update(projects).set(set).where(inOrg(organizationId, id)).returning();
+  return rows[0];
+}
+
 /** True when a row was deleted; its environments go with it. */
 export async function deleteProject(db: Executor, organizationId: string, id: string) {
   const rows = await db.delete(projects).where(inOrg(organizationId, id)).returning();
@@ -49,12 +107,68 @@ export async function createEnvironment(db: Executor, input: NewEnvironment) {
   return one(await db.insert(environments).values(input).returning());
 }
 
-export function listEnvironments(db: Executor, organizationId: string, projectId: string) {
-  return db
+const inProject = (organizationId: string, projectId: string) =>
+  and(eq(environments.projectId, projectId), eq(environments.organizationId, organizationId));
+
+const envIs = (organizationId: string, projectId: string, id: string) =>
+  and(inProject(organizationId, projectId), eq(environments.id, id));
+
+export async function getEnvironment(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  id: string,
+) {
+  const where = envIs(organizationId, projectId, id);
+  return (await db.select().from(environments).where(where))[0];
+}
+
+export async function updateEnvironment(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  id: string,
+  patch: { name?: string; sortOrder?: number },
+) {
+  const set = given(patch);
+  if (Object.keys(set).length === 0) return getEnvironment(db, organizationId, projectId, id);
+  const where = envIs(organizationId, projectId, id);
+  return (await db.update(environments).set(set).where(where).returning())[0];
+}
+
+/** True when a row was deleted. */
+export async function deleteEnvironment(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  id: string,
+) {
+  const where = envIs(organizationId, projectId, id);
+  return (await db.delete(environments).where(where).returning()).length > 0;
+}
+
+/**
+ * Ordered by (sort_order, slug); slug is unique per project, so the order is total and `after`
+ * (the last row's pair) pages without skipping or repeating. Without `page`: all of them.
+ */
+export function listEnvironments(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  page?: Partial<Page<[number, string]>>,
+) {
+  const after = page?.after;
+  const query = db
     .select()
     .from(environments)
     .where(
-      and(eq(environments.projectId, projectId), eq(environments.organizationId, organizationId)),
+      and(
+        inProject(organizationId, projectId),
+        after
+          ? sql`(${environments.sortOrder}, ${environments.slug}) > (${after[0]}, ${after[1]})`
+          : undefined,
+      ),
     )
     .orderBy(asc(environments.sortOrder), asc(environments.slug));
+  return page?.limit === undefined ? query : query.limit(page.limit);
 }

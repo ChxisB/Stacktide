@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { pgCode } from "./pg-error";
+import { pgCode, pgConstraint } from "./pg-error";
 
 const server = (errno: string) => ({ code: "ERR_POSTGRES_SERVER_ERROR", errno });
 
@@ -22,4 +22,13 @@ test("terminates on a cyclic cause chain", () => {
   const a: { cause?: unknown } = {};
   a.cause = a;
   expect(pgCode(a)).toBeUndefined();
+});
+
+test("names the violated constraint, only when the server sent one", () => {
+  const e = { ...server("23505"), constraint: "organizations_slug_key" };
+  expect(pgConstraint(e)).toBe("organizations_slug_key");
+  expect(pgConstraint(new Error("wrapped", { cause: e }))).toBe("organizations_slug_key");
+  expect(pgConstraint(server("23505"))).toBeUndefined();
+  expect(pgConstraint({ constraint: "forged" })).toBeUndefined();
+  expect(pgConstraint({ ...server("23505"), constraint: 5 })).toBeUndefined();
 });

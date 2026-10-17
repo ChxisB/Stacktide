@@ -1,11 +1,16 @@
 import { DomainError, type Logger } from "@orch/core";
+import type { Db } from "@orch/db";
 import { Elysia } from "elysia";
 import { auditPlugin } from "./audit";
 import { http } from "./http";
 import type { PrincipalResolver } from "./principal";
+import { environmentRoutes } from "./routes/environments";
+import { organizationRoutes } from "./routes/organizations";
+import { projectRoutes } from "./routes/projects";
 
 export interface AppDeps {
   logger: Logger;
+  db: Db;
   principal: PrincipalResolver;
   /** Resolves when dependencies (the database) are usable; rejects otherwise. */
   ready: () => Promise<unknown>;
@@ -17,7 +22,8 @@ export interface AppDeps {
  * plugin that `.use(auditPlugin(...))`) get `ctx.principal` and `ctx.audit`; `/health` and
  * `/ready` never need them.
  */
-export function createApp({ logger, principal, ready, readyTimeoutMs = 2000 }: AppDeps) {
+export function createApp(deps: AppDeps) {
+  const { logger, principal, ready, readyTimeoutMs = 2000 } = deps;
   // Unauthenticated and polled: concurrent calls share one check so a slow database is not
   // handed a pile of queries. The timer is always cleared; an abandoned query is not cancelled.
   let inFlight: Promise<void> | undefined;
@@ -54,7 +60,10 @@ export function createApp({ logger, principal, ready, readyTimeoutMs = 2000 }: A
         throw new DomainError("not_ready", 503, "Dependencies are not ready");
       }
     })
-    .use(auditPlugin(principal));
+    .use(auditPlugin(principal))
+    .use(organizationRoutes(deps))
+    .use(projectRoutes(deps))
+    .use(environmentRoutes(deps));
 }
 
 export type App = ReturnType<typeof createApp>;

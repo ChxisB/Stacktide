@@ -23,7 +23,7 @@ function setup() {
   const lines: Record<string, unknown>[] = [];
   const logger = createLogger({ write: (l) => lines.push(JSON.parse(l)), level: "debug" });
   const slugOf = (request: Request) => new URL(request.url).searchParams.get("slug") ?? uniq();
-  const app = createApp({ logger, principal: devPrincipal, ready: async () => {} })
+  const app = createApp({ logger, db: t.db, principal: devPrincipal, ready: async () => {} })
     .post(
       "/things",
       ({ request, audit }) =>
