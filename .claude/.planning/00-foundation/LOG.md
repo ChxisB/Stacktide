@@ -29,3 +29,10 @@
 - Security review (inline): `/security-review` diffs against `origin/HEAD` and this repo has no remote, so it cannot run. Reviewed by hand instead and found a real ReDoS in the query-param scrubber (1.2s on 200KB, quadratic); bounded the quantifiers and added a timing test. **Process note: `/security-review` is unusable until a remote exists; I do an inline review and record it here.**
 - Known limit: redaction is key-name and pattern based. A secret under an innocuous key (`content`, `data`) is not caught. Callers must still never log secret values.
 - New dep: `zod` 4.6.7 in `packages/core` (SPEC: one zod schema per app).
+
+## 2026-10-17 FND-5
+- `docker-compose.yml` (project `orch`, `postgres:18-alpine`, healthcheck, named volume `orch_pgdata` mounted at `/var/lib/postgresql` as PG18 images expect), `.env.example`, script `dev:db` (`docker compose --env-file .env.example up -d --wait db`), README section.
+- Gate: `bun run dev:db` -> healthy; `Bun.sql` `SELECT 1` ok on Postgres 18.6 using only `.env.example` values (this also shows `Bun.sql` talks to PG18, input for API-1's Drizzle check). `bun run check` green. Config-only: no `/code-review`.
+- Security (inline): port bound to `127.0.0.1` only; credentials are throwaway dev defaults, labelled as such in `.env.example`; no real `.env` created.
+- Port 5433, not 5432: this machine already runs other projects' Postgres on 5432/5499 and Redis on 6379 (not touched). The `orch-db-1` container is left running for the following tasks.
+- New deps: none (image `postgres:18-alpine` pulled from Docker Hub).

@@ -7,6 +7,7 @@
     "packages/*"
   ],
   "scripts": {
+    "dev:db": "docker compose --env-file .env.example up -d --wait db",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",

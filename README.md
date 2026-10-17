@@ -10,4 +10,14 @@ Requires [Bun](https://bun.sh) 1.4+.
 
 ```bash
 bun install
+bun run check      # typecheck + lint + test
+bun run dev:db     # local Postgres on 127.0.0.1:5433 (needs Docker)
 ```
+
+## Local database
+
+`bun run dev:db` starts Postgres 18 from [docker-compose.yml](docker-compose.yml) using the throwaway defaults in [.env.example](.env.example), and returns once it is healthy. Data lives in the named volume `orch_pgdata`.
+
+- Port 5433 is used so it does not clash with another local Postgres on 5432.
+- To override a setting, export it in your shell first (`POSTGRES_PORT=5440 bun run dev:db`). Shell variables win over `.env.example`.
+- Stop: `docker compose -p orch down`. Wipe data too: `docker compose -p orch down -v`.

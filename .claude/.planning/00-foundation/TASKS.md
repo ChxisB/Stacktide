@@ -16,7 +16,7 @@ Done when: `bun run check` is green, and a deliberate type error, lint error and
 Do: In `packages/core`: `loadConfig(schema, env)` and `createLogger()`.
 Done when: tests prove invalid env throws listing all bad keys without values; logger redacts nested objects and headers.
 
-### FND-5 - Local infrastructure  `[ ]` S - deps: FND-2
+### FND-5 - Local infrastructure  `[x]` S - deps: FND-2
 Do: `docker-compose.yml` with Postgres (pinned major, healthcheck, named volume); `.env.example`; script `dev:db`; README section.
 Done when: `bun run dev:db` then a `psql`/`Bun.sql` `SELECT 1` succeeds using only `.env.example` values.
 
