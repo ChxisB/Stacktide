@@ -1,9 +1,13 @@
 import { DomainError, type Logger } from "@orch/core";
 import { CryptoError, type KeyProvider } from "@orch/crypto";
 import {
+  type AuditEvent,
   audit,
+  claimSyncRun,
   type Db,
   describeError,
+  enqueue,
+  failStuckApplies,
   finishSyncRun,
   getSyncRun,
   getSyncTarget,
@@ -11,6 +15,7 @@ import {
   recordSyncItem,
   type SyncRun,
   type SyncTarget,
+  type Tx,
 } from "@orch/db";
 import { type ItemInput, type PlanAction, type Remote, refId, SyncError } from "@orch/sync";
 import { z } from "zod";
@@ -26,6 +31,53 @@ const payloadSchema = z.object({
   targetId: z.uuid(),
   runId: z.uuid(),
 });
+
+/**
+ * Hands a planned run to the `sync.apply` job and marks it applying, in the caller's transaction:
+ * the one place that decides a plan may be applied (the database's clock decides expiry and the
+ * one-at-a-time rule; a second apply on the target is a unique violation of
+ * `sync_runs_one_applying`). `record` writes the audit rows as whoever asked.
+ */
+export async function startApply(
+  tx: Tx,
+  run: SyncRun,
+  target: SyncTarget,
+  record: (tx: Tx, event: AuditEvent) => Promise<unknown>,
+): Promise<SyncRun> {
+  const { organizationId, projectId } = run;
+  // an apply that cannot finish must not block the target for good
+  for (const id of await failStuckApplies(tx, organizationId, projectId, target.id)) {
+    await record(tx, {
+      action: "sync_run.failed",
+      resourceType: "sync_run",
+      resourceId: id,
+      organizationId,
+      projectId,
+      metadata: { targetId: target.id, name: target.name, reason: "stuck" },
+    });
+  }
+  const job = await enqueue(tx, {
+    queue: SYNC_APPLY,
+    payload: { organizationId, projectId, targetId: target.id, runId: run.id },
+  });
+  const claimed = await claimSyncRun(tx, organizationId, projectId, target.id, run.id, job.id);
+  if (!claimed) {
+    throw new DomainError(
+      "plan_not_applicable",
+      409,
+      "This plan can no longer be applied: plan again",
+    );
+  }
+  await record(tx, {
+    action: "sync_run.apply",
+    resourceType: "sync_run",
+    resourceId: run.id,
+    organizationId,
+    projectId,
+    metadata: { targetId: target.id, name: target.name, counts: run.counts },
+  });
+  return claimed;
+}
 
 /** Creates first and deletes last, so a failure part-way leaves more than it removes. */
 const ORDER: Partial<Record<PlanAction, number>> = { create: 0, update: 1, delete: 2 };

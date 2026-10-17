@@ -23,6 +23,7 @@ import {
 } from "@orch/crypto";
 import { and, asc, desc, eq, gt, gte, isNull, lt, or, sql } from "drizzle-orm";
 import type { AuditContext } from "./audit";
+import { queueAutoSync } from "./auto-sync";
 import type { Executor, Page } from "./repo";
 import { type VariableKind, variableKeys, variables, variableVersions } from "./schema";
 
@@ -233,6 +234,7 @@ export async function createVariable(
     });
     const created = await getVariable(tx, keys, input, id);
     if (!created) throw new Error("insert returned no row");
+    await queueAutoSync(tx, input);
     return created;
   });
 }
@@ -272,19 +274,24 @@ export async function setVariable(
         actorId: patch.actor.id,
         reason: patch.reason ?? null,
       });
+      await queueAutoSync(tx, scope);
     }
     return getVariable(tx, keys, scope, id);
   });
 }
 
 /** Marks a variable deleted: it is gone from every read and its key is free, its history stays. True if it was live. */
-export async function deleteVariable(db: Executor, scope: Scope, id: string) {
-  const rows = await db
-    .update(variables)
-    .set({ deletedAt: sql`now()` })
-    .where(live(scope, id))
-    .returning({ id: variables.id });
-  return rows.length > 0;
+export function deleteVariable(db: Executor, scope: Scope, id: string) {
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .update(variables)
+      .set({ deletedAt: sql`now()` })
+      .where(live(scope, id))
+      .returning({ id: variables.id });
+    if (rows.length === 0) return false;
+    await queueAutoSync(tx, scope);
+    return true;
+  });
 }
 
 /** A live variable of exactly this level, without opening its value: to check it is there and say what it is. */
@@ -666,12 +673,15 @@ async function renameVariable(
   id: string,
   to: string,
 ): Promise<VariableInfo | undefined> {
-  const [row] = await db
-    .update(variables)
-    .set({ key: to })
-    .where(live(scope, id))
-    .returning(visible);
-  return row;
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(variables)
+      .set({ key: to })
+      .where(live(scope, id))
+      .returning(visible);
+    if (row) await queueAutoSync(tx, scope);
+    return row;
+  });
 }
 
 /** What `bulkLevel` would do: every value of the level is opened to compare. */

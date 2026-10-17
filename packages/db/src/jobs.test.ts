@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
-import { backoffMs, claim, complete, enqueue, fail, JobError } from "./jobs";
+import { backoffMs, claim, complete, enqueue, enqueueOnce, fail, JobError } from "./jobs";
 import { jobs } from "./schema";
 import { createTestDb, type TestDb } from "./testing";
 
@@ -63,6 +63,77 @@ describe("enqueue", () => {
       })
       .catch(() => {});
     expect(await t.db.select().from(jobs).where(eq(jobs.queue, queue))).toEqual([]);
+  });
+});
+
+describe("enqueueOnce", () => {
+  const rows = async (queue: string) =>
+    (await t.db.select().from(jobs).where(eq(jobs.queue, queue))).length;
+
+  test("adds nothing while a job of the same queue and key waits; other keys and queues are independent", async () => {
+    const queue = queueName();
+    const first = await enqueueOnce(t.db, { queue, dedupeKey: "a", payload: { n: 1 } });
+    expect(first).toMatchObject({ queue, dedupeKey: "a", status: "queued", payload: { n: 1 } });
+    expect(await enqueueOnce(t.db, { queue, dedupeKey: "a", payload: { n: 2 } })).toBeUndefined();
+    expect(await enqueueOnce(t.db, { queue, dedupeKey: "b" })).toBeDefined();
+    expect(await enqueueOnce(t.db, { queue: queueName(), dedupeKey: "a" })).toBeDefined();
+    expect(await rows(queue)).toBe(2);
+    // the job that stayed is the first one
+    expect((await get(first?.id ?? ""))?.payload).toEqual({ n: 1 });
+  });
+
+  test("a plain enqueue is never held back, and never holds a key", async () => {
+    const queue = queueName();
+    await enqueue(t.db, { queue });
+    await enqueue(t.db, { queue });
+    expect(await enqueueOnce(t.db, { queue, dedupeKey: "a" })).toBeDefined();
+    expect(await rows(queue)).toBe(3);
+  });
+
+  test("a job that has been taken no longer holds its key: the next change gets a job of its own, also while the first is retried", async () => {
+    const queue = queueName();
+    await enqueueOnce(t.db, { queue, dedupeKey: "a", runAt: at(0) });
+    const [taken] = await claim(t.db, { queues: [queue], workerId: "w1", now: at(1) });
+    expect(taken?.dedupeKey).toBeNull();
+    const next = await enqueueOnce(t.db, { queue, dedupeKey: "a" });
+    expect(next).toBeDefined();
+    // the first fails and goes back to the queue: it must not collide with the new one
+    expect(taken && (await fail(t.db, taken, "w1", new Error("x"), { now: at(2) }))).toBe("queued");
+    expect(await enqueueOnce(t.db, { queue, dedupeKey: "a" })).toBeUndefined();
+    expect(await rows(queue)).toBe(2);
+  });
+
+  test("two at once make one job", async () => {
+    const queue = queueName();
+    const made = await Promise.all(
+      Array.from({ length: 8 }, () => enqueueOnce(t.db, { queue, dedupeKey: "a" })),
+    );
+    expect(made.filter(Boolean)).toHaveLength(1);
+    expect(await rows(queue)).toBe(1);
+  });
+
+  test("rolls back with the caller's transaction, and keeps the same limits as enqueue", async () => {
+    const queue = queueName();
+    await t.db
+      .transaction(async (tx) => {
+        await enqueueOnce(tx, { queue, dedupeKey: "a" });
+        throw new Error("rollback");
+      })
+      .catch(() => undefined);
+    expect(await rows(queue)).toBe(0);
+    for (const dedupeKey of ["", "x".repeat(201)]) {
+      await expect(enqueueOnce(t.db, { queue, dedupeKey })).rejects.toThrow(JobError);
+    }
+    await expect(
+      enqueueOnce(t.db, { queue, dedupeKey: "a", payload: { apiToken: CANARY } }),
+    ).rejects.toThrow(JobError);
+    await expect(enqueueOnce(t.db, { queue: "Bad Queue", dedupeKey: "a" })).rejects.toThrow(
+      JobError,
+    );
+    await expect(enqueueOnce(t.db, { queue, dedupeKey: "a", maxAttempts: 0 })).rejects.toThrow(
+      JobError,
+    );
+    expect(await rows(queue)).toBe(0);
   });
 });
 

@@ -7,6 +7,7 @@ import * as schema from "./schema";
 
 export * from "./audit";
 export * from "./auth";
+export * from "./auto-sync";
 export * from "./ci";
 export * from "./connections";
 export * from "./imports";

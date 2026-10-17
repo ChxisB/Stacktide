@@ -1,0 +1,2 @@
+ALTER TABLE "jobs" ADD COLUMN "dedupe_key" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "jobs_queued_dedupe" ON "jobs" USING btree ("queue","dedupe_key") WHERE "jobs"."status" = 'queued' and "jobs"."dedupe_key" is not null;

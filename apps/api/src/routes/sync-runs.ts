@@ -1,30 +1,14 @@
 import { DomainError, type Logger } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
-import {
-  claimSyncRun,
-  createSyncRun,
-  enqueue,
-  failStuckApplies,
-  getSyncRun,
-  getSyncTarget,
-  listSyncRunItems,
-  type SyncRun,
-} from "@orch/db";
-import {
-  type ItemInput,
-  type PlanAction,
-  plan,
-  type SyncAdapter,
-  SyncError,
-  type UnmanagedPolicy,
-} from "@orch/sync";
+import { getSyncRun, getSyncTarget, listSyncRunItems, type SyncRun } from "@orch/db";
+import type { PlanAction } from "@orch/sync";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { noKeys } from "../connections";
 import { guardPlugin } from "../guard";
-import { SYNC_APPLY } from "../sync-apply";
-import { type Desired, desiredSnapshot, openTarget, untouchable } from "../sync-plan";
+import { startApply } from "../sync-apply";
+import { ACTIONS, desiredSnapshot, planTarget, storePlan } from "../sync-plan";
 import {
   iso,
   mapDbError,
@@ -36,13 +20,7 @@ import {
 } from "./shared";
 import { failing } from "./variables";
 
-/** How long a plan can be applied for: long enough to read it, short enough that it is still true. */
-const PLAN_TTL_MS = 15 * 60_000;
-const ACTIONS = ["create", "update", "delete", "noop", "adopt"] as const;
 const STATUSES = ["planned", "applying", "applied", "failed"] as const;
-/** The plan_invalid message names this many items, then counts the rest. */
-const MAX_NAMED = 10;
-
 const itemSchema = z.object({
   key: z.string(),
   scope: z.string(),
@@ -112,35 +90,6 @@ const planned = { 201: runSchema, ...writeErrors, ...sealed } as const;
 const applying = { 202: runSchema, ...writeErrors, ...sealed } as const;
 const conflict = (code: string, message: string) => new DomainError(code, 409, message);
 
-/** What the target's own words amount to. They name keys and scopes, never a value (the adapter has already put GitLab's failures into its own words). */
-const targetError = (e: unknown) => {
-  if (!(e instanceof SyncError)) return e;
-  return e.kind === "failed"
-    ? new DomainError("target_failed", 502, e.message)
-    : new DomainError("plan_invalid", 422, e.message);
-};
-
-/** Every wanted item the target can never hold, named, so one plan shows all of them at once. */
-function refuse(adapter: Pick<SyncAdapter<unknown>, "check">, items: ItemInput[]) {
-  const refused: string[] = [];
-  for (const item of items) {
-    try {
-      adapter.check(item);
-    } catch (e) {
-      if (!(e instanceof SyncError)) throw e;
-      refused.push(e.message);
-    }
-  }
-  if (refused.length === 0) return;
-  const more = refused.length - MAX_NAMED;
-  const named = refused.slice(0, MAX_NAMED).join("; ");
-  throw new DomainError(
-    "plan_invalid",
-    422,
-    `The target cannot hold ${refused.length} variable(s), nothing was planned: ${named}${more > 0 ? `; and ${more} more` : ""}`,
-  );
-}
-
 /**
  * Plans a sync (SYNC-5): what the project's variables would change on a target, stored so that an
  * apply can name it. Nothing is written to the target. A plan holds keys, scopes and actions, never
@@ -170,54 +119,23 @@ export const syncRunRoutes = ({
         const target = await getSyncTarget(db, orgId, projectId, targetId);
         if (!target) throw notFound("Sync target");
 
-        const adapter = await openTarget({ db, keys, logger }, target, requestId);
-        let desired: Desired;
-        let items: ReturnType<typeof plan>;
-        try {
-          // before any secret is opened: a target that cannot be planned costs nothing
-          const config = adapter.validate(target.config);
-          desired = await desiredSnapshot(db, keys, target).catch(failing(logger)(set));
-          refuse(adapter, desired.items);
-          const skip = untouchable(desired);
-          const actual = (await adapter.connect(config).read()).filter((i) => !skip(i));
-          items = plan(desired.items, actual, {
-            unmanaged: target.unmanagedPolicy as UnmanagedPolicy,
-          });
-        } catch (e) {
-          throw targetError(e);
-        }
-
-        const counts = Object.fromEntries(ACTIONS.map((a) => [a, 0])) as Record<PlanAction, number>;
-        for (const item of items) counts[item.action]++;
+        const planned = await planTarget({ db, keys, logger }, target, requestId).catch(
+          failing(logger)(set),
+        );
         const run = await db.transaction(async (tx) => {
-          const run = await createSyncRun(
-            tx,
-            {
-              organizationId: orgId,
-              projectId,
-              targetId,
-              expiresAt: new Date(Date.now() + PLAN_TTL_MS),
-              desiredDigest: desired.digest,
-              counts,
-              skipped: {
-                unresolved: desired.unresolved,
-                missingEnvironments: desired.missingEnvironments,
-              },
-            },
-            items,
-          );
+          const run = await storePlan(tx, target, planned);
           await audit(tx, {
             action: "sync_run.plan",
             resourceType: "sync_run",
             resourceId: run.id,
             organizationId: orgId,
             projectId,
-            metadata: { targetId, name: target.name, counts },
+            metadata: { targetId, name: target.name, counts: run.counts },
           });
           return run;
         });
         set.status = 201;
-        return runDto(run, items);
+        return runDto(run, planned.items);
       },
       {
         params,
@@ -252,40 +170,7 @@ export const syncRunRoutes = ({
         }
 
         const claimed = await db
-          .transaction(async (tx) => {
-            // an apply that cannot finish must not block the target for good
-            for (const id of await failStuckApplies(tx, orgId, projectId, targetId)) {
-              await audit(tx, {
-                action: "sync_run.failed",
-                resourceType: "sync_run",
-                resourceId: id,
-                organizationId: orgId,
-                projectId,
-                metadata: { targetId, name: target.name, reason: "stuck" },
-              });
-            }
-            const job = await enqueue(tx, {
-              queue: SYNC_APPLY,
-              payload: { organizationId: orgId, projectId, targetId, runId: run.id },
-            });
-            // the database's clock decides expiry and the one-at-a-time rule
-            const claimed = await claimSyncRun(tx, orgId, projectId, targetId, run.id, job.id);
-            if (!claimed) {
-              throw conflict(
-                "plan_not_applicable",
-                "This plan can no longer be applied: plan again",
-              );
-            }
-            await audit(tx, {
-              action: "sync_run.apply",
-              resourceType: "sync_run",
-              resourceId: run.id,
-              organizationId: orgId,
-              projectId,
-              metadata: { targetId, name: target.name, counts: run.counts },
-            });
-            return claimed;
-          })
+          .transaction((tx) => startApply(tx, run, target, audit))
           .catch(
             mapDbError({
               sync_runs_one_applying: conflict(

@@ -3,7 +3,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createLogger, type Subject } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
+  AUTO_SYNC_DELAY_MS,
+  AUTO_SYNC_QUEUE,
   auditEvents,
+  claim as claimJob,
   claimSyncRun,
   createConnection,
   createEnvironment,
@@ -28,6 +31,7 @@ import { asc, count, eq } from "drizzle-orm";
 import { createApp } from "./app";
 import { callerPrincipal } from "./credentials";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
+import { syncAutoHandler } from "./sync-auto";
 import { hashToken, randomToken } from "./tokens";
 import { createWorker, type JobContext, type Worker } from "./worker";
 
@@ -1272,6 +1276,227 @@ describe("the apply job on its own", () => {
       error: "The apply could not be completed",
     });
     expect(w.writes()).toEqual([]);
+  });
+});
+
+/** The sync.auto jobs the queue would take for a target once their time has come. */
+async function dueAuto(w: World) {
+  const later = new Date(Date.now() + 2 * AUTO_SYNC_DELAY_MS);
+  const taken = await claimJob(t.db, {
+    queues: [AUTO_SYNC_QUEUE],
+    workerId: "test",
+    limit: 100,
+    now: later,
+  });
+  return taken.filter((j) => j.payload.targetId === w.target);
+}
+/** Runs the auto-sync handler for the target's waiting job, as the worker would. */
+async function runAuto(w: World, provider = keys, over: Partial<JobContext> = {}, db = t.db) {
+  const [job] = await dueAuto(w);
+  if (!job) throw new Error("no auto-sync job was waiting");
+  await syncAutoHandler({ db, keys: provider, logger })({
+    id: job.id,
+    queue: AUTO_SYNC_QUEUE,
+    payload: job.payload,
+    attempt: job.attempts,
+    maxAttempts: job.maxAttempts,
+    log: logger,
+    signal: new AbortController().signal,
+    ...over,
+  });
+}
+const waiting = async (w: World) =>
+  (await t.db.select().from(jobs).where(eq(jobs.queue, AUTO_SYNC_QUEUE))).filter(
+    (j) => j.payload.targetId === w.target && j.status === "queued",
+  );
+const onGitlab = async (w: World) => {
+  const found: string[] = [];
+  for await (const v of w.gitlab.variables.list(w.of)) found.push(v.key);
+  return found.sort();
+};
+const autoOn = async (w: World) =>
+  expect((await w.patchTarget({ autoSync: true })).status).toBe(200);
+
+describe("auto-sync on change (SYNC-7)", () => {
+  test("10 rapid changes make one job and one run; the same state again makes none", async () => {
+    const w = await world();
+    await autoOn(w);
+    const made = Array.from({ length: 10 }, (_, i) => `RAPID_${i}`);
+    const ids: string[] = [];
+    for (const key of made) {
+      const kind = key === "RAPID_3" ? "secret" : "plain";
+      ids.push(
+        (await w.put("project", key, kind, kind === "secret" ? sekrit("rapid") : `v-${key}`)).id,
+      );
+    }
+    expect(await waiting(w)).toHaveLength(1);
+    expect(await w.runs()).toEqual([]);
+
+    await runAuto(w);
+    const [run, ...more] = await w.runs();
+    expect(more).toEqual([]);
+    if (!run) throw new Error("no run");
+    const done = await w.finished(run.id);
+    expect(done.json).toMatchObject({ status: "applied", counts: { ...emptyCounts, create: 10 } });
+    expect(await onGitlab(w)).toEqual([...made].sort());
+    expect(w.writes()).toHaveLength(10);
+    // the whole of it as the job: audited, with the plan marked as automatic
+    for (const action of ["sync_run.plan", "sync_run.apply", "sync_run.applied"]) {
+      expect(await eventsOf(action, run.id)).toMatchObject([{ actorKind: "job" }]);
+    }
+    expect((await eventsOf("sync_run.plan", run.id))[0]?.metadata).toMatchObject({
+      auto: true,
+      targetId: w.target,
+    });
+
+    // a new version with the same value changes nothing on the target: a job, but no run and no write
+    const path = `/organizations/${w.org}/projects/${w.project}/variables/${ids[0]}`;
+    expect((await call("alice", "PATCH", path, { value: "v-RAPID_0" })).status).toBe(200);
+    expect(await waiting(w)).toHaveLength(1);
+    await runAuto(w);
+    expect(await w.runs()).toHaveLength(1);
+    expect(w.writes()).toHaveLength(10);
+  });
+
+  test("a manual target is untouched", async () => {
+    const w = await world();
+    await w.put("project", "M", "plain", "m");
+    expect(await waiting(w)).toEqual([]);
+    expect(await w.runs()).toEqual([]);
+    expect(w.writes()).toEqual([]);
+  });
+
+  test("a job that finds its target switched to manual, or gone, or its payload not ids, does nothing", async () => {
+    const w = await world();
+    await autoOn(w);
+    await w.put("project", "A", "plain", "a");
+    expect((await w.patchTarget({ autoSync: false })).status).toBe(200);
+    await runAuto(w);
+    expect(await w.runs()).toEqual([]);
+
+    await autoOn(w);
+    await w.put("project", "B", "plain", "b");
+    expect((await call("alice", "DELETE", `${w.targets}/${w.target}`)).status).toBe(204);
+    await runAuto(w);
+    expect(w.writes()).toEqual([]);
+
+    const ctx = { ...jobFor(w, "x"), queue: AUTO_SYNC_QUEUE, payload: { targetId: w.target } };
+    await expect(syncAutoHandler({ db: t.db, keys, logger })(ctx)).rejects.toThrow();
+  });
+
+  test("never deletes: what the target holds beyond the variables stays, even under prune", async () => {
+    const w = await world({ policy: "prune" });
+    await w.seed("STRAY", "stray");
+    await autoOn(w);
+    await w.put("project", "KEPT", "plain", "kept");
+    await runAuto(w);
+    const [run, ...more] = await w.runs();
+    expect(more).toEqual([]);
+    expect((await w.finished(run?.id ?? "")).json).toMatchObject({
+      status: "applied",
+      counts: { ...emptyCounts, create: 1 },
+    });
+    expect(await onGitlab(w)).toEqual(["KEPT", "STRAY"]);
+
+    // a person's own plan under the same policy still offers the delete
+    expect((await w.plan()).json.counts).toMatchObject({ delete: 1 });
+  });
+
+  test("a target that is applying is tried again later, not planned over", async () => {
+    const w = await world();
+    await autoOn(w);
+    await w.put("project", "FIRST", "plain", "1");
+    const planned = await w.plan();
+    const release = pause();
+    let first: string;
+    try {
+      expect((await w.apply(planned.json.id)).status).toBe(202);
+      first = planned.json.id;
+      await runAuto(w);
+      // no second run, and the target is queued again for later
+      expect((await w.runs()).map((r) => r.id)).toEqual([first]);
+      const [again, ...rest] = await waiting(w);
+      expect(rest).toEqual([]);
+      expect((again?.runAt.getTime() ?? 0) - Date.now()).toBeGreaterThan(AUTO_SYNC_DELAY_MS - 5000);
+    } finally {
+      release();
+    }
+    expect((await w.finished(first)).json.status).toBe("applied");
+
+    // what changed meanwhile is picked up by the job that waits
+    await w.put("project", "SECOND", "plain", "2");
+    expect(await waiting(w)).toHaveLength(1);
+    await runAuto(w);
+    const second = (await w.runs())[1];
+    expect((await w.finished(second?.id ?? "")).json).toMatchObject({
+      status: "applied",
+      counts: { ...emptyCounts, create: 1, noop: 1 },
+    });
+    expect(await onGitlab(w)).toEqual(["FIRST", "SECOND"]);
+  });
+
+  test("a failure that is not a busy target is the queue's to retry, not swallowed", async () => {
+    const w = await world();
+    await autoOn(w);
+    await w.put("project", "A", "plain", "a");
+    // the plan is read in a transaction of its own; storing it is the one that fails
+    const broken = new Proxy(t.db, {
+      get: (db, prop) =>
+        prop === "transaction"
+          ? (run: never, config?: never) =>
+              config ? db.transaction(run, config) : Promise.reject(new Error("store failed"))
+          : Reflect.get(db, prop),
+    });
+    await expect(runAuto(w, keys, {}, broken)).rejects.toThrow("store failed");
+    expect(await w.runs()).toEqual([]);
+    expect(await waiting(w)).toEqual([]);
+  });
+
+  test("a target that does not answer fails the job, for the queue to retry", async () => {
+    const w = await world({ connection: conns.dead });
+    await autoOn(w);
+    await w.put("project", "A", "plain", "a");
+    await expect(runAuto(w)).rejects.toMatchObject({ code: "target_failed" });
+    expect(await w.runs()).toEqual([]);
+  });
+
+  test("what the target cannot hold is logged and not retried; a secret that cannot be opened fails the job", async () => {
+    const w = await world();
+    await autoOn(w);
+    await w.put("project", "TOO_SHORT", "secret", "short");
+    const mark = lines.length;
+    await runAuto(w);
+    expect(await w.runs()).toEqual([]);
+    const said = lines.slice(mark).filter((l) => l.includes("auto-sync not planned"));
+    expect(said).toHaveLength(1);
+    expect(said.join("\n")).not.toMatch(/"short"/);
+
+    // not the variables' fault: the queue tries again, and in the end keeps the job dead
+    await w.put("project", "A", "plain", "a");
+    await expect(runAuto(w, OTHER_KEYS)).rejects.toMatchObject({ code: "secret_unreadable" });
+    expect(await w.runs()).toEqual([]);
+  });
+
+  test("an organization's variable reaches the targets of its projects", async () => {
+    const w = await world();
+    await autoOn(w);
+    const key = `ORG_${++n}`;
+    const made = await call("alice", "POST", `/organizations/${w.org}/variables`, {
+      key,
+      kind: "plain",
+      value: "org-value",
+    });
+    expect(made.status).toBe(201);
+    try {
+      expect(await waiting(w)).toHaveLength(1);
+      await runAuto(w);
+      const [run] = await w.runs();
+      expect((await w.finished(run?.id ?? "")).json.status).toBe("applied");
+      expect(await onGitlab(w)).toEqual([key]);
+    } finally {
+      // the organization is shared by the other tests: its plans must not see this
+      await call("alice", "DELETE", `/organizations/${w.org}/variables/${made.json.id}`);
+    }
   });
 });
 

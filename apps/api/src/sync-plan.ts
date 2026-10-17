@@ -1,9 +1,26 @@
 import { createHash } from "node:crypto";
-import { type Logger, resolveVariables } from "@orch/core";
+import { DomainError, type Logger, resolveVariables } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
-import { type Db, type Executor, listEnvironments, openChain, type SyncTarget } from "@orch/db";
+import {
+  createSyncRun,
+  type Db,
+  type Executor,
+  listEnvironments,
+  openChain,
+  type SyncTarget,
+} from "@orch/db";
 import { createGitlab } from "@orch/gitlab";
-import { ALL_SCOPES, gitlabVariablesAdapter, type ItemInput, refId } from "@orch/sync";
+import {
+  ALL_SCOPES,
+  gitlabVariablesAdapter,
+  type ItemInput,
+  type PlanAction,
+  plan,
+  refId,
+  type SyncAdapter,
+  SyncError,
+  type UnmanagedPolicy,
+} from "@orch/sync";
 import { openGitlabConnection } from "./connections";
 
 /** A key that could not be resolved at a scope, and why. Names only, never a value. */
@@ -161,5 +178,92 @@ export async function openTarget(
       maxRetries: 1,
       maxRetryDelayMs: 2_000,
     }),
+  );
+}
+
+/** How long a plan can be applied for: long enough to read it, short enough that it is still true. */
+const PLAN_TTL_MS = 15 * 60_000;
+export const ACTIONS = ["create", "update", "delete", "noop", "adopt"] as const;
+/** The plan_invalid message names this many items, then counts the rest. */
+const MAX_NAMED = 10;
+
+/** What the target's own words amount to. They name keys and scopes, never a value (the adapter has already put GitLab's failures into its own words). */
+const targetError = (e: unknown) => {
+  if (!(e instanceof SyncError)) return e;
+  return e.kind === "failed"
+    ? new DomainError("target_failed", 502, e.message)
+    : new DomainError("plan_invalid", 422, e.message);
+};
+
+/** Every wanted item the target can never hold, named, so one plan shows all of them at once. */
+function refuse(adapter: Pick<SyncAdapter<unknown>, "check">, items: ItemInput[]) {
+  const refused: string[] = [];
+  for (const item of items) {
+    try {
+      adapter.check(item);
+    } catch (e) {
+      if (!(e instanceof SyncError)) throw e;
+      refused.push(e.message);
+    }
+  }
+  if (refused.length === 0) return;
+  const more = refused.length - MAX_NAMED;
+  const named = refused.slice(0, MAX_NAMED).join("; ");
+  throw new DomainError(
+    "plan_invalid",
+    422,
+    `The target cannot hold ${refused.length} variable(s), nothing was planned: ${named}${more > 0 ? `; and ${more} more` : ""}`,
+  );
+}
+
+export interface Planned {
+  desired: Desired;
+  items: ReturnType<typeof plan>;
+}
+
+/**
+ * What the project's variables would change on a target: reads the target and compares, writes
+ * nothing. Opens every secret of the project and the connection's token, so the caller must have
+ * checked that it may. A `DomainError` for what is wrong with the target (422 `plan_invalid`, 502
+ * `target_failed`); a `CryptoError` when a stored secret cannot be opened.
+ */
+export async function planTarget(
+  deps: { db: Db; keys: KeyProvider; logger: Logger },
+  target: SyncTarget,
+  requestId: unknown,
+  /** What to do with what the target holds that nothing here wants; the target's own policy when left out. */
+  unmanaged: UnmanagedPolicy = target.unmanagedPolicy as UnmanagedPolicy,
+): Promise<Planned> {
+  const adapter = await openTarget(deps, target, requestId);
+  try {
+    // before any secret is opened: a target that cannot be planned costs nothing
+    const config = adapter.validate(target.config);
+    const desired = await desiredSnapshot(deps.db, deps.keys, target);
+    refuse(adapter, desired.items);
+    const skip = untouchable(desired);
+    const actual = (await adapter.connect(config).read()).filter((i) => !skip(i));
+    const items = plan(desired.items, actual, { unmanaged });
+    return { desired, items };
+  } catch (e) {
+    throw targetError(e);
+  }
+}
+
+/** Stores a plan as a run that can be applied for a while. The caller audits it. */
+export function storePlan(tx: Executor, target: SyncTarget, { desired, items }: Planned) {
+  const counts = Object.fromEntries(ACTIONS.map((a) => [a, 0])) as Record<PlanAction, number>;
+  for (const item of items) counts[item.action]++;
+  return createSyncRun(
+    tx,
+    {
+      organizationId: target.organizationId,
+      projectId: target.projectId,
+      targetId: target.id,
+      expiresAt: new Date(Date.now() + PLAN_TTL_MS),
+      desiredDigest: desired.digest,
+      counts,
+      skipped: { unresolved: desired.unresolved, missingEnvironments: desired.missingEnvironments },
+    },
+    items,
   );
 }

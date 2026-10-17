@@ -39,8 +39,7 @@ export function jobPayload(payload: Record<string, unknown> = {}): Record<string
   }
 }
 
-/** Takes a transaction too, so the job exists exactly when the change that needs it does. */
-export async function enqueue(db: Executor, input: EnqueueInput): Promise<Job> {
+function jobValues(input: EnqueueInput) {
   const queue = jobQueue(input.queue);
   const { maxAttempts } = input;
   if (
@@ -49,11 +48,34 @@ export async function enqueue(db: Executor, input: EnqueueInput): Promise<Job> {
   ) {
     throw new JobError("job maxAttempts must be an integer from 1 to 100");
   }
+  return { queue, payload: jobPayload(input.payload), runAt: input.runAt, maxAttempts };
+}
+
+/** Takes a transaction too, so the job exists exactly when the change that needs it does. */
+export async function enqueue(db: Executor, input: EnqueueInput): Promise<Job> {
+  const [job] = await db.insert(jobs).values(jobValues(input)).returning();
+  if (!job) throw new Error("insert returned no row");
+  return job;
+}
+
+/**
+ * Like `enqueue`, but adds nothing while a job of the same queue and `dedupeKey` is still waiting
+ * for its first run (it is then returned as `undefined`): a burst of changes shares one job, which
+ * reads the latest state when it runs. A job being run or retried no longer holds its key.
+ */
+export async function enqueueOnce(
+  db: Executor,
+  input: EnqueueInput & { dedupeKey: string },
+): Promise<Job | undefined> {
+  const { dedupeKey } = input;
+  if (dedupeKey.length < 1 || dedupeKey.length > 200) {
+    throw new JobError("job dedupeKey must be 1-200 chars");
+  }
   const [job] = await db
     .insert(jobs)
-    .values({ queue, payload: jobPayload(input.payload), runAt: input.runAt, maxAttempts })
+    .values({ ...jobValues(input), dedupeKey })
+    .onConflictDoNothing()
     .returning();
-  if (!job) throw new Error("insert returned no row");
   return job;
 }
 
@@ -120,6 +142,8 @@ export async function claim(db: Executor, opts: ClaimOptions): Promise<Job[]> {
       attempts: sql`${jobs.attempts} + 1`,
       lockedBy: workerId,
       lockedAt: at,
+      // a claimed job has had its first run: later changes need a job of their own
+      dedupeKey: null,
     })
     .where(sql`${jobs.id} = any(array(${picked}))`)
     .returning();

@@ -1,8 +1,9 @@
 import { createLogger, loadConfig } from "@orch/core";
 import { envKeyProvider, type KeyProvider } from "@orch/crypto";
-import { createDb, describeError } from "@orch/db";
+import { AUTO_SYNC_QUEUE, createDb, describeError } from "@orch/db";
 import { z } from "zod";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
+import { syncAutoHandler } from "./sync-auto";
 import { createWorker, type JobHandler } from "./worker";
 
 const config = loadConfig(
@@ -31,8 +32,10 @@ const db = createDb(config.DATABASE_URL, config.WORKER_CONCURRENCY + 2);
 // Later features register their handlers here, keyed by queue.
 const handlers: Record<string, JobHandler> = {};
 // A job that opens secrets needs the master keys here too: without them its queue is not served and its jobs wait.
-if (keys) handlers[SYNC_APPLY] = syncApplyHandler({ db, keys, logger });
-else logger.warn("ORCH_MASTER_KEYS is not set: syncs will not be applied until it is");
+if (keys) {
+  handlers[SYNC_APPLY] = syncApplyHandler({ db, keys, logger });
+  handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger });
+} else logger.warn("ORCH_MASTER_KEYS is not set: syncs will not be applied until it is");
 const worker = createWorker({
   db,
   logger,

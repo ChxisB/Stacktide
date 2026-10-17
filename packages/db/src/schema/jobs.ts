@@ -1,5 +1,14 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 import { id, timestamps } from "./columns";
 
 export const JOB_STATUSES = ["queued", "running", "done", "dead"] as const;
@@ -25,6 +34,8 @@ export const jobs = pgTable(
     lastError: text(),
     lockedBy: text(),
     lockedAt: timestamp({ withTimezone: true }),
+    /** Names what a queued job is for: while one is queued, `enqueueOnce` with the same key adds nothing. */
+    dedupeKey: text(),
     ...timestamps(),
   },
   (t) => [
@@ -33,5 +44,8 @@ export const jobs = pgTable(
     // Claiming scans due queued jobs per queue, and expired locks.
     index("jobs_claim_idx").on(t.queue, t.runAt).where(sql`${t.status} = 'queued'`),
     index("jobs_lock_idx").on(t.lockedAt).where(sql`${t.status} = 'running'`),
+    uniqueIndex("jobs_queued_dedupe")
+      .on(t.queue, t.dedupeKey)
+      .where(sql`${t.status} = 'queued' and ${t.dedupeKey} is not null`),
   ],
 );

@@ -24,7 +24,7 @@ Done when: tests cover empty plan, mixed plan, unmaskable-secret failure and a l
 Do: `POST .../apply {planId}` runs as a job with a per-target mutex, stale-plan rejection (desired state changed), per-item results, retry/backoff. **First real apply is a human gate.**
 Done when: tests cover stale plan, concurrent apply (second rejects), partial failure then idempotent re-apply, and the second plan after apply is empty.
 
-### SYNC-7 - Auto-sync on change  `[ ]` M - deps: SYNC-6, VAR-4
+### SYNC-7 - Auto-sync on change  `[x]` M - deps: SYNC-6, VAR-4
 Do: A variable change enqueues a coalesced (debounced) sync job for targets with `auto_sync`; protected environments stay manual until GOV-3.
 Done when: 10 rapid changes produce one run; manual-only targets are untouched.
 
