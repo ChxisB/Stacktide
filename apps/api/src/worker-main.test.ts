@@ -35,6 +35,29 @@ describe("worker entrypoint", () => {
     expect(out).not.toContain(t.url);
   });
 
+  test("serves the sync apply queue only with master keys, and never prints them", async () => {
+    const keys = `k1:${Buffer.alloc(32, 7).toString("base64")}`;
+    const run = async (env: Record<string, string>) => {
+      const child = start({ DATABASE_URL: t.url, ...env });
+      await Bun.sleep(500);
+      child.proc.kill("SIGTERM");
+      await child.proc.exited;
+      return await child.out;
+    };
+    const withKeys = await run({ ORCH_MASTER_KEYS: keys });
+    expect(withKeys).toContain('"queues":["sync.apply"]');
+    expect(withKeys).not.toContain(keys);
+    const without = await run({});
+    expect(without).toContain('"queues":[]');
+    expect(without).toContain("ORCH_MASTER_KEYS is not set");
+  });
+
+  test("keys that do not parse stop the start", async () => {
+    const child = start({ DATABASE_URL: t.url, ORCH_MASTER_KEYS: "not-a-key-list" });
+    expect(await child.proc.exited).not.toBe(0);
+    expect(await child.out).toContain("ORCH_MASTER_KEYS is invalid");
+  });
+
   test("a missing DATABASE_URL exits non-zero naming the key", async () => {
     const child = start({});
     expect(await child.proc.exited).not.toBe(0);

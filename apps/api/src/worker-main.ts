@@ -1,6 +1,8 @@
 import { createLogger, loadConfig } from "@orch/core";
+import { envKeyProvider, type KeyProvider } from "@orch/crypto";
 import { createDb, describeError } from "@orch/db";
 import { z } from "zod";
+import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
 import { createWorker, type JobHandler } from "./worker";
 
 const config = loadConfig(
@@ -9,14 +11,28 @@ const config = loadConfig(
     LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
     WORKER_POLL_MS: z.coerce.number().int().min(10).max(60_000).default(1_000),
+    ORCH_MASTER_KEYS: z.string().min(1).optional(),
   }),
 );
 const logger = createLogger({ level: config.LOG_LEVEL });
 
-// Later features register their handlers here, keyed by queue.
-const handlers: Record<string, JobHandler> = {};
+let keys: KeyProvider | undefined;
+if (config.ORCH_MASTER_KEYS !== undefined) {
+  try {
+    keys = envKeyProvider(config.ORCH_MASTER_KEYS);
+  } catch (error) {
+    logger.error("refusing to start: ORCH_MASTER_KEYS is invalid", { error });
+    process.exit(1);
+  }
+}
 
 const db = createDb(config.DATABASE_URL, config.WORKER_CONCURRENCY + 2);
+
+// Later features register their handlers here, keyed by queue.
+const handlers: Record<string, JobHandler> = {};
+// A job that opens secrets needs the master keys here too: without them its queue is not served and its jobs wait.
+if (keys) handlers[SYNC_APPLY] = syncApplyHandler({ db, keys, logger });
+else logger.warn("ORCH_MASTER_KEYS is not set: syncs will not be applied until it is");
 const worker = createWorker({
   db,
   logger,

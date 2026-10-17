@@ -4,16 +4,22 @@ import { createLogger, type Subject } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
   auditEvents,
+  claimSyncRun,
   createConnection,
   createEnvironment,
   createOrganization,
   createProject,
   createSession,
   deleteEnvironment,
+  enqueue,
+  jobs,
+  recordSyncItem,
   syncRunItems,
   syncRuns,
+  syncTargets,
   updateSyncTarget,
   upsertUser,
+  variableKeys,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { createGitlab } from "@orch/gitlab";
@@ -21,9 +27,12 @@ import { createMockGitlab } from "@orch/gitlab/mock";
 import { asc, count, eq } from "drizzle-orm";
 import { createApp } from "./app";
 import { callerPrincipal } from "./credentials";
+import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
 import { hashToken, randomToken } from "./tokens";
+import { createWorker, type JobContext, type Worker } from "./worker";
 
 const keys = envKeyProvider(`k1:${Buffer.alloc(32, 1).toString("base64")}`);
+const OTHER_KEYS = envKeyProvider(`k9:${Buffer.alloc(32, 9).toString("base64")}`);
 
 let t: TestDb;
 let mock: ReturnType<typeof createMockGitlab>;
@@ -32,6 +41,15 @@ let o1: string;
 let o3: string;
 const conns = {} as Record<"o1" | "o3" | "dead", string>;
 const lines: string[] = [];
+const logger = createLogger({ level: "debug", write: (line) => lines.push(line) });
+let worker: Worker;
+/** The worker's apply handler waits for this; a test holds it to keep an apply running. */
+let hold: Promise<void> = Promise.resolve();
+const pause = () => {
+  const gate = Promise.withResolvers<void>();
+  hold = gate.promise;
+  return gate.resolve;
+};
 type Roles = Pick<Subject, "orgRoles" | "projectRoles">;
 const roleTable = new Map<number, Roles>();
 const reporterOn: Record<string, "reporter" | "maintainer"> = {};
@@ -88,8 +106,23 @@ beforeAll(async () => {
   roleTable.set(904, { orgRoles: {}, projectRoles: maintainerOn }); // dan
   // erin: nothing
   app = makeApp(keys);
+  const applying = syncApplyHandler({ db: t.db, keys, logger });
+  worker = createWorker({
+    db: t.db,
+    logger,
+    handlers: {
+      [SYNC_APPLY]: async (ctx) => {
+        await hold;
+        await applying(ctx);
+      },
+    },
+    pollMs: 10,
+    backoff: () => 0,
+  });
+  worker.start();
 });
 afterAll(async () => {
+  await worker.stop();
   mock.stop();
   await t.drop();
 });
@@ -109,7 +142,7 @@ async function call(who: Who | null, method: string, path: string, body?: unknow
   );
   const text = await res.text();
   // plain values are shown by the variables routes; the plan routes must show none
-  if (/\/(plan|runs\/)/.test(path)) seen.push(text);
+  if (/\/(plan|apply|runs\/)/.test(path)) seen.push(text);
   return {
     status: res.status,
     text,
@@ -200,6 +233,34 @@ async function world(
         scope: o.scope,
         type: o.file ? "file" : "env_var",
       }),
+    apply: (planId: string, who: Who | null = "alice", a = app) =>
+      call(who, "POST", `${targets}/${target}/apply`, { planId }, a),
+    /** Waits for the worker to settle a run. */
+    finished: async (runId: string) => {
+      for (let i = 0; i < 500; i++) {
+        const res = await call("alice", "GET", `${targets}/${target}/runs/${runId}`);
+        if (res.json.status !== "applying") return res;
+        await Bun.sleep(20);
+      }
+      throw new Error("the apply did not finish");
+    },
+    /** What was sent to this GitLab project to change it, in order: `POST`, `PUT /KEY`, `DELETE /KEY`. */
+    writes: () =>
+      mock.requests
+        .filter(
+          (r) =>
+            r.method !== "GET" &&
+            r.path.includes(`/projects/${encodeURIComponent(of.project)}/variables`),
+        )
+        .map((r) => `${r.method}${r.path.split("/variables")[1] ?? ""}`.trim()),
+    /** The next requests of this kind to this GitLab project are refused with `status`. */
+    refuse: (method: string, status: number, times = 1) =>
+      mock.inject({
+        method,
+        path: new RegExp(`/projects/${encodeURIComponent(of.project)}/variables`),
+        status,
+        times,
+      }),
     patchTarget: (body: object) => call("alice", "PATCH", `${targets}/${target}`, body),
     // by id (uuidv7), so oldest first: a table has no order of its own
     runs: () =>
@@ -213,6 +274,8 @@ const brief = (res: { json: { items: { action: string; key: string; scope: strin
   res.json.items.map((i) => `${i.action} ${i.key} ${i.scope}`);
 const events = (action: string) =>
   t.db.select().from(auditEvents).where(eq(auditEvents.action, action));
+const eventsOf = async (action: string, runId: string) =>
+  (await events(action)).filter((e) => e.resourceId === runId);
 const emptyCounts = { create: 0, update: 0, delete: 0, noop: 0, adopt: 0 };
 
 describe("an empty plan", () => {
@@ -283,14 +346,35 @@ describe("a mixed plan", () => {
     const res = await w.plan();
     expect(res.status).toBe(201);
     expect(res.json.items).toEqual([
-      { key: "A_NEW", scope: "*", action: "create", changed: [] },
-      { key: "B_SECRET", scope: "*", action: "create", changed: [] },
-      { key: "C_SAME", scope: "*", action: "noop", changed: [] },
-      { key: "D_CHANGED", scope: "*", action: "update", changed: ["value"] },
-      { key: "E_UNMASKED", scope: "*", action: "update", changed: ["secret"] },
-      { key: "F_FILE", scope: "*", action: "create", changed: [] },
-      { key: "G_FILE_ONCE", scope: "*", action: "noop", changed: [] },
-      { key: "H_NOT_A_FILE", scope: "*", action: "update", changed: ["file"] },
+      { key: "A_NEW", scope: "*", action: "create", changed: [], result: null, error: null },
+      { key: "B_SECRET", scope: "*", action: "create", changed: [], result: null, error: null },
+      { key: "C_SAME", scope: "*", action: "noop", changed: [], result: null, error: null },
+      {
+        key: "D_CHANGED",
+        scope: "*",
+        action: "update",
+        changed: ["value"],
+        result: null,
+        error: null,
+      },
+      {
+        key: "E_UNMASKED",
+        scope: "*",
+        action: "update",
+        changed: ["secret"],
+        result: null,
+        error: null,
+      },
+      { key: "F_FILE", scope: "*", action: "create", changed: [], result: null, error: null },
+      { key: "G_FILE_ONCE", scope: "*", action: "noop", changed: [], result: null, error: null },
+      {
+        key: "H_NOT_A_FILE",
+        scope: "*",
+        action: "update",
+        changed: ["file"],
+        result: null,
+        error: null,
+      },
     ]);
     expect(res.json.counts).toEqual({ ...emptyCounts, create: 3, update: 3, noop: 2 });
     // what is stored is what was answered, and nothing else
@@ -651,6 +735,546 @@ describe("runs and their target", () => {
   });
 });
 
+/** What a worker is given for a run, to call the handler without the queue. */
+/** The apply jobs queued for a run. Found in code: the driver stores a jsonb payload as a JSON string, so SQL's `->>` finds nothing. */
+const jobsFor = async (runId: string) =>
+  (await t.db.select().from(jobs).where(eq(jobs.queue, SYNC_APPLY))).filter(
+    (j) => j.payload.runId === runId,
+  );
+
+const jobFor = (w: World, runId: string, over: Partial<JobContext> = {}): JobContext => ({
+  id: crypto.randomUUID(),
+  queue: SYNC_APPLY,
+  payload: { organizationId: w.org, projectId: w.project, targetId: w.target, runId },
+  attempt: 1,
+  maxAttempts: 5,
+  log: logger,
+  signal: new AbortController().signal,
+  ...over,
+});
+/** Marks a plan as applying, as the endpoint does, but leaves the work to the test. */
+async function claim(w: World, runId: string) {
+  const job = await enqueue(t.db, {
+    queue: SYNC_APPLY,
+    runAt: new Date(Date.now() + 3_600_000),
+    payload: { runId },
+  });
+  expect(await claimSyncRun(t.db, w.org, w.project, w.target, runId, job.id)).toBeDefined();
+  return job;
+}
+const handler = (provider = keys) => syncApplyHandler({ db: t.db, keys: provider, logger });
+const resultsOf = (res: { json: { items: { action: string; result: string | null }[] } }) =>
+  res.json.items.map((i) => `${i.action}:${i.result}`);
+
+describe("applying a plan", () => {
+  test("writes what was planned, records every line, and the next plan has nothing to do", async () => {
+    const w = await world({ policy: "prune" });
+    const secret = sekrit("apply-secret");
+    await w.put("project", "A_PLAIN", "plain", "a-plain");
+    await w.put("project", "B_SECRET", "secret", secret);
+    await w.put("project", "C_FILE", "file", "file body");
+    await w.put("project", "D_CHANGED", "plain", "d-now");
+    await w.put("project", "E_SAME", "plain", "e-same");
+    await w.put("prod", "F_PROD", "plain", "f-prod");
+    await w.seed("D_CHANGED", "d-before");
+    await w.seed("E_SAME", "e-same");
+    await w.seed("G_EXTRA", "not-wanted");
+    const planned = await w.plan();
+    expect(brief(planned)).toEqual([
+      "create A_PLAIN *",
+      "create B_SECRET *",
+      "create C_FILE *",
+      "update D_CHANGED *",
+      "noop E_SAME *",
+      "create F_PROD production",
+      "delete G_EXTRA *",
+    ]);
+    const id = planned.json.id as string;
+    const sent = w.writes().length;
+
+    const started = await w.apply(id);
+    expect(started.status).toBe(202);
+    expect(started.json).toMatchObject({ id, status: "applying", error: null });
+    const done = await w.finished(id);
+    expect(done.json).toMatchObject({ status: "applied", error: null });
+    expect(resultsOf(done)).toEqual([
+      "create:applied",
+      "create:applied",
+      "create:applied",
+      "update:applied",
+      "noop:null",
+      "create:applied",
+      "delete:applied",
+    ]);
+    expect(done.json.items.every((i: { error: unknown }) => i.error === null)).toBe(true);
+    // creates, then updates, then deletes; the noop is not touched
+    expect(w.writes().slice(sent)).toEqual([
+      "POST",
+      "POST",
+      "POST",
+      "POST",
+      "PUT/D_CHANGED",
+      "DELETE/G_EXTRA",
+    ]);
+
+    const there = new Map<string, { value: string | null; masked: boolean; type: string }>();
+    for await (const v of w.gitlab.variables.list(w.of)) there.set(`${v.key}@${v.scope}`, v);
+    expect([...there.keys()].sort()).toEqual([
+      "A_PLAIN@*",
+      "B_SECRET@*",
+      "C_FILE@*",
+      "D_CHANGED@*",
+      "E_SAME@*",
+      "F_PROD@production",
+    ]);
+    expect(there.get("A_PLAIN@*")).toMatchObject({ value: "a-plain", masked: false });
+    expect(there.get("B_SECRET@*")).toMatchObject({ value: secret, masked: true });
+    expect(there.get("C_FILE@*")).toMatchObject({ value: "file body", type: "file" });
+    expect(there.get("D_CHANGED@*")?.value).toBe("d-now");
+    expect(there.get("F_PROD@production")?.value).toBe("f-prod");
+
+    const again = await w.plan();
+    expect(again.json.items.every((i: { action: string }) => i.action === "noop")).toBe(true);
+    expect(w.writes().slice(sent)).toHaveLength(6);
+
+    // who asked, and what finished it: the job, by its own id, with counts only
+    const run = (await w.runs()).find((r) => r.id === id);
+    expect(await eventsOf("sync_run.apply", id)).toMatchObject([
+      {
+        actorKind: "user",
+        actorId: people.alice.id,
+        resourceType: "sync_run",
+        organizationId: w.org,
+        projectId: w.project,
+        metadata: { targetId: w.target, name: "main", counts: planned.json.counts },
+      },
+    ]);
+    expect(await eventsOf("sync_run.applied", id)).toMatchObject([
+      {
+        actorKind: "job",
+        actorId: run?.jobId,
+        metadata: { targetId: w.target, name: "main", applied: 6, failed: 0 },
+      },
+    ]);
+    expect(await eventsOf("sync_run.failed", id)).toEqual([]);
+    const [job] = await t.db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.id, run?.jobId ?? ""));
+    expect(job).toMatchObject({ queue: SYNC_APPLY, status: "done", attempts: 1 });
+    // ids only
+    expect(job?.payload).toEqual({
+      organizationId: w.org,
+      projectId: w.project,
+      targetId: w.target,
+      runId: id,
+    });
+  });
+
+  test("is refused when the variables changed since the plan, and writes nothing", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const planned = await w.plan();
+    const id = planned.json.id as string;
+    await w.put("project", "B", "plain", "b");
+
+    const res = await w.apply(id);
+    expect(res.status).toBe(409);
+    expect(res.json.code).toBe("plan_stale");
+    expect(w.writes()).toEqual([]);
+    expect(await jobsFor(id)).toEqual([]);
+    expect((await w.run(id)).json.status).toBe("planned");
+    expect(await eventsOf("sync_run.apply", id)).toEqual([]);
+
+    // a new plan is of what is true now
+    const fresh = await w.plan();
+    expect((await w.apply(fresh.json.id)).status).toBe(202);
+    expect((await w.finished(fresh.json.id)).json.status).toBe("applied");
+  });
+
+  test("is refused when the plan has expired, and when the target's settings changed", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const expired = (await w.plan()).json.id as string;
+    await t.db
+      .update(syncRuns)
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(syncRuns.id, expired));
+    const res = await w.apply(expired);
+    expect(res.status).toBe(409);
+    expect(res.json.code).toBe("plan_expired");
+
+    const planned = (await w.plan()).json.id as string;
+    expect((await w.patchTarget({ unmanagedPolicy: "prune" })).status).toBe(200);
+    expect((await w.apply(planned)).json.code).toBe("plan_stale");
+    expect(w.writes()).toEqual([]);
+    expect((await w.run(expired)).json.status).toBe("planned");
+  });
+
+  test("applies a plan once; an unknown plan, or one of another target, is not found", async () => {
+    const w = await world();
+    const other = await world();
+    await w.put("project", "A", "plain", "a");
+    const id = (await w.plan()).json.id as string;
+    expect((await other.apply(id)).status).toBe(404);
+    expect((await w.apply(crypto.randomUUID())).status).toBe(404);
+
+    expect((await w.apply(id)).status).toBe(202);
+    await w.finished(id);
+    // said before the plan is compared with the variables, so a change since does not hide it
+    await w.put("project", "B", "plain", "b");
+    const again = await w.apply(id);
+    expect(again.status).toBe(409);
+    expect(again.json.code).toBe("plan_not_applicable");
+    expect(w.writes()).toEqual(["POST"]);
+    expect(await eventsOf("sync_run.apply", id)).toHaveLength(1);
+  });
+
+  test("one apply at a time per target: the second says so, and may go once the first is done", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const one = (await w.plan()).json.id as string;
+    const two = (await w.plan()).json.id as string;
+    const release = pause();
+    let winner = "";
+    let loser = "";
+    try {
+      const both = await Promise.all([w.apply(one), w.apply(two)]);
+      expect(both.map((r) => r.status).sort()).toEqual([202, 409]);
+      [winner, loser] = both[0]?.status === 202 ? [one, two] : [two, one];
+      const lost = both.find((r) => r.status === 409);
+      expect(lost?.json.code).toBe("apply_in_progress");
+      // the loser is still a plan, with no job of its own
+      expect((await w.run(loser)).json.status).toBe("planned");
+      expect(await eventsOf("sync_run.apply", loser)).toEqual([]);
+      expect(await jobsFor(loser)).toEqual([]);
+    } finally {
+      release();
+    }
+    expect((await w.finished(winner)).json.status).toBe("applied");
+
+    // what it says is still true; the variable is there already, so the create becomes an update
+    expect((await w.apply(loser)).status).toBe(202);
+    expect((await w.finished(loser)).json.status).toBe("applied");
+    expect(w.writes()).toEqual(["POST", "POST", "PUT/A"]);
+  });
+
+  test("the same plan applied twice at once: one goes, the other finds it taken and queues nothing", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const id = (await w.plan()).json.id as string;
+    // the first request is held where the plan is compared with the variables, after it saw `planned`
+    const gate = Promise.withResolvers<void>();
+    const slow = makeApp({
+      currentKeyId: keys.currentKeyId,
+      wrap: (plain, aad) => keys.wrap(plain, aad),
+      unwrap: async (wrapped, aad) => {
+        await gate.promise;
+        return keys.unwrap(wrapped, aad);
+      },
+    });
+    const release = pause();
+    try {
+      const first = w.apply(id, "alice", slow);
+      expect((await w.apply(id)).status).toBe(202);
+      gate.resolve();
+      const lost = await first;
+      expect([lost.status, lost.json.code]).toEqual([409, "plan_not_applicable"]);
+      expect(await jobsFor(id)).toHaveLength(1);
+    } finally {
+      gate.resolve();
+      release();
+    }
+    expect(await eventsOf("sync_run.apply", id)).toHaveLength(1);
+    expect((await w.finished(id)).json.status).toBe("applied");
+  });
+
+  test("an apply whose job is dead is ended by the next one", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const one = (await w.plan()).json.id as string;
+    const two = (await w.plan()).json.id as string;
+    const job = await claim(w, one);
+    expect((await w.apply(two)).json.code).toBe("apply_in_progress");
+
+    await t.db.update(jobs).set({ status: "dead" }).where(eq(jobs.id, job.id));
+    expect((await w.apply(two)).status).toBe(202);
+    expect((await w.run(one)).json).toMatchObject({
+      status: "failed",
+      error: "the apply did not finish: its job died or was never taken",
+    });
+    // the apply that found it says so, as itself
+    expect(await eventsOf("sync_run.failed", one)).toMatchObject([
+      {
+        actorKind: "user",
+        actorId: people.alice.id,
+        metadata: { targetId: w.target, reason: "stuck" },
+      },
+    ]);
+    expect((await w.finished(two)).json.status).toBe("applied");
+  });
+
+  test("takes a maintainer; a plan is named by a well-formed id and nothing else", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const id = (await w.plan("dan")).json.id as string;
+
+    for (const who of ["bob", "carol"] as const)
+      expect([who, (await w.apply(id, who)).status]).toEqual([who, 403]);
+    expect((await w.apply(id, "erin")).status).toBe(404);
+    expect((await w.apply(id, null)).status).toBe(401);
+    const noKeys = await w.apply(id, "dan", makeApp(undefined));
+    expect([noKeys.status, noKeys.json.code]).toEqual([503, "secrets_unavailable"]);
+    for (const body of [{}, { planId: "nope" }, { planId: id, extra: 1 }]) {
+      const res = await call("dan", "POST", `${w.targets}/${w.target}/apply`, body);
+      expect([res.status, res.json.code]).toEqual([422, "validation_failed"]);
+    }
+    // none of that touched the plan
+    expect((await w.run(id)).json.status).toBe("planned");
+    expect(await eventsOf("sync_run.apply", id)).toEqual([]);
+
+    expect((await w.apply(id, "dan")).status).toBe(202);
+    expect((await w.finished(id)).json.status).toBe("applied");
+  });
+});
+
+test("a line can be written twice: what vanished from the target since the plan is taken in stride", async () => {
+  const w = await world({ policy: "prune" });
+  await w.put("project", "GONE_UPDATE", "plain", "now");
+  await w.seed("GONE_UPDATE", "before");
+  await w.seed("GONE_DELETE", "extra");
+  const planned = await w.plan();
+  expect(brief(planned)).toEqual(["delete GONE_DELETE *", "update GONE_UPDATE *"]);
+  await w.gitlab.variables.delete(w.of, { key: "GONE_UPDATE" });
+  await w.gitlab.variables.delete(w.of, { key: "GONE_DELETE" });
+
+  expect((await w.apply(planned.json.id)).status).toBe(202);
+  const done = await w.finished(planned.json.id);
+  expect(done.json).toMatchObject({ status: "applied", error: null });
+  expect(resultsOf(done)).toEqual(["delete:applied", "update:applied"]);
+  const there: string[] = [];
+  for await (const v of w.gitlab.variables.list(w.of)) there.push(`${v.key}=${v.value}`);
+  expect(there).toEqual(["GONE_UPDATE=now"]);
+});
+
+describe("an apply that does not go all the way", () => {
+  test("one refused line is failed and reported; the others are applied; a new plan has only that line left", async () => {
+    const w = await world();
+    const hidden = sekrit("refused");
+    await w.put("project", "KEEP_ME", "plain", "kept-now");
+    await w.put("project", "NEW_ONE", "secret", hidden);
+    await w.seed("KEEP_ME", "kept-before");
+    const id = (await w.plan()).json.id as string;
+    w.refuse("POST", 400);
+
+    expect((await w.apply(id)).status).toBe(202);
+    const done = await w.finished(id);
+    expect(done.json).toMatchObject({ status: "failed", error: "1 of 2 changes failed" });
+    expect(done.json.items).toMatchObject([
+      { key: "KEEP_ME", action: "update", result: "applied", error: null },
+      {
+        key: "NEW_ONE",
+        action: "create",
+        result: "failed",
+        error: '"NEW_ONE" (*): GitLab refused the variable',
+      },
+    ]);
+    expect((await w.gitlab.variables.get(w.of, { key: "KEEP_ME" })).value).toBe("kept-now");
+    // a refusal is final: the queue did not bring it back
+    const run = (await w.runs()).find((r) => r.id === id);
+    const [job] = await t.db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.id, run?.jobId ?? ""));
+    expect(job).toMatchObject({ status: "done", attempts: 1 });
+    expect(await eventsOf("sync_run.failed", id)).toMatchObject([
+      { actorKind: "job", metadata: { applied: 1, failed: 1 } },
+    ]);
+    expect(await eventsOf("sync_run.applied", id)).toEqual([]);
+
+    const fixed = await w.plan();
+    expect(brief(fixed)).toEqual(["noop KEEP_ME *", "create NEW_ONE *"]);
+    expect((await w.apply(fixed.json.id)).status).toBe(202);
+    expect((await w.finished(fixed.json.id)).json.status).toBe("applied");
+    const last = await w.plan();
+    expect(last.json.items.every((i: { action: string }) => i.action === "noop")).toBe(true);
+  });
+
+  test("a target that does not answer is tried again by the queue, and applied lines are not written twice", async () => {
+    const w = await world();
+    await w.put("project", "NEW_A", "plain", "a");
+    await w.put("project", "NEW_B", "plain", "b");
+    const id = (await w.plan()).json.id as string;
+    w.refuse("POST", 403);
+
+    expect((await w.apply(id)).status).toBe(202);
+    const done = await w.finished(id);
+    expect(done.json).toMatchObject({ status: "applied", error: null });
+    expect(resultsOf(done)).toEqual(["create:applied", "create:applied"]);
+    expect(done.json.items.every((i: { error: unknown }) => i.error === null)).toBe(true);
+    // A refused, B written, A written on the second try: B was not sent again
+    expect(w.writes()).toEqual(["POST", "POST", "POST"]);
+    const run = (await w.runs()).find((r) => r.id === id);
+    const [job] = await t.db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.id, run?.jobId ?? ""));
+    expect(job).toMatchObject({ status: "done", attempts: 2 });
+  });
+
+  test("a target that never answers is given up on at the last try, the line failed in words that name no value", async () => {
+    const w = await world();
+    await w.put("project", "NEVER_A", "secret", sekrit("never"));
+    await w.put("project", "KEEP", "plain", "kept-now");
+    await w.seed("KEEP", "kept-before");
+    const id = (await w.plan()).json.id as string;
+    w.refuse("POST", 403, 100);
+
+    expect((await w.apply(id)).status).toBe(202);
+    const done = await w.finished(id);
+    expect(done.json).toMatchObject({ status: "failed", error: "1 of 2 changes failed" });
+    expect(done.json.items).toMatchObject([
+      { key: "KEEP", result: "applied", error: null },
+      { key: "NEVER_A", result: "failed", error: '"NEVER_A" (*): GitLab answered forbidden' },
+    ]);
+    const run = (await w.runs()).find((r) => r.id === id);
+    const [job] = await t.db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.id, run?.jobId ?? ""));
+    expect(job).toMatchObject({ status: "done", attempts: 5 });
+    // the update went out once, the create five times
+    expect(w.writes().filter((x) => x.startsWith("PUT"))).toEqual(["PUT/KEEP"]);
+    expect(w.writes().filter((x) => x === "POST")).toHaveLength(5 + 1);
+  });
+});
+
+describe("the apply job on its own", () => {
+  test("a job delivered again for a run that is done writes nothing", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const id = (await w.plan()).json.id as string;
+    await w.apply(id);
+    const done = await w.finished(id);
+    const sent = w.writes().length;
+
+    await handler()(jobFor(w, id));
+    expect(w.writes()).toHaveLength(sent);
+    expect((await w.run(id)).json).toEqual(done.json);
+    expect(await eventsOf("sync_run.applied", id)).toHaveLength(1);
+    // nor does one for a plan that was never applied, even with something in it to write
+    await w.put("project", "B", "plain", "b");
+    const never = (await w.plan()).json.id as string;
+    await handler()(jobFor(w, never));
+    expect(w.writes()).toHaveLength(sent);
+    expect((await w.run(never)).json.status).toBe("planned");
+  });
+
+  test("a job delivered again carries on with the lines not yet recorded", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    await w.put("project", "B", "plain", "b");
+    const id = (await w.plan()).json.id as string;
+    await claim(w, id);
+    await recordSyncItem(t.db, id, 0, { result: "applied", error: null });
+
+    await handler()(jobFor(w, id));
+    expect(w.writes()).toEqual(["POST"]);
+    const names: string[] = [];
+    for await (const v of w.gitlab.variables.list(w.of)) names.push(v.key);
+    expect(names).toEqual(["B"]);
+    const done = await w.run(id);
+    expect(done.json.status).toBe("applied");
+    expect(resultsOf(done)).toEqual(["create:applied", "create:applied"]);
+    expect(await eventsOf("sync_run.applied", id)).toMatchObject([
+      { metadata: { applied: 2, failed: 0 } },
+    ]);
+  });
+
+  test("fails a run whose variables changed after the plan, and writes nothing", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const id = (await w.plan()).json.id as string;
+    await claim(w, id);
+    await w.put("project", "B", "plain", "b");
+
+    const ctx = jobFor(w, id);
+    await handler()(ctx);
+    expect(w.writes()).toEqual([]);
+    const done = await w.run(id);
+    expect(done.json.status).toBe("failed");
+    expect(done.json.error).toContain("changed after the plan was made");
+    expect(resultsOf(done)).toEqual(["create:null"]);
+    expect(await eventsOf("sync_run.failed", id)).toMatchObject([
+      { actorKind: "job", actorId: ctx.id, metadata: { applied: 0, failed: 0 } },
+    ]);
+  });
+
+  test("fails a run it can never carry out, in words that name no secret", async () => {
+    const w = await world();
+    await w.put("project", "A", "secret", sekrit("unreadable"));
+    const unreadable = (await w.plan()).json.id as string;
+    await claim(w, unreadable);
+    await handler(OTHER_KEYS)(jobFor(w, unreadable));
+    expect((await w.run(unreadable)).json).toMatchObject({
+      status: "failed",
+      error: "The stored secret cannot be opened: check ORCH_MASTER_KEYS",
+    });
+
+    // the connection opens, a variable's key does not: the same fixed words, not the error's
+    const keyed = (await w.plan()).json.id as string;
+    await claim(w, keyed);
+    const [dek] = await t.db
+      .select()
+      .from(variableKeys)
+      .where(eq(variableKeys.projectId, w.project));
+    await t.db
+      .update(variableKeys)
+      .set({ dekWrapped: Buffer.from(dek?.dekWrapped.map((b) => b ^ 1) ?? []) })
+      .where(eq(variableKeys.projectId, w.project));
+    await handler()(jobFor(w, keyed));
+    expect((await w.run(keyed)).json).toMatchObject({
+      status: "failed",
+      error: "A stored secret cannot be opened: check ORCH_MASTER_KEYS",
+    });
+    await t.db
+      .update(variableKeys)
+      .set({ dekWrapped: dek?.dekWrapped })
+      .where(eq(variableKeys.projectId, w.project));
+
+    const misconfigured = (await w.plan()).json.id as string;
+    await claim(w, misconfigured);
+    await t.db
+      .update(syncTargets)
+      .set({ config: { nonsense: true } })
+      .where(eq(syncTargets.id, w.target));
+    await handler()(jobFor(w, misconfigured));
+    const done = await w.run(misconfigured);
+    expect(done.json.status).toBe("failed");
+    expect(done.json.error).toContain("the config is { project } or { group }");
+    expect(w.writes()).toEqual([]);
+  });
+
+  test("gives up the lock to the queue until the last try, then fails the run", async () => {
+    const w = await world();
+    await w.put("project", "A", "plain", "a");
+    const id = (await w.plan()).json.id as string;
+    await claim(w, id);
+    const cut = new AbortController();
+    cut.abort(new Error("job lock timeout"));
+
+    await expect(handler()(jobFor(w, id, { signal: cut.signal, attempt: 4 }))).rejects.toThrow();
+    expect((await w.run(id)).json.status).toBe("applying");
+
+    await handler()(jobFor(w, id, { signal: cut.signal, attempt: 5 }));
+    expect((await w.run(id)).json).toMatchObject({
+      status: "failed",
+      error: "The apply could not be completed",
+    });
+    expect(w.writes()).toEqual([]);
+  });
+});
+
 describe("no secret anywhere", () => {
   test("a plan, its stored rows, the audit log and the log lines hold no value and no token", async () => {
     const w = await world({ policy: "prune" });
@@ -672,6 +1296,8 @@ describe("no secret anywhere", () => {
       "update LEAK_SECRET *",
     ]);
     await w.run(res.json.id);
+    expect((await w.apply(res.json.id)).status).toBe(202);
+    expect((await w.finished(res.json.id)).json.status).toBe("applied");
     // and the failures
     await w.put("project", "TOO_SHORT", "secret", sekrit("x").slice(0, 5));
     expect((await w.plan()).status).toBe(422);
@@ -681,6 +1307,7 @@ describe("no secret anywhere", () => {
       ...seen,
       JSON.stringify(await t.db.select().from(syncRuns)),
       JSON.stringify(await t.db.select().from(syncRunItems)),
+      JSON.stringify(await t.db.select().from(jobs)),
       JSON.stringify(await t.db.select().from(auditEvents)),
       ...lines,
     ].join("\n");

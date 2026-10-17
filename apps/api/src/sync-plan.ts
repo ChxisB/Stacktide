@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { resolveVariables } from "@orch/core";
+import { type Logger, resolveVariables } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
-import { type Executor, listEnvironments, openChain, type SyncTarget } from "@orch/db";
-import { ALL_SCOPES, type ItemInput, refId } from "@orch/sync";
+import { type Db, type Executor, listEnvironments, openChain, type SyncTarget } from "@orch/db";
+import { createGitlab } from "@orch/gitlab";
+import { ALL_SCOPES, gitlabVariablesAdapter, type ItemInput, refId } from "@orch/sync";
+import { openGitlabConnection } from "./connections";
 
 /** A key that could not be resolved at a scope, and why. Names only, never a value. */
 export interface Unresolved {
@@ -130,3 +132,34 @@ export const untouchable = (d: Desired) => {
   return (item: { key: string; scope: string }) =>
     refs.has(refId(item)) || d.leftAlone.has(item.scope);
 };
+
+/** `desiredState` in one snapshot, so the variables, the lines and the digest are of the same moment. */
+export const desiredSnapshot = (db: Db, keys: KeyProvider, target: SyncTarget) =>
+  db.transaction((tx) => desiredState(tx, keys, target), {
+    isolationLevel: "repeatable read",
+    accessMode: "read only",
+  });
+
+/** The adapter for a target, reaching it with its connection's token (opened here, held only by the client). */
+export async function openTarget(
+  deps: { db: Db; keys: KeyProvider; logger: Logger },
+  target: SyncTarget,
+  requestId: unknown,
+) {
+  const { baseUrl, token } = await openGitlabConnection(
+    deps,
+    target.organizationId,
+    target.connectionId,
+    requestId,
+  );
+  // shortcut: one target type; a registry of builders replaces this when a second one comes
+  return gitlabVariablesAdapter(
+    createGitlab({
+      baseUrl,
+      auth: { type: "private-token", token },
+      timeoutMs: 15_000,
+      maxRetries: 1,
+      maxRetryDelayMs: 2_000,
+    }),
+  );
+}

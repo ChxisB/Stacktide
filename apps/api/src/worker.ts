@@ -8,6 +8,8 @@ export interface JobContext {
   payload: Record<string, unknown>;
   /** 1 on the first run. */
   attempt: number;
+  /** The last run is `attempt === maxAttempts`: a failure then is final. */
+  maxAttempts: number;
   log: Logger;
   /** Aborts when the lock timeout passes or the worker gives up draining: stop work that would outlive the lock. */
   signal: AbortSignal;
@@ -79,6 +81,7 @@ export function createWorker(o: WorkerOptions): Worker {
         queue: job.queue,
         payload: job.payload,
         attempt: job.attempts,
+        maxAttempts: job.maxAttempts,
         log,
         signal: ac.signal,
       });

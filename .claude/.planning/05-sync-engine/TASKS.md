@@ -20,7 +20,7 @@ Done when: endpoint tests cover validation, authz and audit; credentials are nev
 Do: `sync_runs` + `sync_run_items` (keys, scopes, actions, counts only); `POST .../plan` resolves desired state, reads the target, stores a plan with an expiry.
 Done when: tests cover empty plan, mixed plan, unmaskable-secret failure and a leak test over stored plan rows.
 
-### SYNC-6 - Apply endpoint and job  `[ ]` M - deps: SYNC-5, API-6
+### SYNC-6 - Apply endpoint and job  `[x]` M - deps: SYNC-5, API-6
 Do: `POST .../apply {planId}` runs as a job with a per-target mutex, stale-plan rejection (desired state changed), per-item results, retry/backoff. **First real apply is a human gate.**
 Done when: tests cover stale plan, concurrent apply (second rejects), partial failure then idempotent re-apply, and the second plan after apply is empty.
 

@@ -84,6 +84,7 @@ const allowed: Record<string, string[]> = {
   "sync.target.delete": ["org admin", "org owner"],
   "sync.plan": MAINTAINER_UP,
   "sync.run.read": REPORTER_UP,
+  "sync.apply": MAINTAINER_UP,
 };
 
 describe("role x action", () => {

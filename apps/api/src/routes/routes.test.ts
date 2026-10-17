@@ -558,6 +558,8 @@ describe("audit coverage", () => {
         "connection.webhook_secret",
         "project.import",
         "sync_run.plan",
+        "sync_run.apply",
+        "sync_run.failed",
         ...["organization", "project", "environment", "sync_target"].flatMap((r) =>
           ["create", "update", "delete"].map((v) => `${r}.${v}`),
         ),
