@@ -1,6 +1,6 @@
 # 06 Pipeline Catalog - Tasks
 
-### PIPE-1 - Template manifest and loader  `[ ]` S - deps: FND-3
+### PIPE-1 - Template manifest and loader  `[x]` S - deps: FND-3
 Do: `packages/pipelines` zod schema for the manifest; loader that validates every template under `templates/`; params validated against the manifest's JSON schema.
 Done when: tests reject malformed manifests, unknown param types and missing files.
 

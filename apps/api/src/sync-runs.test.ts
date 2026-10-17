@@ -282,7 +282,7 @@ type World = Awaited<ReturnType<typeof world>>;
 const brief = (res: { json: { items: { action: string; key: string; scope: string }[] } }) =>
   res.json.items.map((i) => `${i.action} ${i.key} ${i.scope}`);
 const events = (action: string) =>
-  t.db.select().from(auditEvents).where(eq(auditEvents.action, action));
+  t.db.select().from(auditEvents).where(eq(auditEvents.action, action)).orderBy(auditEvents.at);
 const eventsOf = async (action: string, runId: string) =>
   (await events(action)).filter((e) => e.resourceId === runId);
 const emptyCounts = { create: 0, update: 0, delete: 0, noop: 0, adopt: 0 };

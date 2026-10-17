@@ -65,6 +65,13 @@
         "zod": "4.6.7",
       },
     },
+    "packages/pipelines": {
+      "name": "@orch/pipelines",
+      "dependencies": {
+        "@orch/core": "workspace:*",
+        "zod": "4.6.7",
+      },
+    },
     "packages/sync": {
       "name": "@orch/sync",
       "dependencies": {
@@ -167,6 +174,8 @@
     "@orch/db": ["@orch/db@workspace:packages/db"],
 
     "@orch/gitlab": ["@orch/gitlab@workspace:packages/gitlab"],
+
+    "@orch/pipelines": ["@orch/pipelines@workspace:packages/pipelines"],
 
     "@orch/sync": ["@orch/sync@workspace:packages/sync"],
 
