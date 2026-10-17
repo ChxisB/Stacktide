@@ -24,7 +24,7 @@ Done when: tests with the mock cover lint errors, warnings and missing-variable 
 Do: `POST /projects/:id/pipeline` creates/updates a branch, commits `.gitlab-ci.yml`, opens or updates one MR with a readable description; store `pipeline_configs`; idempotent on re-run; audited.
 Done when: tests cover first run, re-run with unchanged config (no new commit), changed params (MR updated), existing hand-written `.gitlab-ci.yml` (MR shows a diff, nothing overwritten silently). **First real MR is a human gate** (NOT done: built and tested against the mock only; see LOG).
 
-### PIPE-7 - Fleet upgrade  `[ ]` M - deps: PIPE-6
+### PIPE-7 - Fleet upgrade  `[x]` M - deps: PIPE-6
 Do: when a template version is bumped, list pinned projects, dry-run diff each, then open MRs in rate-limited batches with per-project results.
 Done when: tests cover dry-run (no writes), partial failure, resume, and the rate limit.
 

@@ -222,6 +222,9 @@ describe("coverage", () => {
       [`GET ${P}/:projectId/pipeline`]: "pipeline.read",
       [`POST ${P}/:projectId/pipeline/preview`]: "pipeline.apply",
       [`POST ${P}/:projectId/pipeline`]: "pipeline.apply",
+      [`GET ${O}/:orgId/pipeline-upgrades`]: "pipeline.upgrade",
+      [`POST ${O}/:orgId/pipeline-upgrades/plan`]: "pipeline.upgrade",
+      [`POST ${O}/:orgId/pipeline-upgrades`]: "pipeline.upgrade",
       [`GET ${O}/:orgId/connections`]: "connection.read",
       [`POST ${O}/:orgId/connections`]: "connection.create",
       [`POST ${O}/:orgId/connections/:connectionId/test`]: "connection.test",
@@ -277,7 +280,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(78);
+    expect(routes.length).toBe(81);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

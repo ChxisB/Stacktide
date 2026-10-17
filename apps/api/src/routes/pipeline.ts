@@ -1,6 +1,14 @@
 import type { Logger } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
-import { getPipelineConfig, getProject, type PipelineConfig, savePipelineConfig } from "@orch/db";
+import {
+  type AuditEvent,
+  type Db,
+  getPipelineConfig,
+  getProject,
+  type PipelineConfig,
+  savePipelineConfig,
+  type Tx,
+} from "@orch/db";
 import { createGitlab } from "@orch/gitlab";
 import { loadTemplates, recommend, type Template } from "@orch/pipelines";
 import { Elysia } from "elysia";
@@ -8,7 +16,7 @@ import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { openGitlabConnection } from "../connections";
 import { guardPlugin } from "../guard";
-import { applyPipeline, type PipelineDeps, previewPipeline } from "../pipeline-apply";
+import { type Applied, applyPipeline, type PipelineDeps, previewPipeline } from "../pipeline-apply";
 import { iso, notFound, type RouteDeps, readErrors, slug, stamps, writeErrors } from "./shared";
 
 const configSchema = z.object({
@@ -72,6 +80,66 @@ const request = z.strictObject({
 });
 const sealed = { 500: z.any(), 502: z.any(), 503: z.any() } as const;
 
+let shipped: Promise<readonly Template[]> | undefined;
+/** The templates: those given (tests), or the shipped ones, loaded on first use and again after a failed load. */
+export const catalogOf = (given?: readonly Template[]) => () => {
+  if (given) return Promise.resolve(given);
+  shipped ??= loadTemplates().catch((e) => {
+    shipped = undefined;
+    throw e;
+  });
+  return shipped;
+};
+
+/** A client for one of the organization's connections; the token is opened here and goes no further. */
+export async function gitlabFor(
+  deps: { db: Db; keys?: KeyProvider; logger: Logger },
+  orgId: string,
+  connectionId: string,
+  requestId: unknown,
+) {
+  const { baseUrl, token } = await openGitlabConnection(deps, orgId, connectionId, requestId);
+  return createGitlab({
+    baseUrl,
+    auth: { type: "private-token", token },
+    timeoutMs: 15_000,
+    maxRetries: 1,
+    maxRetryDelayMs: 2_000,
+  });
+}
+
+/** Stores what an apply did to a project and audits it, in the caller's transaction. `extra` joins the audit metadata. */
+export async function recordApplied(
+  tx: Tx,
+  audit: (tx: Tx, event: AuditEvent) => Promise<void>,
+  orgId: string,
+  projectId: string,
+  applied: Applied,
+  extra: Record<string, unknown> = {},
+) {
+  const row = await savePipelineConfig(tx, applied.config);
+  await audit(tx, {
+    action: "pipeline.apply",
+    resourceType: "pipeline",
+    resourceId: projectId,
+    organizationId: orgId,
+    projectId,
+    metadata: {
+      template: row.template,
+      version: row.version,
+      outcome: applied.outcome,
+      committed: applied.committed,
+      existing: applied.existing,
+      mrIid: applied.mr?.iid ?? null,
+      renderedHash: applied.renderedHash,
+      paramNames: Object.keys(row.params).sort(),
+      overrideKeys: Object.keys(row.overrides).sort(),
+      ...extra,
+    },
+  });
+  return row;
+}
+
 /**
  * A project's CI pipeline from the catalog (PIPE-6). Reading what it was last set up with and what
  * suits it needs only `pipeline.read`. Previewing and applying reach GitLab with the organization's
@@ -83,15 +151,9 @@ export const pipelineRoutes = ({
   principal,
   keys,
   logger,
-}: RouteDeps & { keys?: KeyProvider; logger: Logger }) => {
-  let catalog: Promise<Template[]> | undefined;
-  const templates = () => {
-    catalog ??= loadTemplates().catch((e) => {
-      catalog = undefined;
-      throw e;
-    });
-    return catalog;
-  };
+  templates: given,
+}: RouteDeps & { keys?: KeyProvider; logger: Logger; templates?: readonly Template[] }) => {
+  const templates = catalogOf(given);
   const reach = async (
     orgId: string,
     connectionId: string,
@@ -99,21 +161,7 @@ export const pipelineRoutes = ({
   ): Promise<PipelineDeps> => ({
     db,
     catalog: await templates(),
-    gitlab: async () => {
-      const { baseUrl, token } = await openGitlabConnection(
-        { db, keys, logger },
-        orgId,
-        connectionId,
-        requestId,
-      );
-      return createGitlab({
-        baseUrl,
-        auth: { type: "private-token", token },
-        timeoutMs: 15_000,
-        maxRetries: 1,
-        maxRetryDelayMs: 2_000,
-      });
-    },
+    gitlab: () => gitlabFor({ db, keys, logger }, orgId, connectionId, requestId),
   });
   const wanted = (b: z.infer<typeof request>) => {
     const { connectionId, ...rest } = b;
@@ -200,28 +248,9 @@ export const pipelineRoutes = ({
           wanted(body),
         );
         // GitLab first, so no transaction waits on it; a re-run after a failure here changes nothing.
-        const saved = await db.transaction(async (tx) => {
-          const row = await savePipelineConfig(tx, applied.config);
-          await audit(tx, {
-            action: "pipeline.apply",
-            resourceType: "pipeline",
-            resourceId: projectId,
-            organizationId: orgId,
-            projectId,
-            metadata: {
-              template: row.template,
-              version: row.version,
-              outcome: applied.outcome,
-              committed: applied.committed,
-              existing: applied.existing,
-              mrIid: applied.mr?.iid ?? null,
-              renderedHash: applied.renderedHash,
-              paramNames: Object.keys(row.params).sort(),
-              overrideKeys: Object.keys(row.overrides).sort(),
-            },
-          });
-          return row;
-        });
+        const saved = await db.transaction((tx) =>
+          recordApplied(tx, audit, orgId, projectId, applied),
+        );
         return {
           outcome: applied.outcome,
           committed: applied.committed,

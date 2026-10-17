@@ -87,6 +87,7 @@ const allowed: Record<string, string[]> = {
   "sync.apply": MAINTAINER_UP,
   "pipeline.read": REPORTER_UP,
   "pipeline.apply": ["org admin", "org owner"],
+  "pipeline.upgrade": ["org admin", "org owner"],
 };
 
 describe("role x action", () => {

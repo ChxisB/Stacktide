@@ -1,6 +1,7 @@
 import { DomainError, type Logger } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import type { Db } from "@orch/db";
+import type { Template } from "@orch/pipelines";
 import { Elysia } from "elysia";
 import { auditPlugin } from "./audit";
 import { guardPlugin, unguardedRoutes } from "./guard";
@@ -14,6 +15,7 @@ import { environmentRoutes } from "./routes/environments";
 import { importRoutes } from "./routes/imports";
 import { organizationRoutes } from "./routes/organizations";
 import { pipelineRoutes } from "./routes/pipeline";
+import { pipelineFleetRoutes } from "./routes/pipeline-fleet";
 import { projectRoutes } from "./routes/projects";
 import { syncRunRoutes } from "./routes/sync-runs";
 import { syncTargetRoutes } from "./routes/sync-targets";
@@ -38,6 +40,8 @@ export interface AppDeps {
   keys?: KeyProvider;
   /** Let connections point at this machine (tests, development). Production refuses them. */
   loopbackConnections?: boolean;
+  /** The pipeline templates to offer. Left out, the shipped catalog. */
+  templates?: readonly Template[];
 }
 
 // Registered by the OpenAPI plugin, which cannot carry route options. The document describes the
@@ -106,6 +110,7 @@ export function createApp(deps: AppDeps) {
     .use(syncTargetRoutes(deps))
     .use(syncRunRoutes(deps))
     .use(pipelineRoutes(deps))
+    .use(pipelineFleetRoutes(deps))
     .use(tokenRoutes(deps))
     .use(variableRoutes(deps));
   const open = unguardedRoutes(app, DOCS);

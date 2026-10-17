@@ -33,13 +33,15 @@ export type Existing = "none" | "identical" | "generated" | "hand-written";
 
 export interface Prepared {
   text: string;
+  /** The file on the default branch now; null when there is none. */
+  current: string | null;
   renderedHash: string;
   validation: Validation;
   existing: Existing;
   template: Template["manifest"];
 }
 
-export interface Applied extends Omit<Prepared, "text" | "template"> {
+export interface Applied extends Omit<Prepared, "text" | "current" | "template"> {
   /** `opened` a new merge request, `updated` one that was open, `unchanged` (nothing to do), `in_place` (the default branch already has this file). */
   outcome: "opened" | "updated" | "unchanged" | "in_place";
   /** A commit was made on the branch this time. */
@@ -75,7 +77,7 @@ const notFound = <T>(read: Promise<T>) =>
     throw e;
   });
 
-const pick = (catalog: readonly Template[], name: string, version?: string) => {
+export const pick = (catalog: readonly Template[], name: string, version?: string) => {
   const found = catalog
     .filter(
       (t) => t.manifest.name === name && (version === undefined || t.manifest.version === version),
@@ -146,6 +148,7 @@ async function prepare(
             : "hand-written";
     const prepared: Prepared = {
       text,
+      current: onDefault,
       renderedHash: createHash("sha256").update(text).digest("hex"),
       validation,
       existing,
@@ -166,6 +169,14 @@ export async function previewPipeline(
 ): Promise<Prepared> {
   return (await prepare(deps, orgId, projectId, request)).prepared;
 }
+
+/** GitLab's lint says the pipeline is wrong: nothing is committed. */
+export const lintRefusal = (validation: Validation) =>
+  new DomainError(
+    "pipeline_invalid",
+    422,
+    `GitLab's lint refuses this pipeline: ${sentence(validation.lint.errors.slice(0, 3).map(clip))}`,
+  );
 
 const SHOWN = 10;
 const clip = (s: string) => s.replaceAll("`", "'").slice(0, 300);
@@ -229,13 +240,7 @@ export async function applyPipeline(
   );
   const { text, validation, existing, renderedHash } = prepared;
   const { version } = template.manifest;
-  if (!validation.lint.valid) {
-    throw new DomainError(
-      "pipeline_invalid",
-      422,
-      `GitLab's lint refuses this pipeline: ${sentence(validation.lint.errors.slice(0, 3).map(clip))}`,
-    );
-  }
+  if (!validation.lint.valid) throw lintRefusal(validation);
   const config = (mr: Applied["mr"]): NewPipelineConfig => ({
     organizationId: orgId,
     projectId,

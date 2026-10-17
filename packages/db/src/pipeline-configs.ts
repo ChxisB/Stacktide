@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, gt, ne } from "drizzle-orm";
 import type { Executor } from "./repo";
-import { pipelineConfigs } from "./schema";
+import { pipelineConfigs, projects } from "./schema";
 
 export type PipelineConfig = typeof pipelineConfigs.$inferSelect;
 export type NewPipelineConfig = Pick<
@@ -45,4 +45,35 @@ export async function savePipelineConfig(
   )[0];
   if (!row) throw new Error("pipeline configuration was not saved");
   return row;
+}
+
+/**
+ * The organization's projects set up from `template` at any version but `notVersion`, by project id
+ * after `after` (a keyset cursor), with the project's name. The fleet upgrade (PIPE-7) walks these.
+ */
+export async function listPinnedPipelines(
+  db: Executor,
+  organizationId: string,
+  input: { template: string; notVersion: string; after?: string; limit: number },
+) {
+  return db
+    .select({ config: pipelineConfigs, projectName: projects.name })
+    .from(pipelineConfigs)
+    .innerJoin(
+      projects,
+      and(
+        eq(projects.id, pipelineConfigs.projectId),
+        eq(projects.organizationId, pipelineConfigs.organizationId),
+      ),
+    )
+    .where(
+      and(
+        eq(pipelineConfigs.organizationId, organizationId),
+        eq(pipelineConfigs.template, input.template),
+        ne(pipelineConfigs.version, input.notVersion),
+        input.after === undefined ? undefined : gt(pipelineConfigs.projectId, input.after),
+      ),
+    )
+    .orderBy(asc(pipelineConfigs.projectId))
+    .limit(input.limit);
 }

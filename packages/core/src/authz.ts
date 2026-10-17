@@ -77,6 +77,8 @@ export const RULES = {
   "pipeline.read": { project: "reporter" },
   // Previewing and applying a pipeline use the organization's connection token on the project's repository, and an override can add any job to the file: as privileged as a sync target, so org admins.
   "pipeline.apply": { org: "admin" },
+  // A fleet upgrade is pipeline.apply on every project that uses a template: listing, dry-running and applying it take the same people.
+  "pipeline.upgrade": { org: "admin" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

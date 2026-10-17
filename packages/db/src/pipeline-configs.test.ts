@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { envKeyProvider } from "@orch/crypto";
 import { createConnection, deleteConnection } from "./connections";
 import { pgConstraint } from "./pg-error";
-import { getPipelineConfig, savePipelineConfig } from "./pipeline-configs";
+import { getPipelineConfig, listPinnedPipelines, savePipelineConfig } from "./pipeline-configs";
 import { createOrganization, createProject, deleteProject } from "./repo";
 import { createTestDb, type TestDb } from "./testing";
 
@@ -128,5 +128,39 @@ describe("pipeline configurations", () => {
     await deleteProject(t.db, w.org.id, w.project.id);
     expect(await getPipelineConfig(t.db, w.org.id, w.project.id)).toBeUndefined();
     expect(await deleteConnection(t.db, w.org.id, w.connection.id)).toBeTruthy();
+  });
+
+  test("lists an organization's projects on a template at another version, by project id, a page at a time", async () => {
+    const w = await world();
+    const pin = async (template: string, version: string) => {
+      const p = await createProject(t.db, { organizationId: w.org.id, name: `q${++n}` });
+      await savePipelineConfig(t.db, { ...w.input, projectId: p.id, template, version });
+      return { id: p.id, name: p.name };
+    };
+    const a = await pin("bun-app", "1.0.0");
+    await pin("bun-app", "1.1.0"); // already there
+    const c = await pin("bun-app", "0.9.0");
+    await pin("node-app", "1.0.0"); // another template
+    await savePipelineConfig(t.db, (await world()).input); // another organization's bun-app 1.0.0
+    const ask = (after?: string, limit = 10) =>
+      listPinnedPipelines(t.db, w.org.id, {
+        template: "bun-app",
+        notVersion: "1.1.0",
+        after,
+        limit,
+      });
+
+    const all = await ask();
+    expect(all.map((r) => [r.config.projectId, r.projectName, r.config.version])).toEqual(
+      [
+        [a.id, a.name, "1.0.0"],
+        [c.id, c.name, "0.9.0"],
+      ].sort((x, y) => (x[0] ?? "").localeCompare(y[0] ?? "")),
+    );
+    const ids = all.map((r) => r.config.projectId);
+    const first = await ask(undefined, 1);
+    expect(first.map((r) => r.config.projectId)).toEqual(ids.slice(0, 1));
+    expect((await ask(ids[0])).map((r) => r.config.projectId)).toEqual(ids.slice(1));
+    expect(await ask(ids[1])).toEqual([]);
   });
 });
