@@ -566,6 +566,10 @@ describe("audit coverage", () => {
           "variable.update", // putting one variable back to an earlier version
           // putting the whole level back to an earlier moment
           ...["create", "update", "delete", "restore_level"].map((v) => `variable.${v}`),
+          // bringing in a file or a GitLab project's variables (the per-change rows reuse create and update)
+          "variable.create",
+          "variable.update",
+          "variable.import",
         ]),
       ].sort(),
     );

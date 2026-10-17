@@ -40,14 +40,17 @@ export const RULES = {
   "variable.update": { project: "maintainer" },
   "variable.delete": { project: "maintainer" },
   "secret.reveal": { project: "maintainer" },
-  // Putting a whole level back to an earlier moment creates, changes and (with prune) deletes: its own action, so a token needs it by name.
+  // Putting a variable or a whole level back to an earlier moment (and the plan that compares secrets with their past): its own action, so a token needs it by name.
   "variable.restore": { project: "maintainer" },
+  // Bringing in a file or a GitLab project's variables compares the incoming values with the secrets held: the same people who may reveal, and a name of its own.
+  "variable.import": { project: "maintainer" },
   "variable.org.read": { org: "viewer" },
   "variable.org.create": { org: "admin" },
   "variable.org.update": { org: "admin" },
   "variable.org.delete": { org: "admin" },
   "secret.reveal.org": { org: "admin" },
   "variable.org.restore": { org: "admin" },
+  "variable.org.import": { org: "admin" },
   // Credentials for outside systems: org admins only, also to read (what they connect to is theirs to know).
   "connection.create": { org: "admin" },
   "connection.read": { org: "admin" },

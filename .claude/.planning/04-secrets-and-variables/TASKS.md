@@ -20,7 +20,7 @@ Done when: endpoint tests pass, and a leak test serialises every response and lo
 Do: restore a variable to an earlier version (creates a new version); environment snapshot at a point in time (`?at=`) and restore of a whole environment with a dry-run diff first.
 Done when: tests cover restore of changed, deleted and added keys, and that dry-run changes nothing.
 
-### VAR-6 - Import  `[ ]` M - deps: VAR-4, GL-4
+### VAR-6 - Import  `[x]` M - deps: VAR-4, GL-4
 Do: parse `.env` (quotes, comments, `export`, multiline), JSON; import from existing GitLab project variables (dry-run default, conflict report, masked/protected flags noted).
 Done when: parser fixtures from real-world `.env` oddities pass; import is idempotent; conflicts are reported not overwritten unless asked.
 

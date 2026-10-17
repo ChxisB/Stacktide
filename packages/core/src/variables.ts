@@ -248,3 +248,48 @@ export function planRestore<E extends RestoreEntry>(
   }
   return changes.sort((a, b) => compare(a.key, b.key));
 }
+
+/** A variable to bring in: the kind it is to have, and its value. */
+export interface ImportEntry {
+  key: string;
+  kind: VariableKind;
+  value: string;
+  description?: string;
+}
+
+/**
+ * `create` a key that is not there, `unchanged` one that holds this value already, `update` one
+ * that holds another value (only with `overwrite`), `conflict` the same without it, `kind_mismatch`
+ * a key held with another kind (a kind cannot change, so it is never applied).
+ */
+export interface ImportChange<C extends RestoreEntry = RestoreEntry> {
+  change: "create" | "update" | "unchanged" | "conflict" | "kind_mismatch";
+  key: string;
+  /** The kind it would have: the incoming one. */
+  kind: VariableKind;
+  incoming: ImportEntry;
+  current?: C;
+}
+
+/**
+ * What bringing `incoming` into a level that holds `current` does, key by key, sorted by key. A
+ * repeated incoming key keeps its last entry. Run it again after applying and every change is
+ * `unchanged`. Pure.
+ */
+export function planImport<C extends RestoreEntry>(
+  incoming: readonly ImportEntry[],
+  current: readonly C[],
+  overwrite: boolean,
+): ImportChange<C>[] {
+  const is = new Map(current.map((e) => [e.key, e]));
+  return [...new Map(incoming.map((e) => [e.key, e])).values()]
+    .map((entry): ImportChange<C> => {
+      const have = is.get(entry.key);
+      const base = { key: entry.key, kind: entry.kind, incoming: entry };
+      if (!have) return { ...base, change: "create" };
+      if (have.kind !== entry.kind) return { ...base, change: "kind_mismatch", current: have };
+      if (have.value === entry.value) return { ...base, change: "unchanged", current: have };
+      return { ...base, change: overwrite ? "update" : "conflict", current: have };
+    })
+    .sort((a, b) => compare(a.key, b.key));
+}

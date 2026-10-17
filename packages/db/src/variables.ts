@@ -1,4 +1,7 @@
 import {
+  type ImportChange,
+  type ImportEntry,
+  planImport,
   planRestore,
   type RestoreChange,
   type RestoreEntry,
@@ -577,6 +580,72 @@ export function restoreLevel(
         const v = await describeVariable(tx, scope, c.current.id);
         const gone = v !== undefined && (await deleteVariable(tx, scope, c.current.id));
         done.push({ ...step, applied: gone, ...(v && { variable: v }) });
+      } else {
+        done.push({ ...step, applied: false });
+      }
+    }
+    return done;
+  });
+}
+
+/** What bringing `incoming` into the level would do: every value of the level is opened to compare. */
+export async function importPlan(
+  db: Executor,
+  keys: KeyProvider,
+  scope: Scope,
+  incoming: readonly ImportEntry[],
+  overwrite: boolean,
+): Promise<ImportChange<Held>[]> {
+  return planImport(incoming, await holdings(db, keys, scope), overwrite);
+}
+
+export interface Imported {
+  change: ImportChange["change"];
+  key: string;
+  kind: VariableKind;
+  applied: boolean;
+  /** What the change made or changed, for the audit trail. */
+  variable?: VariableInfo;
+}
+
+/**
+ * Brings `incoming` into the level in one transaction: a new key is made, a key with another value
+ * is changed (a new version) only with `overwrite`, anything else is left as it is. Nothing is ever
+ * deleted. Idempotent: the same import again changes nothing. `source` is named in each version's
+ * reason.
+ */
+export function importLevel(
+  db: Executor,
+  keys: KeyProvider,
+  scope: Scope,
+  incoming: readonly ImportEntry[],
+  opts: { actor: Actor; overwrite: boolean; source: string },
+): Promise<Imported[]> {
+  const { actor } = opts;
+  const reason = `imported from ${opts.source}`;
+  return db.transaction(async (tx) => {
+    const done: Imported[] = [];
+    for (const c of await importPlan(tx, keys, scope, incoming, opts.overwrite)) {
+      const step = { change: c.change, key: c.key, kind: c.kind };
+      if (c.change === "create") {
+        const { value, description } = c.incoming;
+        const v = await createVariable(tx, keys, {
+          ...scope,
+          key: c.key,
+          kind: c.kind,
+          value,
+          ...(description && { description }),
+          actor,
+          reason,
+        });
+        done.push({ ...step, applied: true, variable: bare(v) });
+      } else if (c.change === "update" && c.current) {
+        const v = await setVariable(tx, keys, scope, c.current.id, {
+          value: c.incoming.value,
+          actor,
+          reason,
+        });
+        done.push({ ...step, applied: v !== undefined, ...(v && { variable: bare(v) }) });
       } else {
         done.push({ ...step, applied: false });
       }

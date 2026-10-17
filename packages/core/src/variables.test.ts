@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   KEY_PATTERN,
   MAX_RESOLVED_LENGTH,
+  planImport,
   planRestore,
   type ResolveIssue,
   resolveVariables,
@@ -683,5 +684,74 @@ describe("planRestore", () => {
       "conflict K secret",
     ]);
     expect(brief([e("K", "a", "secret")], [e("K", "b", "plain")])).toEqual(["conflict K secret"]);
+  });
+});
+
+describe("planImport", () => {
+  const have = (key: string, value: string, kind: VariableKind = "secret") => ({
+    id: `id-${key}`,
+    key,
+    kind,
+    value,
+  });
+  const inc = (key: string, value: string, kind: VariableKind = "secret") => ({ key, kind, value });
+  const brief = (
+    incoming: ReturnType<typeof inc>[],
+    current: ReturnType<typeof have>[],
+    overwrite = false,
+  ) => planImport(incoming, current, overwrite).map((c) => `${c.change} ${c.key} ${c.kind}`);
+
+  test("says what each key is, sorted by key, and leaves the rest of the level alone", () => {
+    const current = [
+      have("SAME", "1"),
+      have("DIFF", "old"),
+      have("KIND", "x", "plain"),
+      have("OTHER", "o"),
+    ];
+    const incoming = [inc("NEW", "n"), inc("SAME", "1"), inc("DIFF", "new"), inc("KIND", "x")];
+    expect(brief(incoming, current)).toEqual([
+      "conflict DIFF secret",
+      "kind_mismatch KIND secret",
+      "create NEW secret",
+      "unchanged SAME secret",
+    ]);
+  });
+
+  test("overwrite turns a differing value into an update, and nothing else", () => {
+    const current = [have("DIFF", "old"), have("KIND", "x", "plain"), have("SAME", "1")];
+    const incoming = [inc("DIFF", "new"), inc("KIND", "x"), inc("SAME", "1"), inc("NEW", "n")];
+    expect(brief(incoming, current, true)).toEqual([
+      "update DIFF secret",
+      "kind_mismatch KIND secret",
+      "create NEW secret",
+      "unchanged SAME secret",
+    ]);
+  });
+
+  test("a change carries what applying it needs", () => {
+    const [c] = planImport([inc("A", "new")], [have("A", "old")], true);
+    expect(c).toMatchObject({ incoming: { value: "new" }, current: { id: "id-A", value: "old" } });
+    expect(planImport([inc("A", "x")], [], false)[0]).not.toHaveProperty("current");
+  });
+
+  test("a value is equal only when kind and text are, down to the last character", () => {
+    expect(brief([inc("A", "x ")], [have("A", "x")])).toEqual(["conflict A secret"]);
+    expect(brief([inc("A", "")], [have("A", "")])).toEqual(["unchanged A secret"]);
+    expect(brief([inc("A", "a")], [have("A", "A")])).toEqual(["conflict A secret"]);
+  });
+
+  test("a repeated incoming key counts once, with its last entry", () => {
+    expect(
+      planImport([inc("A", "1"), inc("A", "2")], [have("A", "2")], false).map((c) => c.change),
+    ).toEqual(["unchanged"]);
+  });
+
+  test("applied, the same import changes nothing", () => {
+    const incoming = [inc("A", "1"), inc("B", "2")];
+    const after = planImport(incoming, [], false).map((c) => have(c.key, c.incoming.value));
+    expect(planImport(incoming, after, false).map((c) => c.change)).toEqual([
+      "unchanged",
+      "unchanged",
+    ]);
   });
 });

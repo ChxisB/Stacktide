@@ -1,5 +1,7 @@
 import {
+  can,
   DomainError,
+  type ImportEntry,
   KEY_PATTERN,
   type Logger,
   resolveVariables,
@@ -16,6 +18,9 @@ import {
   getOrganization,
   getProject,
   getVariable,
+  type Imported,
+  importLevel,
+  importPlan,
   listVariables,
   listVersions,
   openChain,
@@ -29,12 +34,14 @@ import {
   type VariableInfo,
   type VariableVersion,
 } from "@orch/db";
+import { createGitlab, GitlabError } from "@orch/gitlab";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
-import { noKeys } from "../connections";
+import { noKeys, openGitlabConnection, WHY } from "../connections";
 import { guardPlugin, unauthenticated } from "../guard";
 import type { Principal } from "../principal";
+import { fromFile, fromGitlab } from "../variable-import";
 import {
   iso,
   mapDbError,
@@ -185,6 +192,51 @@ const restoredSchema = z.object({
   changes: z.array(changeSchema.extend({ applied: z.boolean() })),
 });
 
+// A pasted `.env` or JSON text, or the variables of the GitLab project this one was imported from.
+// A dry run is the default, and so is `secret`: nothing is made readable on a guess.
+const MAX_CONTENT = 1_048_576;
+const importOptions = { overwrite: z.boolean().optional(), dryRun: z.boolean().optional() };
+const fileImport = {
+  content: z.string().min(1).max(MAX_CONTENT),
+  kind: z.enum(["plain", "secret"]).optional(),
+  ...importOptions,
+};
+const importBody = z.discriminatedUnion("source", [
+  z.strictObject({ source: z.literal("dotenv"), ...fileImport }),
+  z.strictObject({ source: z.literal("json"), ...fileImport }),
+  z.strictObject({ source: z.literal("gitlab"), connectionId: z.uuid(), ...importOptions }),
+]);
+const importedSchema = z.object({
+  source: z.enum(["dotenv", "json", "gitlab"]),
+  dryRun: z.boolean(),
+  changes: z.array(
+    z.object({
+      change: z.enum(["create", "update", "unchanged", "conflict", "kind_mismatch"]),
+      key: z.string(),
+      kind: z.enum(VARIABLE_KINDS),
+      applied: z.boolean(),
+      /** GitLab's own flags, noted and not carried over. */
+      masked: z.boolean().optional(),
+      protected: z.boolean().optional(),
+    }),
+  ),
+  skipped: z.array(
+    z.object({
+      reason: z.enum([
+        "syntax",
+        "bad_key",
+        "bad_value",
+        "unclosed_quote",
+        "duplicate",
+        "hidden",
+        "other_scope",
+      ]),
+      key: z.string().optional(),
+      line: z.number().int().optional(),
+    }),
+  ),
+});
+
 // One schema for all three levels: the path says which ids exist.
 const params = z.object({
   orgId: z.uuid(),
@@ -209,6 +261,7 @@ interface Level {
     delete: string;
     reveal: string;
     restore: string;
+    import: string;
   };
   /** Throws the 404 for a parent that is not there. */
   parent: (db: RouteDeps["db"], p: Params) => Promise<unknown>;
@@ -220,6 +273,7 @@ const projectActions = {
   delete: "variable.delete",
   reveal: "secret.reveal",
   restore: "variable.restore",
+  import: "variable.import",
 };
 const organizationLevel: Level = {
   level: "organization",
@@ -231,6 +285,7 @@ const organizationLevel: Level = {
     delete: "variable.org.delete",
     reveal: "secret.reveal.org",
     restore: "variable.org.restore",
+    import: "variable.org.import",
   },
   parent: async (db, p) =>
     (await getOrganization(db, p.orgId)) ?? Promise.reject(notFound("Organization")),
@@ -328,6 +383,46 @@ const levelRoutes = (
     return keys;
   };
   const failingWith = failing(logger);
+  /** The variables of the GitLab project this one was imported from, read through an organization connection. */
+  const fromGitlabProject = async (
+    p: Params,
+    connectionId: string,
+    requestId: unknown,
+    accept: (entry: ImportEntry) => boolean,
+  ) => {
+    if (spec.level === "organization") {
+      throw new DomainError(
+        "unsupported_source",
+        422,
+        "GitLab variables are imported into a project or an environment",
+      );
+    }
+    const project = p.projectId && (await getProject(db, p.orgId, p.projectId));
+    if (!project) throw notFound("Project");
+    if (!project.gitlabProjectId) {
+      throw new DomainError("not_linked", 422, "This project was not imported from GitLab");
+    }
+    // GitLab scopes a variable to an environment by its name: here that is the slug.
+    const env = p.envId && p.projectId && (await getEnvironment(db, p.orgId, p.projectId, p.envId));
+    const { baseUrl, token } = await openGitlabConnection(
+      { db, keys, logger },
+      p.orgId,
+      connectionId,
+      requestId,
+    );
+    const api = createGitlab({
+      baseUrl,
+      auth: { type: "private-token", token },
+      timeoutMs: 15_000,
+      maxRetries: 1,
+      maxRetryDelayMs: 2_000,
+    });
+    try {
+      return await fromGitlab(api, project.gitlabProjectId, env ? env.slug : "*", accept);
+    } catch (e) {
+      throw e instanceof GitlabError ? new DomainError("gitlab_failed", 502, WHY[e.kind]) : e;
+    }
+  };
   const { level, actions } = spec;
   return new Elysia({ prefix: spec.prefix })
     .use(auditPlugin(principal))
@@ -618,6 +713,102 @@ const levelRoutes = (
         response: { 200: restoredSchema, ...writes },
         audit: ["variable.create", "variable.update", "variable.delete", "variable.restore_level"],
         guard: actions.restore,
+      },
+    )
+    .post(
+      "/import",
+      async ({ params: p, body, audit, set, principal: caller }) => {
+        // The connection's token is the organization's, and a connection is not bound to a project
+        // (a numeric project id can mean another project on another GitLab): its use needs the
+        // right to read connections, which a project maintainer does not have.
+        if (
+          body.source === "gitlab" &&
+          caller &&
+          "subject" in caller &&
+          !can(caller.subject, "connection.read", { organizationId: p.orgId })
+        ) {
+          throw new DomainError("forbidden", 403, "Not allowed: connection.read");
+        }
+        const k = sealing();
+        const actor = actorOf(caller);
+        await spec.parent(db, p);
+        const dryRun = body.dryRun !== false;
+        const overwrite = body.overwrite === true;
+        const { source } = body;
+        const accept = (e: ImportEntry) =>
+          value.safeParse(e.value).success && description.safeParse(e.description ?? "").success;
+        const found =
+          body.source === "gitlab"
+            ? await fromGitlabProject(p, body.connectionId, set.headers["x-request-id"], accept)
+            : fromFile(body.source, body.content, body.kind ?? "secret", accept);
+        const done = await db
+          .transaction(async (tx) => {
+            const changes = dryRun
+              ? (await importPlan(tx, k, scopeOf(p), found.entries, overwrite)).map(
+                  (c): Imported => ({
+                    change: c.change,
+                    key: c.key,
+                    kind: c.kind,
+                    applied: false,
+                  }),
+                )
+              : await importLevel(tx, k, scopeOf(p), found.entries, { actor, overwrite, source });
+            for (const c of changes) {
+              if (!c.variable) continue;
+              await audit(
+                tx,
+                audited(
+                  c.change === "create" ? "variable.create" : "variable.update",
+                  level,
+                  c.variable,
+                  { source, version: c.variable.currentVersion },
+                ),
+              );
+            }
+            const count = (change: string) => changes.filter((c) => c.change === change).length;
+            // One row per import, a dry run too: it opens every secret of the level to compare.
+            await audit(tx, {
+              action: "variable.import",
+              resourceType: "variable",
+              organizationId: p.orgId,
+              ...(p.projectId && { projectId: p.projectId }),
+              metadata: {
+                level,
+                ...(p.envId && { environmentId: p.envId }),
+                source,
+                ...(body.source === "gitlab" && { connectionId: body.connectionId }),
+                dryRun,
+                overwrite,
+                plannedCount: changes.length,
+                createdCount: changes.filter((c) => c.change === "create" && c.applied).length,
+                updatedCount: changes.filter((c) => c.change === "update" && c.applied).length,
+                conflictCount: count("conflict") + count("kind_mismatch"),
+                skippedCount: found.skipped.length,
+              },
+            });
+            return changes;
+          })
+          .catch(failingWith(set));
+        return {
+          source,
+          dryRun,
+          changes: done.map(({ change, key, kind, applied }) => ({
+            change,
+            key,
+            kind,
+            applied,
+            ...found.flags.get(key),
+          })),
+          skipped: found.skipped,
+        };
+      },
+      {
+        params,
+        body: importBody,
+        parse: "json",
+        response: { 200: importedSchema, ...writes, 502: problemSchema },
+        audit: ["variable.create", "variable.update", "variable.import"],
+        guard: actions.import,
       },
     );
 };
