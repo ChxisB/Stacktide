@@ -24,7 +24,7 @@ Done when: a test calls the API through the typed client; CI fails if the genera
 Do: `jobs` table; `enqueue`, `claim` (`SKIP LOCKED`), `complete`, `fail` with exponential backoff and dead-letter; `apps/api/src/worker.ts` entrypoint with handler registry and graceful stop.
 Done when: a concurrency test with 3 workers and 100 jobs runs each job exactly once; a failing job retries then goes `dead`; `last_error` is redacted.
 
-### API-7 - Recurring jobs  `[ ]` S - deps: API-6
+### API-7 - Recurring jobs  `[x]` S - deps: API-6
 Do: `schedules(name, cron|interval, queue, payload, next_run_at)`; the worker enqueues due schedules without double-firing across workers.
 Done when: a test with a fake clock shows exactly one enqueue per tick with two workers.
 

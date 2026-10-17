@@ -29,6 +29,13 @@
       "when": 1792225890568,
       "tag": "0003_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792226601440,
+      "tag": "0004_schedules",
+      "breakpoints": true
     }
   ]
 }

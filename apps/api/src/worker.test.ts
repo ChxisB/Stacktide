@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createLogger } from "@orch/core";
-import { createDb, type Db, enqueue, jobs } from "@orch/db";
+import { createDb, type Db, enqueue, jobs, schedules, upsertSchedule } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { createWorker, type JobHandler, type Worker } from "./worker";
 
 let t: TestDb;
@@ -256,5 +256,73 @@ describe("worker", () => {
     );
     await s.cleanup();
     expect(JSON.stringify(s.lines)).not.toContain(t.url);
+  });
+
+  test("two workers running a schedule enqueue and run one job per tick", async () => {
+    const s = setup();
+    const queue = queueName();
+    const T0 = new Date("2030-01-01T00:00:00Z");
+    let clock = T0;
+    await upsertSchedule(t.db, { name: `s-${queue}`, intervalSeconds: 60, queue, now: T0 });
+    const ran: number[] = [];
+    const handler: JobHandler = async () => {
+      ran.push(clock.getTime());
+    };
+    const fake = { now: () => clock };
+    for (const w of [
+      s.worker({ [queue]: handler }, fake, s.ownDb()),
+      s.worker({ [queue]: handler }, fake, s.ownDb()),
+    ])
+      w.start();
+
+    const count = async () => (await t.db.select().from(jobs).where(eq(jobs.queue, queue))).length;
+    await Bun.sleep(100);
+    expect(ran).toEqual([]); // not due yet
+    for (const tick of [1, 2, 3]) {
+      clock = new Date(T0.getTime() + tick * 60_000);
+      await until(() => ran.length === tick, `tick ${tick} to run`);
+      await Bun.sleep(100); // several more polls of both workers: nothing may fire twice
+      expect(ran.length).toBe(tick);
+      expect(await count()).toBe(tick);
+    }
+    await s.cleanup();
+    await t.db.delete(schedules).where(eq(schedules.queue, queue));
+    expect(ran).toEqual([60_000, 120_000, 180_000].map((ms) => T0.getTime() + ms));
+  });
+
+  test("a failing schedule does not stop the worker from running jobs or other schedules", async () => {
+    const s = setup();
+    const [queue, other] = [queueName(), queueName()];
+    const name = `bad-${queue}`;
+    try {
+      // Only a direct insert can produce a schedule `upsertSchedule` would refuse. Oldest first.
+      await t.db.insert(schedules).values({
+        name,
+        intervalSeconds: 60,
+        queue: "Not A Queue",
+        nextRunAt: new Date(0),
+      });
+      await upsertSchedule(t.db, { name: `ok-${other}`, intervalSeconds: 60, queue: other });
+      await t.db
+        .update(schedules)
+        .set({ nextRunAt: new Date(1) })
+        .where(eq(schedules.queue, other));
+      const job = await enqueue(t.db, { queue });
+      const ran: string[] = [];
+      s.worker({
+        [queue]: async () => {},
+        [other]: async () => {
+          ran.push(other);
+        },
+      }).start();
+      await until(async () => (await get(job.id))?.status === "done", "the job to run anyway");
+      await until(() => ran.length > 0, "the other schedule to fire and run");
+      await s.cleanup();
+      expect(s.lines.some((l) => l.msg === "schedule failed to fire" && l.schedule === name)).toBe(
+        true,
+      );
+    } finally {
+      await t.db.delete(schedules).where(inArray(schedules.queue, ["Not A Queue", other]));
+    }
   });
 });

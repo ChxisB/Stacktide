@@ -9,6 +9,7 @@ export * from "./audit";
 export * from "./jobs";
 export * from "./pg-error";
 export * from "./repo";
+export * from "./schedules";
 export * from "./schema";
 
 /** `max` caps the pool; Bun opens several connections per client by default. */

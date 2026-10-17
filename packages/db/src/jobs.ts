@@ -6,7 +6,7 @@ import { type JobStatus, jobs } from "./schema";
 
 export type Job = typeof jobs.$inferSelect;
 
-/** A refused enqueue. The message names the problem, never a payload value. */
+/** A refused enqueue or schedule. The message names the problem, never a payload value. */
 export class JobError extends Error {
   override readonly name = "JobError";
 }
@@ -22,9 +22,26 @@ export interface EnqueueInput {
   maxAttempts?: number;
 }
 
+/** Returns the queue name, or throws `JobError`. */
+export function jobQueue(queue: string): string {
+  if (!QUEUE.test(queue)) throw new JobError("job queue must be 1-64 chars of a-z 0-9 _ . -");
+  return queue;
+}
+
+/** Same tripwire as audit metadata: small plain JSON without secret-looking keys. */
+export function jobPayload(payload: Record<string, unknown> = {}): Record<string, unknown> {
+  try {
+    return checkMetadata(payload);
+  } catch (e) {
+    if (e instanceof AuditError)
+      throw new JobError(e.message.replace(/^audit metadata/, "job payload"));
+    throw e;
+  }
+}
+
 /** Takes a transaction too, so the job exists exactly when the change that needs it does. */
 export async function enqueue(db: Executor, input: EnqueueInput): Promise<Job> {
-  if (!QUEUE.test(input.queue)) throw new JobError("job queue must be 1-64 chars of a-z 0-9 _ . -");
+  const queue = jobQueue(input.queue);
   const { maxAttempts } = input;
   if (
     maxAttempts !== undefined &&
@@ -32,18 +49,9 @@ export async function enqueue(db: Executor, input: EnqueueInput): Promise<Job> {
   ) {
     throw new JobError("job maxAttempts must be an integer from 1 to 100");
   }
-  let payload: Record<string, unknown>;
-  try {
-    // Same tripwire as audit metadata: small plain JSON without secret-looking keys.
-    payload = checkMetadata(input.payload ?? {});
-  } catch (e) {
-    if (e instanceof AuditError)
-      throw new JobError(e.message.replace(/^audit metadata/, "job payload"));
-    throw e;
-  }
   const [job] = await db
     .insert(jobs)
-    .values({ queue: input.queue, payload, runAt: input.runAt, maxAttempts })
+    .values({ queue, payload: jobPayload(input.payload), runAt: input.runAt, maxAttempts })
     .returning();
   if (!job) throw new Error("insert returned no row");
   return job;

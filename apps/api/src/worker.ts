@@ -1,6 +1,6 @@
 import { hostname } from "node:os";
 import type { Logger } from "@orch/core";
-import { claim, complete, type Db, describeError, fail, type Job } from "@orch/db";
+import { claim, complete, type Db, describeError, fail, fireDue, type Job } from "@orch/db";
 
 export interface JobContext {
   id: string;
@@ -120,6 +120,17 @@ export function createWorker(o: WorkerOptions): Worker {
 
   async function poll() {
     while (!stopping) {
+      // Every worker tries; the database lets each due schedule fire once (see `fireDue`).
+      try {
+        const fired = await fireDue(db, {
+          now: now?.(),
+          onError: (schedule, error) =>
+            logger.warn("schedule failed to fire", { schedule, error: describeError(error) }),
+        });
+        if (fired > 0) logger.info("schedules fired", { count: fired });
+      } catch (error) {
+        logger.error("firing schedules failed", { error: describeError(error) });
+      }
       const free = concurrency - running.size;
       if (free > 0) {
         try {
