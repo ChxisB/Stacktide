@@ -31,6 +31,10 @@ const configSchema = z.object({
   overrides: z.record(z.string(), z.unknown()),
   /** SHA-256 of the file as committed. */
   renderedHash: z.string(),
+  /** `inline`: the whole pipeline is the file; `include`: the file includes the template from `includeProject`. */
+  mode: z.enum(["inline", "include"]),
+  includeProject: z.string().nullable(),
+  includeRef: z.string().nullable(),
   /** The merge request that carries the file; null while the default branch already has it. */
   mrIid: z.number().int().nullable(),
   mrUrl: z.string().nullable(),
@@ -46,6 +50,9 @@ const configDto = (c: PipelineConfig): z.infer<typeof configSchema> => ({
   params: c.params,
   overrides: c.overrides,
   renderedHash: c.renderedHash,
+  mode: c.mode,
+  includeProject: c.includeProject,
+  includeRef: c.includeRef,
   mrIid: c.mrIid,
   mrUrl: c.mrUrl,
   createdAt: iso(c.createdAt),
@@ -77,6 +84,14 @@ const request = z.strictObject({
   params: z.record(z.string().max(100), z.unknown()).optional(),
   overrides: z.record(z.string().max(100), z.json()).optional(),
   environments: z.array(slug).max(50).optional(),
+  /** `inline` (the default) or `include` (PIPE-9); `include` goes with `include`, which names the templates project. */
+  mode: z.enum(["inline", "include"]).optional(),
+  include: z
+    .strictObject({
+      project: z.string().min(1).max(255),
+      ref: z.string().min(1).max(100).optional(),
+    })
+    .optional(),
 });
 const sealed = { 500: z.any(), 502: z.any(), 503: z.any() } as const;
 
@@ -132,6 +147,9 @@ export async function recordApplied(
       existing: applied.existing,
       mrIid: applied.mr?.iid ?? null,
       renderedHash: applied.renderedHash,
+      mode: applied.mode,
+      includeProject: row.includeProject,
+      includeRef: row.includeRef,
       paramNames: Object.keys(row.params).sort(),
       overrideKeys: Object.keys(row.overrides).sort(),
       ...extra,
@@ -211,6 +229,7 @@ export const pipelineRoutes = ({
           text: p.text,
           renderedHash: p.renderedHash,
           existing: p.existing,
+          mode: p.mode,
           template: { name: p.template.name, version: p.template.version },
           validation: p.validation,
         };
@@ -225,6 +244,7 @@ export const pipelineRoutes = ({
             text: z.string(),
             renderedHash: z.string(),
             existing: existingSchema,
+            mode: z.enum(["inline", "include"]),
             template: z.object({ name: z.string(), version: z.string() }),
             validation: validationSchema,
           }),

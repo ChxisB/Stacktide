@@ -16711,6 +16711,25 @@
                         "renderedHash": {
                           "type": "string"
                         },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "inline",
+                            "include"
+                          ]
+                        },
+                        "includeProject": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "includeRef": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "mrIid": {
                           "type": [
                             "integer",
@@ -16744,6 +16763,9 @@
                         "params",
                         "overrides",
                         "renderedHash",
+                        "mode",
+                        "includeProject",
+                        "includeRef",
                         "mrIid",
                         "mrUrl",
                         "createdAt",
@@ -17149,6 +17171,32 @@
                       "maxLength": 63,
                       "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
                     }
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "inline",
+                      "include"
+                    ]
+                  },
+                  "include": {
+                    "type": "object",
+                    "properties": {
+                      "project": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255
+                      },
+                      "ref": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      }
+                    },
+                    "required": [
+                      "project"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
@@ -17350,6 +17398,25 @@
                         "renderedHash": {
                           "type": "string"
                         },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "inline",
+                            "include"
+                          ]
+                        },
+                        "includeProject": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "includeRef": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "mrIid": {
                           "type": [
                             "integer",
@@ -17383,6 +17450,9 @@
                         "params",
                         "overrides",
                         "renderedHash",
+                        "mode",
+                        "includeProject",
+                        "includeRef",
                         "mrIid",
                         "mrUrl",
                         "createdAt",
@@ -17901,6 +17971,32 @@
                       "maxLength": 63,
                       "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
                     }
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "inline",
+                      "include"
+                    ]
+                  },
+                  "include": {
+                    "type": "object",
+                    "properties": {
+                      "project": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255
+                      },
+                      "ref": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      }
+                    },
+                    "required": [
+                      "project"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
@@ -17967,6 +18063,13 @@
                         "identical",
                         "generated",
                         "hand-written"
+                      ]
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "inline",
+                        "include"
                       ]
                     },
                     "template": {
@@ -18051,6 +18154,7 @@
                     "text",
                     "renderedHash",
                     "existing",
+                    "mode",
                     "template",
                     "validation"
                   ]

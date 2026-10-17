@@ -13,6 +13,7 @@
     "db:generate": "cd packages/db && bunx drizzle-kit generate",
     "db:migrate": "bun --env-file=.env.example packages/db/src/migrate.ts",
     "openapi": "bun apps/api/src/gen-openapi.ts",
+    "templates:include": "bun packages/pipelines/src/include-files.ts",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test --env-file=.env.example",

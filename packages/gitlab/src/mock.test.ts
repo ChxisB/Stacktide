@@ -224,6 +224,115 @@ describe("pipelines", () => {
     expect((await api.ci.lint("g/p", "job:\n  stage: x\n")).warnings).toEqual([]);
     mock.stop();
   });
+
+  describe("an include of a file in another project", () => {
+    const FILE = `spec:
+  inputs:
+    image:
+      default: node:22
+      options: [node:22, node:24]
+    retries:
+      type: number
+      default: 2
+    stage:
+      type: string
+---
+build:
+  image: $[[ inputs.image ]]
+  stage: $[[ inputs.stage ]]
+  retry: $[[ inputs.retries ]]
+  script:
+    - echo "on $[[ inputs.image ]]"
+`;
+    const withTemplates = (files: Record<string, string> = { "t/1/pipeline.yml": FILE }) => {
+      const { mock, api } = setup();
+      mock.addProject({ path: "g/templates", files });
+      const p = mock.addProject({ path: "g/p" });
+      return { mock, api, p };
+    };
+    const include = (extra = "", inputs = "      stage: test\n") =>
+      `include:\n  - project: g/templates\n    file: t/1/pipeline.yml\n    inputs:\n${inputs}${extra}`;
+
+    test("lints as the merged pipeline: inputs applied, the main file merged over the included jobs", async () => {
+      const { mock, api, p } = withTemplates();
+      expect(await api.ci.lint(p.id, include())).toMatchObject({ valid: true, errors: [] });
+      // a job of the main file that has no script of its own takes the included one
+      expect((await api.ci.lint(p.id, `${include()}build:\n  tags: [big]\n`)).valid).toBe(true);
+      expect((await api.ci.lint(p.id, `${include()}other:\n  tags: [big]\n`)).errors).toEqual([
+        "jobs:other config should implement the script:, run:, or trigger: keyword",
+      ]);
+      mock.stop();
+    });
+
+    test("says what is wrong with the include, as lint errors", async () => {
+      const { mock, api, p } = withTemplates();
+      const errors = async (text: string) => (await api.ci.lint(p.id, text)).errors;
+      expect(await errors(include().replace("g/templates", "g/nope"))).toEqual([
+        "Project `g/nope` not found or access denied! Make sure any includes in the pipeline configuration are correctly defined.",
+      ]);
+      expect(await errors(include().replace("t/1/", "t/2/"))).toEqual([
+        "Project `g/templates` file `/t/2/pipeline.yml` does not exist!",
+      ]);
+      expect(await errors(include("    ref: gone\n"))).toEqual([
+        "Project `g/templates` reference `gone` does not exist!",
+      ]);
+      expect(await errors(include("", ""))).toEqual([
+        "`stage` input: required value has not been provided",
+      ]);
+      expect(await errors(include("      extra: 1\n"))).toEqual(["unknown input arguments: extra"]);
+      expect((await errors(include("      image: node:18\n")))[0]).toContain(
+        "not in the list of allowed options",
+      );
+      expect(await errors(include("      retries: '3'\n"))).toEqual([
+        "`retries` input: provided value is not a number",
+      ]);
+      mock.stop();
+    });
+
+    test("a file that uses an input it does not declare is refused", async () => {
+      const { mock, api, p } = withTemplates({
+        "t/1/pipeline.yml": 'spec:\n  inputs: {}\n---\nbuild:\n  script: ["$[[ inputs.nope ]]"]\n',
+      });
+      expect((await api.ci.lint(p.id, include("", ""))).errors).toEqual([
+        "unknown interpolation key: `nope`",
+      ]);
+      mock.stop();
+    });
+
+    test("the main file wins over the included file, and a leading slash in the path is allowed", async () => {
+      const { mock, api } = withTemplates();
+      mock.addProject({
+        path: "g/thin",
+        files: {
+          ".gitlab-ci.yml": `${include().replace("file: t/", "file: /t/")}build:\n  stage: deploy\n`,
+        },
+      });
+      const run = await api.pipelines.trigger("g/thin", "main");
+      expect(
+        (await collect(api.pipelines.jobs("g/thin", run.id))).map((j) => [j.name, j.stage]),
+      ).toEqual([["build", "deploy"]]);
+      mock.stop();
+    });
+
+    test("an include that fails reports its own error and nothing about the main file's jobs", async () => {
+      const { mock, api, p } = withTemplates();
+      const broken = `${include().replace("t/1/", "t/2/")}build:\n  tags: [big]\n`;
+      expect((await api.ci.lint(p.id, broken)).errors).toEqual([
+        "Project `g/templates` file `/t/2/pipeline.yml` does not exist!",
+      ]);
+      mock.stop();
+    });
+
+    test("a pipeline of a project whose file only includes runs the included jobs", async () => {
+      const { mock, api } = withTemplates();
+      mock.addProject({ path: "g/thin", files: { ".gitlab-ci.yml": include() } });
+      const run = await api.pipelines.trigger("g/thin", "main");
+      expect((await collect(api.pipelines.jobs("g/thin", run.id))).map((j) => j.name)).toEqual([
+        "build",
+      ]);
+      mock.stop();
+    });
+  });
 });
 
 describe("variables", () => {

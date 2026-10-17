@@ -13,6 +13,9 @@ export type NewPipelineConfig = Pick<
   | "params"
   | "overrides"
   | "renderedHash"
+  | "mode"
+  | "includeProject"
+  | "includeRef"
   | "mrIid"
   | "mrUrl"
 >;

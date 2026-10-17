@@ -134,20 +134,116 @@ const NOT_JOBS = new Set([
   "after_script",
 ]);
 
-/** The few CI rules the platform relies on: a mapping, and every visible job has a script. */
-function checkCi(content: string) {
-  let doc: unknown;
+/** What an `include:project` reads: the file's text, or why GitLab would refuse. */
+type IncludeReader = (
+  project: string,
+  file: string,
+  ref: string | undefined,
+) => { content: string } | { error: string };
+
+const isMap = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+/** Maps merge key by key; anything else (a list too) is replaced by the right-hand side. */
+const mergeCi = (a: unknown, b: unknown): unknown =>
+  isMap(a) && isMap(b)
+    ? {
+        ...a,
+        ...Object.fromEntries(
+          Object.entries(b).map(([k, v]) => [k, k in a ? mergeCi(a[k], v) : v]),
+        ),
+      }
+    : b;
+
+/**
+ * An included file with its `inputs` applied, as GitLab does: an optional `spec:` document gives the
+ * inputs (type, default, options), then each `$[[ inputs.x ]]` in a string is replaced, by the typed
+ * value when it is the whole string and by its text inside one. Inputs are strings, numbers or booleans;
+ * regexes and ranges are not checked.
+ */
+function interpolateCi(text: string, given: unknown): { doc: unknown } | { error: string } {
+  let parts: unknown;
   try {
-    doc = Bun.YAML.parse(content);
+    parts = Bun.YAML.parse(text);
+  } catch {
+    return { error: "Invalid configuration format" };
+  }
+  const [head, body] =
+    Array.isArray(parts) && parts.length === 2 && isMap(parts[0]) && "spec" in parts[0]
+      ? parts
+      : [{}, parts];
+  const spec = isMap(head) && isMap(head.spec) && isMap(head.spec.inputs) ? head.spec.inputs : {};
+  const args = isMap(given) ? given : {};
+  const unknown = Object.keys(args).filter((k) => !(k in spec));
+  if (unknown.length > 0) return { error: `unknown input arguments: ${unknown.join(", ")}` };
+  const values: Record<string, unknown> = {};
+  for (const [name, def] of Object.entries(spec)) {
+    const input = isMap(def) ? def : {};
+    const value = name in args ? args[name] : input.default;
+    if (value === undefined)
+      return { error: `\`${name}\` input: required value has not been provided` };
+    const type = input.type ?? "string";
+    if (typeof value !== type)
+      return { error: `\`${name}\` input: provided value is not a ${String(type)}` };
+    if (Array.isArray(input.options) && !input.options.includes(value))
+      return {
+        error: `\`${name}\` input: \`${String(value)}\` cannot be used because it is not in the list of allowed options`,
+      };
+    values[name] = value;
+  }
+  let missing: string | undefined;
+  const walk = (n: unknown): unknown => {
+    if (typeof n === "string") {
+      const fill = (name: string) => {
+        if (!(name in values)) missing ??= name;
+        return values[name];
+      };
+      const whole = /^\$\[\[ inputs\.([A-Za-z0-9_-]+) \]\]$/.exec(n);
+      if (whole) return fill(whole[1] ?? "");
+      return n.replace(/\$\[\[ inputs\.([A-Za-z0-9_-]+) \]\]/g, (_, name: string) =>
+        String(fill(name)),
+      );
+    }
+    if (Array.isArray(n)) return n.map(walk);
+    if (isMap(n)) return Object.fromEntries(Object.entries(n).map(([k, v]) => [k, walk(v)]));
+    return n;
+  };
+  const doc = walk(body);
+  return missing === undefined ? { doc } : { error: `unknown interpolation key: \`${missing}\`` };
+}
+
+/**
+ * The few CI rules the platform relies on: a mapping, and every visible job has a script. With a
+ * `read`, the `include:project` entries are resolved first (GitLab merges the main file over them).
+ */
+function checkCi(content: string, read?: IncludeReader) {
+  let local: unknown;
+  try {
+    local = Bun.YAML.parse(content);
   } catch {
     return { jobs: [], errors: ["Invalid configuration format"] };
   }
-  if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
-    return { jobs: [], errors: ["Invalid configuration format"] };
-  }
-  const jobs: { name: string; stage: string; manual: boolean }[] = [];
+  if (!isMap(local)) return { jobs: [], errors: ["Invalid configuration format"] };
+  let doc: unknown = {};
   const errors: string[] = [];
-  for (const [name, def] of Object.entries(doc)) {
+  const includes = read && "include" in local ? [local.include].flat() : [];
+  for (const inc of includes) {
+    if (!isMap(inc) || typeof inc.project !== "string") continue; // other kinds of include are not modelled
+    for (const file of [inc.file].flat()) {
+      if (typeof file !== "string") continue;
+      const got = (read as IncludeReader)(
+        inc.project,
+        file,
+        typeof inc.ref === "string" ? inc.ref : undefined,
+      );
+      const done = "error" in got ? got : interpolateCi(got.content, inc.inputs);
+      if ("error" in done) errors.push(done.error);
+      else doc = mergeCi(doc, done.doc);
+    }
+  }
+  if (errors.length > 0) return { jobs: [], errors };
+  doc = mergeCi(doc, local);
+  const jobs: { name: string; stage: string; manual: boolean }[] = [];
+  for (const [name, def] of Object.entries(isMap(doc) ? doc : {})) {
     if (NOT_JOBS.has(name) || name.startsWith(".")) continue;
     const j = (def && typeof def === "object" ? def : {}) as Record<string, unknown>;
     if (!("script" in j) && !("trigger" in j)) {
@@ -173,6 +269,20 @@ export function createMockGitlab(opts: MockOptions = {}) {
   const token = opts.token ?? "mock-token-0123456789";
   const maxPerPage = opts.maxPerPage ?? 100;
   const projects: Proj[] = [];
+  const readInclude: IncludeReader = (path, file, ref) => {
+    const found = projects.find((p) => p.path === path);
+    if (!found) {
+      return {
+        error: `Project \`${path}\` not found or access denied! Make sure any includes in the pipeline configuration are correctly defined.`,
+      };
+    }
+    const branch = found.branches.get(ref ?? found.defaultBranch ?? "");
+    if (!branch) return { error: `Project \`${path}\` reference \`${ref}\` does not exist!` };
+    const content = branch.files.get(file.replace(/^\//, ""));
+    if (content === undefined)
+      return { error: `Project \`${path}\` file \`/${file.replace(/^\//, "")}\` does not exist!` };
+    return { content };
+  };
   const groups: { id: number; name: string; full_path: string }[] = [];
   const groupVars = new Map<number, MockVar[]>();
   const groupMembers = new Map<number, Map<number, Membership>>();
@@ -556,7 +666,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
         }
         const ci = b.files.get(".gitlab-ci.yml");
         if (ci === undefined) return json({ message: { base: ["Missing CI config file"] } }, 400);
-        const checked = checkCi(ci);
+        const checked = checkCi(ci, readInclude);
         if (checked.errors.length) return json({ message: { base: checked.errors } }, 400);
         const jobs = checked.jobs.map((j) => ({
           id: ++seq,
@@ -580,7 +690,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
 
       if (req.method === "POST" && sub === "/ci/lint") {
         if (typeof body.content !== "string") return fail(400, "content is missing");
-        const { errors } = checkCi(body.content);
+        const { errors } = checkCi(body.content, readInclude);
         return json({
           valid: errors.length === 0,
           errors,

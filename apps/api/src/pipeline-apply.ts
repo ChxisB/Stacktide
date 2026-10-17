@@ -5,9 +5,12 @@ import { type Gitlab, GitlabError } from "@orch/gitlab";
 import {
   byVersion,
   GENERATED,
+  type IncludeTarget,
+  includePath,
   type Layer,
   RenderError,
   render,
+  renderInclude,
   type Template,
   type Validation,
 } from "@orch/pipelines";
@@ -26,6 +29,10 @@ export interface PipelineRequest {
   overrides?: Layer["overrides"];
   /** Environment slugs the required variables are checked in; all of the project's when left out. */
   environments?: string[];
+  /** `inline` (the default) commits the whole pipeline; `include` commits a thin file that includes the template from `include` (PIPE-9). */
+  mode?: "inline" | "include";
+  /** The templates project the template's file is published in; given with the `include` mode and only then. */
+  include?: IncludeTarget;
 }
 
 /** What is on the default branch now: nothing, a file of ours (unchanged or not), or one written by hand. */
@@ -39,6 +46,7 @@ export interface Prepared {
   validation: Validation;
   existing: Existing;
   template: Template["manifest"];
+  mode: "inline" | "include";
 }
 
 export interface Applied extends Omit<Prepared, "text" | "current" | "template"> {
@@ -113,9 +121,21 @@ async function prepare(
   }
   const template = pick(deps.catalog, request.template, request.version);
   const layer: Layer = { params: request.params, overrides: request.overrides };
+  const mode = request.mode ?? "inline";
+  if ((mode === "include") !== (request.include !== undefined)) {
+    throw new DomainError(
+      "invalid_pipeline",
+      422,
+      mode === "include"
+        ? "The include mode needs the templates project"
+        : "A templates project goes with the include mode alone",
+    );
+  }
   let text: string;
   try {
-    text = render(template, [layer]);
+    text = request.include
+      ? renderInclude(template, [layer], request.include)
+      : render(template, [layer]);
   } catch (e) {
     if (e instanceof RenderError) {
       throw new DomainError("invalid_pipeline", 422, sentence(e.problems.slice(0, 10)));
@@ -153,6 +173,7 @@ async function prepare(
       validation,
       existing,
       template: template.manifest,
+      mode,
     };
     return { api, ref, base, onDefault, prepared, template };
   } catch (e) {
@@ -194,6 +215,13 @@ function describeMr(p: Prepared, request: PipelineRequest, version: string) {
     "",
     `Parameters: ${given.length === 0 ? "the template's defaults" : given.map(([k, v]) => `\`${k}\` = \`${clip(JSON.stringify(v))}\``).join(", ")}.`,
   ];
+  if (request.include) {
+    const { project, ref } = request.include;
+    lines.push(
+      "",
+      `The pipeline itself is not in this file: it includes \`${includePath(p.template)}\` of \`${project}\`${ref === undefined ? "" : ` at \`${clip(ref)}\``}, and passes it these parameters. That file must be published there before this is merged. Whoever can change \`${project}\` changes this project's pipeline.`,
+    );
+  }
   if (overrides > 0)
     lines.push(
       `Overrides: ${overrides} entr${overrides === 1 ? "y" : "ies"} merged over the template.`,
@@ -250,6 +278,9 @@ export async function applyPipeline(
     params: request.params ?? {},
     overrides: request.overrides ?? {},
     renderedHash,
+    mode: prepared.mode,
+    includeProject: request.include?.project ?? null,
+    includeRef: request.include?.ref ?? null,
     mrIid: mr?.iid ?? null,
     mrUrl: mr?.url ?? null,
   });
@@ -260,6 +291,7 @@ export async function applyPipeline(
     renderedHash,
     validation,
     existing,
+    mode: prepared.mode,
     config: config(mr),
   });
   if (onDefault === text) return done("in_place", false, null);

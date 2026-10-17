@@ -32,6 +32,6 @@ Done when: tests cover dry-run (no writes), partial failure, resume, and the rat
 Do: handle pipeline/job webhooks into `pipeline_runs`; API for latest runs per project/environment with failure reason.
 Done when: tests cover out-of-order events, duplicate events and retry of a failed pipeline via the trigger API.
 
-### PIPE-9 - Include mode (post-MVP)  `[ ]` M - deps: PIPE-6
+### PIPE-9 - Include mode (post-MVP)  `[x]` M - deps: PIPE-6
 Do: render a thin `.gitlab-ci.yml` using `include:` + inputs against a templates project, selectable per pipeline config, with "eject to inline".
 Done when: renders and lints in both modes; switching modes produces a clean MR.

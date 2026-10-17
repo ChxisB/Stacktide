@@ -118,6 +118,55 @@ describe("pipeline configurations", () => {
     expect(bad).toBe("pipeline_configs_hash_check");
   });
 
+  test("is delivered inline unless it includes a templates project; switching back clears the project", async () => {
+    const w = await world();
+    const first = await savePipelineConfig(t.db, w.input);
+    expect(first).toMatchObject({ mode: "inline", includeProject: null, includeRef: null });
+    const included = await savePipelineConfig(t.db, {
+      ...w.input,
+      mode: "include",
+      includeProject: "grp/ci-templates",
+      includeRef: "main",
+    });
+    expect(included.id).toBe(first.id);
+    expect(await getPipelineConfig(t.db, w.org.id, w.project.id)).toMatchObject({
+      mode: "include",
+      includeProject: "grp/ci-templates",
+      includeRef: "main",
+    });
+    const ejected = await savePipelineConfig(t.db, {
+      ...w.input,
+      mode: "inline",
+      includeProject: null,
+      includeRef: null,
+    });
+    expect(ejected).toMatchObject({ mode: "inline", includeProject: null, includeRef: null });
+  });
+
+  test("the mode is one of two, and a templates project goes with the include mode alone", async () => {
+    const w = await world();
+    const refused = (over: Record<string, unknown>) =>
+      savePipelineConfig(t.db, { ...w.input, ...over } as typeof w.input).catch((e) =>
+        pgConstraint(e),
+      );
+    expect(await refused({ mode: "thin" })).toBe("pipeline_configs_mode_check");
+    expect(await refused({ mode: "include" })).toBe("pipeline_configs_include_check");
+    expect(await refused({ mode: "inline", includeProject: "grp/x" })).toBe(
+      "pipeline_configs_include_check",
+    );
+    expect(await refused({ mode: "inline", includeRef: "main" })).toBe(
+      "pipeline_configs_include_check",
+    );
+    expect(await refused({ mode: "include", includeRef: "main" })).toBe(
+      "pipeline_configs_include_check",
+    );
+    // a ref is optional: the default branch of the templates project
+    expect(await refused({ mode: "include", includeProject: "grp/x" })).toMatchObject({
+      mode: "include",
+      includeRef: null,
+    });
+  });
+
   test("goes with its project, and holds its connection in place", async () => {
     const w = await world();
     await savePipelineConfig(t.db, w.input);

@@ -188,6 +188,16 @@ export async function upgradeFleet(
         params: config.params,
         // `render` checks both: a stored blob it refuses is `invalid_pipeline`, which blocks the project
         overrides: config.overrides as PipelineRequest["overrides"],
+        // a project keeps the way it is delivered: an upgrade never turns an include into an inline file
+        mode: config.mode,
+        ...(config.includeProject === null
+          ? {}
+          : {
+              include: {
+                project: config.includeProject,
+                ...(config.includeRef === null ? {} : { ref: config.includeRef }),
+              },
+            }),
       };
       const pipelineDeps: PipelineDeps = {
         db: deps.db,
