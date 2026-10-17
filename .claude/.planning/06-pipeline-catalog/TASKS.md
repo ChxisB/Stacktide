@@ -28,7 +28,7 @@ Done when: tests cover first run, re-run with unchanged config (no new commit), 
 Do: when a template version is bumped, list pinned projects, dry-run diff each, then open MRs in rate-limited batches with per-project results.
 Done when: tests cover dry-run (no writes), partial failure, resume, and the rate limit.
 
-### PIPE-8 - Pipeline status ingestion  `[ ]` M - deps: GL-8, API-2
+### PIPE-8 - Pipeline status ingestion  `[x]` M - deps: GL-8, API-2
 Do: handle pipeline/job webhooks into `pipeline_runs`; API for latest runs per project/environment with failure reason.
 Done when: tests cover out-of-order events, duplicate events and retry of a failed pipeline via the trigger API.
 

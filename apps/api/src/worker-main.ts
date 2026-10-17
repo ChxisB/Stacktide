@@ -7,8 +7,10 @@ import {
   DRIFT_TICK_QUEUE,
   describeError,
   upsertSchedule,
+  WEBHOOK_QUEUE,
 } from "@orch/db";
 import { z } from "zod";
+import { pipelineEventHandler, workerGitlab } from "./pipeline-runs";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
 import { syncAutoHandler } from "./sync-auto";
 import { driftCheckHandler, driftTickHandler } from "./sync-drift";
@@ -52,6 +54,10 @@ if (keys) {
   handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger });
   handlers[DRIFT_TICK_QUEUE] = driftTickHandler({ db });
   handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger });
+  handlers[WEBHOOK_QUEUE] = pipelineEventHandler({
+    db,
+    gitlab: workerGitlab({ db, keys, logger }),
+  });
   // the schedule lives in the database, so every worker states it; the same timing keeps its place
   // shortcut: workers started with different values take turns setting it; give it one owner when that matters.
   await upsertSchedule(db, {

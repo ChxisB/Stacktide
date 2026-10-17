@@ -14,6 +14,7 @@ export * from "./imports";
 export * from "./jobs";
 export * from "./pg-error";
 export * from "./pipeline-configs";
+export * from "./pipeline-runs";
 export * from "./repo";
 export * from "./schedules";
 export * from "./schema";

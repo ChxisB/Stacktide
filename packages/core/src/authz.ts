@@ -79,6 +79,8 @@ export const RULES = {
   "pipeline.apply": { org: "admin" },
   // A fleet upgrade is pipeline.apply on every project that uses a template: listing, dry-running and applying it take the same people.
   "pipeline.upgrade": { org: "admin" },
+  // Retrying runs the failed jobs of a pipeline again: the same commit and the same jobs, so no new code, only the project's runners and CI variables once more.
+  "pipeline.retry": { project: "maintainer" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

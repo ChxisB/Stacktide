@@ -36,7 +36,7 @@ describe("worker entrypoint", () => {
     expect(out).not.toContain(t.url);
   });
 
-  test("serves the sync apply and auto-sync queues only with master keys, and never prints them", async () => {
+  test("serves the sync apply, auto-sync, drift and pipeline-event queues only with master keys, and never prints them", async () => {
     const keys = `k1:${Buffer.alloc(32, 7).toString("base64")}`;
     const run = async (env: Record<string, string>) => {
       const child = start({ DATABASE_URL: t.url, ...env });
@@ -47,7 +47,7 @@ describe("worker entrypoint", () => {
     };
     const withKeys = await run({ ORCH_MASTER_KEYS: keys });
     expect(withKeys).toContain(
-      '"queues":["sync.apply","sync.auto","sync.drift.tick","sync.drift"]',
+      '"queues":["sync.apply","sync.auto","sync.drift.tick","sync.drift","gitlab.event"]',
     );
     expect(withKeys).not.toContain(keys);
     const without = await run({});

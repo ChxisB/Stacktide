@@ -55,6 +55,8 @@ const job = z
     stage: z.string(),
     status,
     allow_failure: z.boolean().optional(),
+    // GitLab's own word (`script_failure`, `runner_system_failure`...), only on a failed job
+    failure_reason: z.string().nullish(),
     web_url: z.string(),
   })
   .transform((j) => ({
@@ -63,6 +65,7 @@ const job = z
     stage: j.stage,
     status: j.status,
     allowFailure: j.allow_failure ?? false,
+    failureReason: j.failure_reason ?? null,
     webUrl: j.web_url,
   }));
 export type Job = z.output<typeof job>;

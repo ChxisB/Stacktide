@@ -563,6 +563,7 @@ describe("audit coverage", () => {
         "pipeline.apply",
         "pipeline.upgrade",
         "pipeline.apply", // the same row, written for each project of an upgrade
+        "pipeline.retry",
         ...["organization", "project", "environment", "sync_target"].flatMap((r) =>
           ["create", "update", "delete"].map((v) => `${r}.${v}`),
         ),

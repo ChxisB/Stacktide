@@ -60,6 +60,7 @@ interface MockJob {
   stage: string;
   status: string;
   allow_failure: boolean;
+  failure_reason?: string;
 }
 interface Pipe {
   id: number;
@@ -600,7 +601,10 @@ export function createMockGitlab(opts: MockOptions = {}) {
         }
         if (pm[2] === "/retry" && req.method === "POST") {
           const again = p.jobs.filter((j) => ["failed", "canceled"].includes(j.status));
-          for (const j of again) j.status = "pending";
+          for (const j of again) {
+            j.status = "pending";
+            delete j.failure_reason;
+          }
           if (again.length) p.status = derive(p.jobs);
           return json(pipeJson(p));
         }
@@ -907,11 +911,20 @@ export function createMockGitlab(opts: MockOptions = {}) {
     /** What a pipeline was triggered with (GitLab itself never shows these back). */
     pipelineVariables: (id: number) =>
       projects.flatMap((p) => p.pipelines).find((p) => p.id === id)?.variables,
-    /** Plays the runner: every job of the pipeline ends in `status`. */
-    finishPipeline(id: number, status: "success" | "failed") {
+    /** Plays the runner: every job of the pipeline ends in `status` (a failed one with `reason`, GitLab's `failure_reason`), except those named in `passing`, which succeed. */
+    finishPipeline(
+      id: number,
+      status: "success" | "failed",
+      reason = "script_failure",
+      passing: string[] = [],
+    ) {
       const p = projects.flatMap((x) => x.pipelines).find((x) => x.id === id);
       if (!p) throw new Error(`no pipeline ${id}`);
-      for (const j of p.jobs) j.status = status;
+      for (const j of p.jobs) {
+        j.status = passing.includes(j.name) ? "success" : status;
+        if (j.status === "failed") j.failure_reason = reason;
+        else delete j.failure_reason;
+      }
       p.status = status;
     },
     stop: () => server.stop(true),

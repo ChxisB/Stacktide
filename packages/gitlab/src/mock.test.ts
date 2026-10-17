@@ -136,6 +136,33 @@ describe("pipelines", () => {
     mock.stop();
   });
 
+  test("a failed job says why, and stops saying so once it runs again or passes", async () => {
+    const { mock, api } = ready();
+    const p = await api.pipelines.trigger("g/p", "main");
+    const reasons = async () =>
+      (await collect(api.pipelines.jobs("g/p", p.id))).map((j) => j.failureReason);
+    expect(await reasons()).toEqual([null, null]);
+
+    mock.finishPipeline(p.id, "failed", "runner_system_failure");
+    expect(await reasons()).toEqual(["runner_system_failure", "runner_system_failure"]);
+    mock.finishPipeline(p.id, "failed");
+    expect(await reasons()).toEqual(["script_failure", "script_failure"]);
+
+    await api.pipelines.retry("g/p", p.id);
+    expect(await reasons()).toEqual([null, null]);
+    mock.finishPipeline(p.id, "failed");
+    mock.finishPipeline(p.id, "success");
+    expect(await reasons()).toEqual([null, null]);
+
+    mock.finishPipeline(p.id, "failed", "script_failure", ["build"]);
+    const jobs = await collect(api.pipelines.jobs("g/p", p.id));
+    expect(jobs.map((j) => [j.name, j.status, j.failureReason])).toEqual([
+      ["build", "success", null],
+      ["test", "failed", "script_failure"],
+    ]);
+    mock.stop();
+  });
+
   test("a status GitLab adds later reads as unknown instead of failing", async () => {
     const server = Bun.serve({
       port: 0,

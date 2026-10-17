@@ -5,6 +5,7 @@ export * from "./environments";
 export * from "./jobs";
 export * from "./organizations";
 export * from "./pipeline-configs";
+export * from "./pipeline-runs";
 export * from "./projects";
 export * from "./schedules";
 export * from "./sync-drift";
