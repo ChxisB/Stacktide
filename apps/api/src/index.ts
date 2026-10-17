@@ -1,4 +1,5 @@
 import { createLogger, loadConfig } from "@orch/core";
+import { envKeyProvider, type KeyProvider } from "@orch/crypto";
 import { createDb, pingDb } from "@orch/db";
 import { z } from "zod";
 import { createApp } from "./app";
@@ -15,6 +16,8 @@ const config = loadConfig(
       PORT: z.coerce.number().int().min(0).max(65535).default(3000),
       LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
       NODE_ENV: z.string().default("development"),
+      // Master keys for secrets at rest ("k2:<base64>,k1:<base64>", see packages/crypto).
+      ORCH_MASTER_KEYS: z.string().min(1).optional(),
     })
     .and(authEnv)
     .and(accessEnv),
@@ -35,6 +38,19 @@ if (devAuth && !LOOPBACK.includes(config.HOST)) {
 }
 if (devAuth) logger.warn("authentication is off: every caller is the dev principal");
 
+// A key list that does not parse stops the start: secrets sealed under a guess are lost.
+let keys: KeyProvider | undefined;
+if (config.ORCH_MASTER_KEYS === undefined) {
+  logger.warn("ORCH_MASTER_KEYS is not set: connections cannot store or use secrets");
+} else {
+  try {
+    keys = envKeyProvider(config.ORCH_MASTER_KEYS);
+  } catch (error) {
+    logger.error("refusing to start: ORCH_MASTER_KEYS is invalid", { error });
+    process.exit(1);
+  }
+}
+
 const db = createDb(config.DATABASE_URL, 5);
 if (!devAuth && !config.GITLAB_MEMBERSHIP_TOKEN) {
   logger.warn(
@@ -54,6 +70,8 @@ const app = createApp({
   ready: () => pingDb(db),
   auth: authFromEnv(config),
   ci: ciFromEnv(config),
+  keys,
+  loopbackConnections: ["development", "test"].includes(config.NODE_ENV.toLowerCase()),
 }).listen({
   hostname: config.HOST,
   port: config.PORT,

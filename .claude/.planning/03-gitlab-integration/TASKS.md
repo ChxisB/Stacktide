@@ -20,7 +20,7 @@ Done when: contract tests cover scope-qualified update/delete and `canMask` tabl
 Do: In-process fake implementing the endpoints above with fixtures and failure injection (429/500); contract tests run against the mock by default and the real sandbox when env is set.
 Done when: the whole suite is green against the mock; the real-instance run is documented and opt-in. **First real-instance write is a human gate.**
 
-### GL-6 - Connections  `[ ]` M - deps: VAR-1, API-2, GL-1
+### GL-6 - Connections  `[x]` M - deps: VAR-1, API-2, GL-1
 Do: generic `connections` table; create/test/list/delete for `type='gitlab'`; secret stored via `packages/crypto`; connection test calls `/user` and reports scopes.
 Done when: tests prove the token is encrypted at rest, never returned by any endpoint, and a bad token yields a clear error.
 

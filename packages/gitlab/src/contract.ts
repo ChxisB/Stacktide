@@ -426,6 +426,14 @@ export function gitlabContract(
       });
     });
 
+    describe("the token", () => {
+      test("reports its scopes and expiry", async () => {
+        const info = await t.api.users.tokenInfo();
+        expect(info.scopes.length).toBeGreaterThan(0);
+        expect(info.expiresAt === null || /^\d{4}-\d{2}-\d{2}/.test(info.expiresAt)).toBe(true);
+      });
+    });
+
     describe("members", () => {
       test("the token's user is an active member of the project and the group", async () => {
         const me = await t.api.users.current();

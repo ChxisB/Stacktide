@@ -20,7 +20,7 @@ test("every API operation documents its guard, audit action and the problems it 
         op,
       })),
     );
-  expect(ops.length).toBe(18); // 5 per resource (list, get, create, update, delete) + 3 for tokens
+  expect(ops.length).toBe(22); // 5 per resource (list, get, create, update, delete) + 3 for tokens + 4 for connections
   for (const { id, method, op } of ops) {
     const codes = Object.keys(op.responses as object).sort();
     const writes = method !== "get";

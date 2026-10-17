@@ -159,12 +159,12 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
             await audit(tx, audited("organization.delete", org, { name: org.name }));
           })
           .catch((e) => {
-            // RESTRICT: projects still reference it. Deleting them first is a deliberate act.
+            // RESTRICT: projects or connections still reference it. Deleting them first is a deliberate act.
             if (pgCode(e) === "23001") {
               throw new DomainError(
                 "organization_not_empty",
                 409,
-                "The organization still has projects",
+                "The organization still has projects or connections",
               );
             }
             throw e;

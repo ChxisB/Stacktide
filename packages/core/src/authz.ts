@@ -33,6 +33,11 @@ export const RULES = {
   "environment.update": { project: "maintainer" },
   "environment.delete": { project: "maintainer" },
   "secret.reveal": { project: "maintainer" },
+  // Credentials for outside systems: org admins only, also to read (what they connect to is theirs to know).
+  "connection.create": { org: "admin" },
+  "connection.read": { org: "admin" },
+  "connection.test": { org: "admin" },
+  "connection.delete": { org: "admin" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

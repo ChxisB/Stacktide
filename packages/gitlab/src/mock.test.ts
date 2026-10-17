@@ -632,6 +632,21 @@ describe("members", () => {
     }
   });
 
+  test("the token reports its scopes and expiry", async () => {
+    const { mock, api } = setup({
+      scopes: ["read_api", "read_user"],
+      tokenExpiresAt: "2027-01-31",
+    });
+    expect(await api.users.tokenInfo()).toEqual({
+      scopes: ["read_api", "read_user"],
+      expiresAt: "2027-01-31",
+    });
+    mock.stop();
+    const open = setup();
+    expect(await open.api.users.tokenInfo()).toEqual({ scopes: ["api"], expiresAt: null });
+    open.mock.stop();
+  });
+
   test("the token's own user comes from /user", async () => {
     const { mock, api } = setup();
     expect(await api.users.current()).toEqual({

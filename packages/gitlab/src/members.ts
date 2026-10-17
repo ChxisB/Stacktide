@@ -15,12 +15,24 @@ const member = z.object({
   membership_state: z.string().optional(),
 });
 
+// A personal, project or group access token describing itself; GitLab sends `expires_at` as a date or null.
+const tokenSelf = z.object({ scopes: z.array(z.string()), expires_at: z.string().nullish() });
+
 export function membersApi(client: GitlabClient) {
   return {
     users: {
       /** The user the token belongs to. */
       async current() {
         return decode(gitlabUser, await client.request("GET", "/user"), "user");
+      },
+      /** What the token says about itself (`GET /personal_access_tokens/self`): its scopes and its expiry date, `null` for none. */
+      async tokenInfo() {
+        const t = decode(
+          tokenSelf,
+          await client.request("GET", "/personal_access_tokens/self"),
+          "token",
+        );
+        return { scopes: t.scopes, expiresAt: t.expires_at ?? null };
       },
     },
     members: {

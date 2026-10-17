@@ -54,6 +54,11 @@ const allowed: Record<string, string[]> = {
   "environment.update": MAINTAINER_UP,
   "environment.delete": MAINTAINER_UP,
   "secret.reveal": MAINTAINER_UP,
+  // Org rules, so a project maintainer holds none of them.
+  "connection.create": ["org admin", "org owner"],
+  "connection.read": ["org admin", "org owner"],
+  "connection.test": ["org admin", "org owner"],
+  "connection.delete": ["org admin", "org owner"],
 };
 
 describe("role x action", () => {

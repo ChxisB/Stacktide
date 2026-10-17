@@ -15,6 +15,10 @@ export interface MockProjectInput {
 
 export interface MockOptions {
   token?: string;
+  /** What `GET /personal_access_tokens/self` reports for `token`. Default `["api"]`. */
+  scopes?: string[];
+  /** The token's expiry date as GitLab sends it (`2027-01-31`); default none. */
+  tokenExpiresAt?: string;
   /** Server-side cap on `per_page` (GitLab's is 100); a small value exercises pagination. */
   maxPerPage?: number;
   /** Turns on `/oauth/authorize` and `/oauth/token` for this application. */
@@ -297,6 +301,16 @@ export function createMockGitlab(opts: MockOptions = {}) {
       const rest = u.pathname.slice("/api/v4".length);
       const q = (k: string) => u.searchParams.get(k) ?? undefined;
       if (req.method === "GET" && rest === "/user") return json({ ...tokenUser, state: "active" });
+      if (req.method === "GET" && rest === "/personal_access_tokens/self") {
+        return json({
+          id: 1,
+          name: "mock",
+          scopes: opts.scopes ?? ["api"],
+          active: true,
+          revoked: false,
+          expires_at: opts.tokenExpiresAt ?? null,
+        });
+      }
       const body = (req.method === "GET" ? {} : await req.json().catch(() => ({}))) as Record<
         string,
         unknown

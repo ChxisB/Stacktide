@@ -552,6 +552,9 @@ describe("audit coverage", () => {
         "auth.logout",
         "token.create",
         "token.revoke",
+        "connection.create",
+        "connection.test",
+        "connection.delete",
         ...["organization", "project", "environment"].flatMap((r) =>
           ["create", "update", "delete"].map((v) => `${r}.${v}`),
         ),

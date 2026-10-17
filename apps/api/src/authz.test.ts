@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createLogger, type Subject } from "@orch/core";
 import {
   auditEvents,
+  connections,
   createEnvironment,
   createOrganization,
   createProject,
@@ -98,6 +99,8 @@ async function call(who: Who, method: string, path: string, body?: unknown) {
 const orgPath = () => `/organizations/${ids.o1}`;
 const projectPath = (p = ids.p1) => `${orgPath()}/projects/${p}`;
 const envPath = () => `${projectPath()}/environments`;
+const connPath = () => `${orgPath()}/connections`;
+const NO_CONNECTION = "00000000-0000-4000-8000-000000000001";
 
 /** Every write the API has, aimed at the data seeded above. */
 const writes = () =>
@@ -111,12 +114,25 @@ const writes = () =>
     ["POST", envPath(), { name: "Nope", slug: "nope" }],
     ["PATCH", `${envPath()}/${ids.e1}`, { name: "Renamed" }],
     ["DELETE", `${envPath()}/${ids.e1}`],
+    [
+      "POST",
+      connPath(),
+      {
+        type: "gitlab",
+        name: "nope",
+        baseUrl: "https://gitlab.example.com",
+        token: "glpat-0123456789",
+      },
+    ],
+    ["POST", `${connPath()}/${NO_CONNECTION}/test`],
+    ["DELETE", `${connPath()}/${NO_CONNECTION}`],
   ] as const;
 
 async function rowCounts() {
-  const n = async (table: typeof organizations | typeof projects | typeof environments) =>
-    (await t.db.select({ n: count() }).from(table))[0]?.n;
-  return [await n(organizations), await n(projects), await n(environments)];
+  const n = async (
+    table: typeof organizations | typeof projects | typeof environments | typeof connections,
+  ) => (await t.db.select({ n: count() }).from(table))[0]?.n;
+  return [await n(organizations), await n(projects), await n(environments), await n(connections)];
 }
 
 describe("coverage", () => {
@@ -149,6 +165,10 @@ describe("coverage", () => {
       [`GET ${E}/:envId`]: "environment.read",
       [`PATCH ${E}/:envId`]: "environment.update",
       [`DELETE ${E}/:envId`]: "environment.delete",
+      [`GET ${O}/:orgId/connections`]: "connection.read",
+      [`POST ${O}/:orgId/connections`]: "connection.create",
+      [`POST ${O}/:orgId/connections/:connectionId/test`]: "connection.test",
+      [`DELETE ${O}/:orgId/connections/:connectionId`]: "connection.delete",
     });
   });
 
@@ -179,7 +199,8 @@ describe("without a session", () => {
       .replace(":orgId", ids.o1)
       .replace(":projectId", ids.p1)
       .replace(":envId", ids.e1)
-      .replace(":tokenId", crypto.randomUUID());
+      .replace(":tokenId", crypto.randomUUID())
+      .replace(":connectionId", NO_CONNECTION);
 
   test("every route that is not public answers 401", async () => {
     const open = new Set(["GET /openapi/json"]);
@@ -187,7 +208,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(18);
+    expect(routes.length).toBe(22);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

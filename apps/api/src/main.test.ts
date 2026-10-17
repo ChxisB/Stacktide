@@ -184,6 +184,15 @@ describe("api entrypoint", () => {
     await child.proc.exited;
   });
 
+  test("refuses to start with master keys that do not parse, without echoing them", async () => {
+    const bad = "k1:not-a-key-0123456789";
+    const child = start({ DATABASE_URL: t.url, ORCH_MASTER_KEYS: bad });
+    expect(await child.proc.exited).not.toBe(0);
+    const out = await child.output();
+    expect(out).toContain("ORCH_MASTER_KEYS is invalid");
+    expect(out + (await child.err)).not.toContain(bad);
+  });
+
   test("a missing DATABASE_URL exits non-zero naming the key", async () => {
     const child = start({});
     expect(await child.proc.exited).not.toBe(0);
