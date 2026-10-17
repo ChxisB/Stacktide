@@ -28,7 +28,7 @@ Done when: tests cover missing-variable warnings, lint errors blocking creation,
 Do: latest pipeline per project/environment, status, failure reason, retry.
 Done when: tests cover each status and an empty state.
 
-### UI-8 - Settings  `[ ]` M - deps: UI-1, AUTH-4, AUTH-5
+### UI-8 - Settings  `[x]` M - deps: UI-1, AUTH-4, AUTH-5
 Do: connections, members/roles view, API tokens (create shows once), audit log viewer once GOV-1 exists.
 Done when: token creation shows the value exactly once; role-restricted screens hide for viewers.
 

@@ -344,4 +344,14 @@ describe("principal", () => {
       expect(await res.json()).toEqual({ id: "dev", kind: "dev" });
     }
   });
+
+  test("the dev stub may do anything, so it is told it owns any organization", async () => {
+    // no database is read: the answer comes from the caller alone
+    const res = await setup().call(`/organizations/${crypto.randomUUID()}/access`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { role: string; actions: string[] };
+    expect(body.role).toBe("owner");
+    expect(body.actions).toContain("organization.delete");
+    expect(body.actions).toContain("connection.read");
+  });
 });

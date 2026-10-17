@@ -1,4 +1,12 @@
-import { DomainError, visibleOrganizations } from "@orch/core";
+import {
+  type Action,
+  DomainError,
+  ORG_ROLES,
+  orgAccess,
+  RULES,
+  type Subject,
+  visibleOrganizations,
+} from "@orch/core";
 import {
   createOrganization,
   deleteOrganization,
@@ -11,7 +19,7 @@ import {
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
-import { guardPlugin } from "../guard";
+import { guardPlugin, unauthenticated } from "../guard";
 import {
   atLeastOne,
   deleteResponses,
@@ -46,6 +54,12 @@ const orgDto = (o: typeof organizations.$inferSelect): z.infer<typeof orgSchema>
   gitlabGroupId: o.gitlabGroupId,
   createdAt: iso(o.createdAt),
   updatedAt: iso(o.updatedAt),
+});
+
+const accessSchema = z.object({
+  role: z.enum(ORG_ROLES),
+  /** The organization-level actions the caller may do, for a screen choosing what to show. */
+  actions: z.array(z.enum(Object.keys(RULES) as [Action, ...Action[]])),
 });
 
 const params = z.object({ orgId: z.uuid() });
@@ -98,6 +112,22 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
         return orgDto(org);
       },
       { params, response: { 200: orgSchema, ...readErrors }, guard: "organization.read" },
+    )
+    .get(
+      "/:orgId/access",
+      ({ params: { orgId }, principal, set }) => {
+        set.headers["cache-control"] = "no-store"; // per-caller answer: no shared cache may keep it
+        if (!principal) throw unauthenticated();
+        // The development principal may do anything, so it is shown as an owner.
+        const subject: Subject =
+          principal.kind === "dev"
+            ? { kind: "user", orgRoles: { [orgId]: "owner" }, projectRoles: {} }
+            : principal.subject;
+        const { role, actions } = orgAccess(subject, orgId);
+        if (!role) throw notFound("Organization"); // the guard has let nobody without a role through
+        return { role, actions };
+      },
+      { params, response: { 200: accessSchema, ...readErrors }, guard: "organization.read" },
     )
     .post(
       "",

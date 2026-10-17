@@ -171,6 +171,24 @@ export function can(subject: Subject, action: string, resource: Resource = {}): 
   return Math.max(inherited, direct) >= PROJECT_ROLES.indexOf(rule.project);
 }
 
+/**
+ * What a screen may offer `subject` in one organization: its role there and the organization-level
+ * actions it may do (project actions depend on the project, so they are not listed). Only for
+ * choosing what to show: the guard still decides every request.
+ */
+export function orgAccess(
+  subject: Subject,
+  organizationId: string,
+): { role: OrgRole | undefined; actions: Action[] } {
+  const held = own(subject.orgRoles, organizationId);
+  return {
+    role: ORG_ROLES.find((r) => r === held),
+    actions: (Object.keys(RULES) as Action[]).filter(
+      (a) => "org" in RULES[a] && can(subject, a, { organizationId }),
+    ),
+  };
+}
+
 /** The organizations `subject` may read, for narrowing a list. A subject without roles sees none. */
 export function visibleOrganizations(subject: Subject | undefined): string[] {
   if (!subject) return [];

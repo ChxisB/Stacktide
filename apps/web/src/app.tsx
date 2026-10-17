@@ -8,6 +8,7 @@ import { OrgProvider, RequireOrg } from "./org";
 import { PipelinePage } from "./pipeline";
 import { ProjectsPage } from "./projects";
 import { RunsPage } from "./runs";
+import { SettingsPage } from "./settings";
 import { type Page, Shell } from "./shell";
 import { SyncPage } from "./sync";
 import { VariablesPage } from "./variables";
@@ -54,6 +55,13 @@ const Status = () => (
   </>
 );
 
+const Settings = () => (
+  <>
+    <h1>Settings</h1>
+    <RequireOrg>{(org) => <SettingsPage key={org.id} org={org} />}</RequireOrg>
+  </>
+);
+
 /** The pages, in navigation order; the first is home. Each screen adds itself here. */
 const pages: readonly Page[] = [
   { path: "", label: "Home", element: <Home /> },
@@ -62,6 +70,7 @@ const pages: readonly Page[] = [
   { path: "sync", label: "Sync", element: <Sync /> },
   { path: "pipeline", label: "Pipeline", element: <Pipeline /> },
   { path: "status", label: "Status", element: <Status /> },
+  { path: "settings", label: "Settings", element: <Settings /> },
 ];
 
 export const newQueryClient = () =>

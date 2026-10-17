@@ -3,7 +3,9 @@ import {
   can,
   isAction,
   isScope,
+  ORG_ROLES,
   type OrgRole,
+  orgAccess,
   type ProjectRole,
   type Resource,
   RULES,
@@ -406,5 +408,57 @@ describe("isScope", () => {
     };
     expect(can(subject, "project.read", res)).toBe(true);
     expect(can(subject, "environment.read", res)).toBe(false);
+  });
+});
+
+describe("orgAccess", () => {
+  const canDo = (r: OrgRole | undefined, action: string) =>
+    orgAccess(r ? orgRole(r) : user(), ORG).actions.includes(action as never);
+
+  test("names the role held in that organization, and nothing for another one", () => {
+    expect(orgAccess(orgRole("member"), ORG).role).toBe("member");
+    expect(orgAccess(orgRole("member"), "org-2").role).toBeUndefined();
+    expect(orgAccess(user(), ORG).role).toBeUndefined();
+  });
+
+  test("lists the organization-level actions the role allows, matching `can`", () => {
+    expect(canDo("viewer", "organization.read")).toBe(true);
+    expect(canDo("viewer", "connection.read")).toBe(false);
+    expect(canDo("member", "connection.read")).toBe(false);
+    expect(canDo("admin", "connection.read")).toBe(true);
+    expect(canDo("admin", "organization.delete")).toBe(false);
+    expect(canDo("owner", "organization.delete")).toBe(true);
+    // every action it lists is one `can` allows, and every org-level one `can` allows is listed
+    for (const r of ORG_ROLES) {
+      const subject = orgRole(r);
+      const listed = orgAccess(subject, ORG).actions;
+      const allowed = Object.keys(RULES).filter(
+        (a) => "org" in RULES[a as keyof typeof RULES] && can(subject, a, { organizationId: ORG }),
+      );
+      expect([...listed].sort() as string[]).toEqual([...allowed].sort());
+    }
+  });
+
+  test("leaves out project actions and the platform's, which a role in the org does not settle", () => {
+    const actions = orgAccess(orgRole("owner"), ORG).actions as string[];
+    expect(actions).not.toContain("variable.create");
+    expect(actions).not.toContain("organization.create");
+    // a platform admin who is also a member of the org still gets only what the role allows
+    const both = orgAccess({ ...orgRole("viewer"), platformAdmin: true }, ORG).actions as string[];
+    expect(both).not.toContain("organization.create");
+    expect(both).toContain("organization.read");
+  });
+
+  test("scopes narrow it like they narrow everything else", () => {
+    const token = (scopes: string[]): Subject => ({ ...orgRole("owner"), kind: "token", scopes });
+    expect(orgAccess(token(["connection.read"]), ORG).actions).toEqual(["connection.read"]);
+    expect(orgAccess(token([]), ORG).actions).toEqual([]);
+  });
+
+  test("a role name nobody defined, and an inherited key, give no role", () => {
+    expect(
+      orgAccess(user({ orgRoles: { [ORG]: "superadmin" as OrgRole } }), ORG).role,
+    ).toBeUndefined();
+    expect(orgAccess(orgRole("owner"), "__proto__").role).toBeUndefined();
   });
 });

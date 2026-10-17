@@ -99,7 +99,7 @@ export function Types({ types }: { types: Project["types"] }) {
 }
 
 /** Add a GitLab connection: the token is tested before it is stored, and kept here only while typing. */
-function AddConnection({
+export function AddConnection({
   orgId,
   onDone,
   onCancel,

@@ -198,6 +198,7 @@ describe("coverage", () => {
     expect(Object.fromEntries(Object.entries(guards).filter(([, g]) => g !== undefined))).toEqual({
       [`POST ${O}`]: "organization.create",
       [`GET ${O}/:orgId`]: "organization.read",
+      [`GET ${O}/:orgId/access`]: "organization.read",
       [`PATCH ${O}/:orgId`]: "organization.update",
       [`DELETE ${O}/:orgId`]: "organization.delete",
       [`GET ${P}`]: "organization.read",
@@ -289,7 +290,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(88);
+    expect(routes.length).toBe(89);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([
@@ -427,5 +428,42 @@ describe("organization list", () => {
     expect(second.items.length).toBe(1);
     expect(second.nextCursor).toBeNull();
     expect([first.items[0]?.id, second.items[0]?.id].sort()).toEqual([ids.o1, ids.o3].sort());
+  });
+});
+
+describe("what a caller may do in an organization", () => {
+  const access = (who: Who, org = ids.o1) => call(who, "GET", `/organizations/${org}/access`);
+
+  test("an owner, a viewer and a project maintainer are told their own role and actions", async () => {
+    const alice = await access("alice");
+    expect(alice.status).toBe(200);
+    expect(alice.json.role).toBe("owner");
+    expect(alice.json.actions).toContain("connection.read");
+    expect(alice.json.actions).toContain("organization.delete");
+    const bob = await access("bob");
+    expect(bob.json.role).toBe("viewer");
+    expect(bob.json.actions).toContain("organization.read");
+    expect(bob.json.actions).not.toContain("connection.read");
+    // a role on one project does not open the organization
+    expect((await access("carol")).status).toBe(404);
+  });
+
+  test("it is the caller's own: another organization's owner, and nobody, learn nothing", async () => {
+    expect((await access("dave")).status).toBe(404);
+    expect((await access("erin")).status).toBe(404);
+    expect((await access("nobody")).status).toBe(401);
+    // alice owns o3, and is told the role she holds there, not the one she holds in o1
+    expect((await access("alice", ids.o3)).json.role).toBe("owner");
+    expect((await access("bob", ids.o3)).status).toBe(404);
+  });
+
+  test("the answer is the caller's alone: no shared cache keeps it and it names no one", async () => {
+    const res = await app.handle(
+      new Request(`http://localhost/organizations/${ids.o1}/access`, {
+        headers: { cookie: `orch_session=${people.alice.token}` },
+      }),
+    );
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(Object.keys((await res.json()) as object).sort()).toEqual(["actions", "role"]);
   });
 });
