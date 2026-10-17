@@ -4,7 +4,7 @@
 Do: `apps/web` Bun HTML-import app; login/logout; layout with nav; typed client wiring; light/dark tokens; error boundary.
 Done when: signed-out users land on login; signed-in users see the shell. **Check the visual direction with the user before UI-2.**
 
-### UI-2 - Connect and import wizard  `[ ]` M - deps: UI-1, GL-7
+### UI-2 - Connect and import wizard  `[x]` M - deps: UI-1, GL-7
 Do: add a GitLab connection, browse groups/projects, import selected, show detected types; first-run checklist.
 Done when: component tests cover bad token, empty list and partial import errors.
 

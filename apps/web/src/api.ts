@@ -54,3 +54,25 @@ export async function call<T>(
   }
   return res.data as T;
 }
+
+// shortcut: lists are loaded whole, so 2000 of anything is the limit; page the screen when an org gets near it
+const MAX_PAGES = 20;
+
+/** Every item of a paged list, following the cursors; more than 20 pages of 100 is an error, not a slow screen. */
+export async function allPages<T>(
+  page: (cursor: string | undefined) => Promise<{
+    data: { items: T[]; nextCursor: string | null } | null;
+    error: unknown;
+    status: number;
+  }>,
+): Promise<T[]> {
+  const found: T[] = [];
+  let cursor: string | undefined;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    const { items, nextCursor } = await call(() => page(cursor));
+    found.push(...items);
+    if (!nextCursor) return found;
+    cursor = nextCursor;
+  }
+  throw new ApiError(`There are more than ${MAX_PAGES * 100} of these to list here.`, 0);
+}

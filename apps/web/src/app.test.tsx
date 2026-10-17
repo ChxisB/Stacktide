@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { and, eq } from "drizzle-orm";
 import { newQueryClient, Providers } from "./app";
 import { AuthGate } from "./auth";
+import { OrgProvider } from "./org";
 import { ErrorBoundary, type Page, Shell } from "./shell";
 import { type Backend, mount, startBackend } from "./testing";
 
@@ -61,13 +62,14 @@ describe("a server that comes back", () => {
 describe("signed in", () => {
   test("the shell shows who is signed in, the navigation and the home page", async () => {
     const { client } = await backend.signIn("Ada Lovelace");
-    mount(client);
+    const { settled } = mount(client);
     const nav = await screen.findByRole("navigation", { name: "Main" });
     expect(nav.textContent).toContain("Home");
     expect(screen.getByText("Ada Lovelace")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Welcome" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Sign in with GitLab" })).toBeNull();
     expect(screen.getByRole("button", { name: "Skip to content" })).toBeTruthy();
+    await settled();
   });
 
   test("signing out ends the session on the server and shows the login page", async () => {
@@ -91,8 +93,9 @@ describe("signed in", () => {
 describe("signing out, when it does not go to plan", () => {
   test("a session that has already ended still ends in the login page", async () => {
     const { client } = await backend.signIn("Already Gone");
-    mount(client);
+    const { settled } = mount(client);
     await screen.findByText("Already Gone");
+    await settled();
     await client.auth.logout.post(); // from another tab, say
     await userEvent.setup().click(screen.getByRole("button", { name: "Sign out" }));
     expect(await screen.findByRole("link", { name: "Sign in with GitLab" })).toBeTruthy();
@@ -121,6 +124,20 @@ describe("signing out, when it does not go to plan", () => {
     expect(screen.queryByRole("link", { name: "Sign in with GitLab" })).toBeNull();
   });
 
+  test("a session that ends on its own leaves nothing for the next user", async () => {
+    const { client } = await backend.signIn("Timed Out");
+    const { queries, settled } = mount(client);
+    await screen.findByText("Timed Out");
+    await settled();
+    expect(queries.getQueryData(["orgs"])).toBeDefined();
+    await client.auth.logout.post(); // the session ends elsewhere, not through Sign out
+    await act(async () => {
+      await queries.invalidateQueries({ queryKey: ["me"] });
+    });
+    expect(await screen.findByRole("link", { name: "Sign in with GitLab" })).toBeTruthy();
+    await waitFor(() => expect(queries.getQueryData(["orgs"])).toBeUndefined());
+  });
+
   test("what was fetched as the user is forgotten", async () => {
     const { client } = await backend.signIn("Forgetful");
     const { queries } = mount(client);
@@ -147,14 +164,19 @@ describe("pages", () => {
   }
   const shell = async () => {
     const { client } = await backend.signIn("Page Tester");
+    const queries = newQueryClient();
     render(
-      <Providers client={client} queries={newQueryClient()}>
+      <Providers client={client} queries={queries}>
         <AuthGate>
-          <Shell pages={pages} />
+          <OrgProvider>
+            <Shell pages={pages} />
+          </OrgProvider>
         </AuthGate>
       </Providers>,
     );
     await screen.findByRole("navigation", { name: "Main" });
+    // the organization list is still on its way, and would update the page after the test
+    await waitFor(() => expect(queries.isFetching()).toBe(0));
   };
 
   test("the hash picks the page and marks it in the navigation; an unknown one is home", async () => {

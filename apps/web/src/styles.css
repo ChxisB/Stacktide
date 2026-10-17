@@ -156,3 +156,107 @@ button:disabled {
 .error {
   color: var(--danger);
 }
+
+/* forms, lists and tables */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.stack {
+  display: grid;
+  gap: var(--gap);
+  max-width: 40rem;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--gap);
+}
+label {
+  display: grid;
+  gap: 4px;
+}
+input,
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+}
+input:focus-visible,
+select:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+input[type="checkbox"] {
+  padding: 0;
+}
+fieldset.list {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0;
+  max-height: 24rem;
+  overflow: auto;
+}
+fieldset.list legend {
+  padding: 0 6px;
+  margin-left: 8px;
+}
+.item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+.item:first-of-type {
+  border-top: 0;
+}
+.tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.tag {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 0.85em;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 60rem;
+}
+th,
+td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.results {
+  padding-left: 1.2em;
+  display: grid;
+  gap: 6px;
+}
+.checklist {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.checklist .done a {
+  color: var(--ok);
+}
+.org select {
+  max-width: 14rem;
+}

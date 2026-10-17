@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ApiError, call } from "./api";
+import { ApiError, allPages, call } from "./api";
 
 const answer =
   (status: number, data: unknown, error: unknown = null) =>
@@ -60,4 +60,37 @@ test("a page that is not the API's JSON is refused, and no message repeats what 
   expect(error).toBeInstanceOf(ApiError);
   expect((error as Error).message).not.toContain("s3cret");
   expect((error as Error).message).toContain("did not answer like the Orchastrature API");
+});
+
+test("a paged list is followed to its last page", async () => {
+  const pages: Record<string, { items: number[]; nextCursor: string | null }> = {
+    first: { items: [1, 2], nextCursor: "second" },
+    second: { items: [3], nextCursor: null },
+  };
+  const asked: (string | undefined)[] = [];
+  const all = await allPages<number>(async (cursor) => {
+    asked.push(cursor);
+    return { status: 200, error: null, data: pages[cursor ?? "first"] ?? null };
+  });
+  expect(all).toEqual([1, 2, 3]);
+  expect(asked).toEqual([undefined, "second"]);
+});
+
+test("a list that never ends is an error after 20 pages, not an endless loop", async () => {
+  let asked = 0;
+  const error = await allPages<number>(async () => {
+    asked++;
+    return { status: 200, error: null, data: { items: [asked], nextCursor: "more" } };
+  }).catch((e: unknown) => e);
+  expect(error).toBeInstanceOf(ApiError);
+  expect(asked).toBe(20);
+});
+
+test("a page that fails fails the list, with the API's words", async () => {
+  const error = await allPages<number>(async () => ({
+    status: 500,
+    data: null,
+    error: { status: 500, value: { detail: "Down." } },
+  })).catch((e: unknown) => e);
+  expect(error).toMatchObject({ message: "Down.", status: 500 });
 });

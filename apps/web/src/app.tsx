@@ -3,19 +3,30 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, StrictMode } from "react";
 import { ClientContext } from "./api";
 import { AuthGate } from "./auth";
+import { Checklist } from "./onboarding";
+import { OrgProvider, RequireOrg } from "./org";
+import { ProjectsPage } from "./projects";
 import { type Page, Shell } from "./shell";
 
-function Home() {
-  return (
-    <>
-      <h1>Welcome</h1>
-      <p className="muted">Connect GitLab to get started.</p>
-    </>
-  );
-}
+const Home = () => (
+  <>
+    <h1>Welcome</h1>
+    <RequireOrg>{(org) => <Checklist orgId={org.id} />}</RequireOrg>
+  </>
+);
+
+const Projects = () => (
+  <>
+    <h1>Projects</h1>
+    <RequireOrg>{(org) => <ProjectsPage key={org.id} orgId={org.id} />}</RequireOrg>
+  </>
+);
 
 /** The pages, in navigation order; the first is home. Each screen adds itself here. */
-const pages: readonly Page[] = [{ path: "", label: "Home", element: <Home /> }];
+const pages: readonly Page[] = [
+  { path: "", label: "Home", element: <Home /> },
+  { path: "projects", label: "Projects", element: <Projects /> },
+];
 
 export const newQueryClient = () =>
   new QueryClient({
@@ -45,7 +56,9 @@ export function App({ client, queries }: { client: Client; queries: QueryClient 
   return (
     <Providers client={client} queries={queries}>
       <AuthGate>
-        <Shell pages={pages} />
+        <OrgProvider>
+          <Shell pages={pages} />
+        </OrgProvider>
       </AuthGate>
     </Providers>
   );

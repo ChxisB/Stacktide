@@ -4,9 +4,10 @@ import { hashToken, randomToken } from "@orch/api/tokens";
 import { createClient } from "@orch/api-client";
 import { createLogger, type Subject } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
-import { createSession, upsertUser } from "@orch/db";
+import { createOrganization, createSession, upsertUser } from "@orch/db";
 import { createTestDb } from "@orch/db/testing";
-import { render } from "@testing-library/react";
+import { createMockGitlab } from "@orch/gitlab/mock";
+import { render, waitFor } from "@testing-library/react";
 import { App, newQueryClient } from "./app";
 
 type Roles = Pick<Subject, "orgRoles" | "projectRoles">;
@@ -28,10 +29,14 @@ export async function startBackend() {
     }),
     ready: async () => {},
     keys,
+    // the mock GitLab is on loopback, which the API refuses for a real connection
+    loopbackConnections: true,
   }).listen({ port: 0, hostname: "127.0.0.1" });
   const api = `http://127.0.0.1:${app.server?.port}`;
 
   let gitlabId = 1000;
+  let orgs = 0;
+  const mocks: ReturnType<typeof createMockGitlab>[] = [];
   return {
     api,
     t,
@@ -51,9 +56,21 @@ export async function startBackend() {
       const cookie = `orch_session=${token}`;
       return { user, cookie, client: createClient(api, { headers: { cookie } }) };
     },
+    /** A new organization, for a test of its own. */
+    organization: (name = "Acme") => createOrganization(t.db, { slug: `org-${++orgs}`, name }),
+    /** A mock GitLab that sees what the test adds to it, and is stopped with the backend. */
+    gitlab(maxPerPage?: number) {
+      const mock = createMockGitlab({
+        scopes: ["read_api"],
+        ...(maxPerPage ? { maxPerPage } : {}),
+      });
+      mocks.push(mock);
+      return mock;
+    },
     /** Roles of a user already signed in (the API reads them at each request). */
     setRoles: (gitlabUserId: number, held: Roles) => roles.set(gitlabUserId, held),
     async stop() {
+      for (const mock of mocks) mock.stop();
       await app.stop(true);
       await t.drop();
     },
@@ -63,5 +80,26 @@ export type Backend = Awaited<ReturnType<typeof startBackend>>;
 
 export const mount = (client: ReturnType<typeof createClient>, queries = newQueryClient()) => ({
   queries,
+  /** Resolves when nothing is being fetched, so a test does not end with an update on its way. */
+  settled: () =>
+    waitFor(() => {
+      if (queries.isFetching() > 0) throw new Error("still fetching");
+    }),
   ...render(<App client={client} queries={queries} />),
 });
+
+/** A client for a session whose requests pass through `handle`, which may answer in place of the server. */
+export function clientVia(
+  api: string,
+  cookie: string,
+  handle: (request: Request, send: () => Promise<Response>) => Promise<Response>,
+) {
+  const fetcher = Object.assign(
+    (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      return handle(request, () => fetch(request.clone()));
+    },
+    { preconnect: fetch.preconnect },
+  );
+  return createClient(api, { headers: { cookie }, fetcher });
+}

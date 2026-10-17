@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { ErrorPanel, useMe, useSignOut } from "./auth";
+import { OrgSwitcher } from "./org";
 import { href, useRoute } from "./router";
 
 export interface Page {
@@ -61,6 +62,7 @@ export function Shell({ pages }: { pages: readonly Page[] }) {
           ))}
         </nav>
         <div className="who">
+          <OrgSwitcher />
           <span>{me.name}</span>
           <button type="button" onClick={() => signOut.mutate()} disabled={signOut.isPending}>
             Sign out

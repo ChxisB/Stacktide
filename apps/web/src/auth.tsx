@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, type ReactNode, useContext } from "react";
+import { createContext, type ReactNode, useContext, useEffect } from "react";
 import { ApiError, call, useClient } from "./api";
 
 export interface Me {
@@ -55,6 +55,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
     queryFn: () => call(() => client.auth.me.get()),
     retry: false,
   });
+  const queries = useQueryClient();
+  const signedOut = me.error instanceof ApiError && me.error.status === 401;
+  // a session that ends on its own (not through Sign out) must not leave its data for the next user
+  useEffect(() => {
+    if (signedOut) queries.removeQueries({ predicate: (q) => q.queryKey[0] !== "me" });
+  }, [signedOut, queries]);
   if (me.isPending) {
     return (
       <p className="center muted" aria-busy="true">
@@ -62,7 +68,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       </p>
     );
   }
-  if (me.error instanceof ApiError && me.error.status === 401) return <LoginPage />;
+  if (signedOut) return <LoginPage />;
   if (me.error) {
     return (
       <div className="center">
