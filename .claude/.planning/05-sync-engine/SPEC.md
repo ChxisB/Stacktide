@@ -1,5 +1,5 @@
 # 05 Sync Engine - Spec
-Prefix: SYNC · Milestone: M1 · Status: building
+Prefix: SYNC · Milestone: M1 · Status: done
 
 ## Goal
 Safely push the resolved variables for an environment to external targets with Terraform-style plan/apply, and detect when targets drift.
