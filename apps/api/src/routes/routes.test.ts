@@ -552,6 +552,8 @@ describe("audit coverage", () => {
         "auth.logout",
         "token.create",
         "token.revoke",
+        "token.create", // the CLI's browser sign-in
+        "token.revoke", // the CLI signing itself out
         "connection.create",
         "connection.test",
         "connection.delete",

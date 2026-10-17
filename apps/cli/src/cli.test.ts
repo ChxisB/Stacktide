@@ -8,6 +8,9 @@ const run = async (argv: string[], commands: Record<string, Command> = {}) => {
     io: { out: (l) => out.push(l), err: (l) => err.push(l) },
     env: {},
     cwd: "/work",
+    home: "/home/me",
+    stdin: async () => "",
+    open: async () => {},
     version: "1.2.3",
     commands,
   });
@@ -80,12 +83,12 @@ describe("orch routing", () => {
   });
 
   test("a command gets the words after its name, the context, and its error becomes the exit code", async () => {
-    let seen: { args: string[]; ctx: Omit<Context, "io"> } | undefined;
+    let seen: { args: string[]; ctx: Pick<Context, "env" | "cwd" | "home" | "json"> } | undefined;
     const commands = {
       echo: {
         summary: "",
         run: (ctx: Context, args: string[]) => {
-          seen = { args, ctx: { env: ctx.env, cwd: ctx.cwd, json: ctx.json } };
+          seen = { args, ctx: { env: ctx.env, cwd: ctx.cwd, home: ctx.home, json: ctx.json } };
         },
       },
       boom: {
@@ -102,7 +105,10 @@ describe("orch routing", () => {
       },
     };
     expect((await run(["echo", "a", "--b", "c"], commands)).code).toBe(0);
-    expect(seen).toEqual({ args: ["a", "--b", "c"], ctx: { env: {}, cwd: "/work", json: false } });
+    expect(seen).toEqual({
+      args: ["a", "--b", "c"],
+      ctx: { env: {}, cwd: "/work", home: "/home/me", json: false },
+    });
     expect(await run(["boom"], commands)).toEqual({ code: 3, out: [], err: ["error: no good"] });
     expect(await run(["crash"], commands)).toEqual({
       code: 1,

@@ -20,6 +20,12 @@ export interface Context {
   io: Io;
   env: Record<string, string | undefined>;
   cwd: string;
+  /** The user's home directory (where the config file lives by default). */
+  home: string;
+  /** All of standard input, for commands that take a secret from a pipe rather than the command line. */
+  stdin: () => Promise<string>;
+  /** Shows a URL in the user's browser; it may fail, so callers also print the URL. */
+  open: (url: string) => Promise<void>;
   /** `--json`: commands print one JSON document instead of text. */
   json: boolean;
 }
@@ -30,10 +36,7 @@ export interface Command {
   run: (ctx: Context, args: string[]) => Promise<void> | void;
 }
 
-export interface CliDeps {
-  io: Io;
-  env: Record<string, string | undefined>;
-  cwd: string;
+export interface CliDeps extends Pick<Context, "io" | "env" | "cwd" | "home" | "stdin" | "open"> {
   version: string;
   commands: Record<string, Command>;
 }
@@ -112,7 +115,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     return 2;
   }
   try {
-    await command.run({ io, env: deps.env, cwd: deps.cwd, json }, [...rest, ...tail]);
+    const { env, cwd, home, stdin, open } = deps;
+    await command.run({ io, env, cwd, home, stdin, open, json }, [...rest, ...tail]);
     return 0;
   } catch (e) {
     if (e instanceof CliError) {

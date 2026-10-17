@@ -60,6 +60,21 @@ test("the sign-in operations document their answers and audit actions", async ()
   ]);
   expect(answers("/auth/me", "get")).toEqual(["200", "401"]);
   expect(answers("/auth/logout", "post")).toEqual(["204", "401", "415"]);
+  expect(answers("/auth/whoami", "get")).toEqual(["200", "401"]);
+  expect(answers("/auth/cli", "get")).toEqual(["302", "422"]);
+  expect(answers("/auth/cli/token", "post")).toEqual(["201", "400", "415", "422"]);
+  expect(answers("/auth/cli/logout", "post")).toEqual([
+    "204",
+    "400",
+    "401",
+    "403",
+    "404",
+    "409",
+    "415",
+    "422",
+  ]);
+  expect(spec.paths["/auth/cli/token"]?.post?.["x-audit"]).toEqual(["token.create"]);
+  expect(spec.paths["/auth/cli/logout"]?.post?.["x-audit"]).toEqual(["token.revoke"]);
   expect(spec.paths["/auth/callback"]?.get?.["x-audit"]).toEqual(["auth.login"]);
   expect(spec.paths["/auth/logout"]?.post?.["x-audit"]).toEqual(["auth.logout"]);
 });

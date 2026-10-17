@@ -148,6 +148,13 @@
       "when": 1792252483552,
       "tag": "0020_pipeline_include_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1792254098321,
+      "tag": "0021_cli_logins",
+      "breakpoints": true
     }
   ]
 }

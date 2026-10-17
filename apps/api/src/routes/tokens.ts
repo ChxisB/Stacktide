@@ -25,10 +25,10 @@ import {
   writeErrors,
 } from "./shared";
 
-const DAY_MS = 86_400_000;
+export const DAY_MS = 86_400_000;
 
 const stamp = z.iso.datetime();
-const tokenSchema = z.object({
+export const tokenSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   /** What to look for in a leaked token or a log line; not a secret. */
@@ -39,9 +39,9 @@ const tokenSchema = z.object({
   revokedAt: stamp.nullable(),
   createdAt: stamp,
 });
-const createdSchema = tokenSchema.extend({ token: z.string() });
+export const createdSchema = tokenSchema.extend({ token: z.string() });
 // Never the hash: nothing here can be turned into a credential.
-const tokenDto = (t: ApiToken): z.infer<typeof tokenSchema> => ({
+export const tokenDto = (t: ApiToken): z.infer<typeof tokenSchema> => ({
   id: t.id,
   name: t.name,
   prefix: t.prefix,

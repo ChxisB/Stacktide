@@ -248,18 +248,22 @@ describe("coverage", () => {
       app.routes.filter((r) => detailOf(r)[key] !== undefined).map((r) => `${r.method} ${r.path}`);
     expect(marked("x-public").sort()).toEqual([
       "GET /auth/callback",
+      "GET /auth/cli",
       "GET /auth/login",
       "GET /auth/me",
       "GET /health",
       "GET /ready",
       "POST /auth/ci/exchange",
+      "POST /auth/cli/token",
       "POST /auth/logout",
       "POST /webhooks/gitlab/:connectionId",
     ]);
     expect(marked("x-signed-in").sort()).toEqual([
       "DELETE /tokens/:tokenId",
+      "GET /auth/whoami",
       "GET /organizations",
       "GET /tokens",
+      "POST /auth/cli/logout",
       "POST /tokens",
     ]);
   });
@@ -283,7 +287,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(84);
+    expect(routes.length).toBe(86);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

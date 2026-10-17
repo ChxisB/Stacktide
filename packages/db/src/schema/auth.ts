@@ -97,3 +97,24 @@ export const ciTokens = pgTable(
     index("ci_tokens_expires_idx").on(t.expiresAt),
   ],
 );
+
+/**
+ * What a browser sign-in for `orch login` hands back (CLI-2): a one-time code (only its SHA-256 is
+ * stored) for the person who just signed in, with the PKCE challenge of the CLI that asked. The CLI
+ * trades code and verifier for a token, and the row is deleted when taken, so a code works once and
+ * lives two minutes. Immutable, so no `updated_at`; expired rows are pruned on the next sign-in.
+ */
+export const cliLogins = pgTable(
+  "cli_logins",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    codeHash: text().notNull().unique("cli_logins_code_hash_key"),
+    challenge: text().notNull(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("cli_logins_expires_idx").on(t.expiresAt)],
+);

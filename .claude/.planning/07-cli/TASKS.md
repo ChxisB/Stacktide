@@ -4,7 +4,7 @@
 Do: `apps/cli` command router (`util.parseArgs` or a tiny lib - decide, justify), `--version`, `--json`, config file loader (0600), `.orch.json` discovery, `bun build --compile` script.
 Done when: `orch --version` runs from the compiled binary; config-file permission check has a test.
 
-### CLI-2 - Login, whoami, logout  `[ ]` M - deps: CLI-1, AUTH-4
+### CLI-2 - Login, whoami, logout  `[x]` M - deps: CLI-1, AUTH-4
 Do: browser login with loopback callback and a paste-token fallback; store the token; `whoami` prints principal and org.
 Done when: tests against a stubbed server cover success, denied login, expired token and the token never printed.
 

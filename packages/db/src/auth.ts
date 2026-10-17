@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
 import type { Executor, Page } from "./repo";
-import { apiTokens, sessions, users } from "./schema";
+import { apiTokens, cliLogins, sessions, users } from "./schema";
 
 export type User = typeof users.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
@@ -174,6 +174,55 @@ export async function revokeApiToken(
     .update(apiTokens)
     .set({ revokedAt: sql`now()` })
     .where(and(eq(apiTokens.id, id), eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)))
+    .returning();
+  return row;
+}
+
+const PKCE_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
+export const CLI_LOGIN_TTL_MS = 120_000;
+
+/**
+ * Stores the one-time code of a browser sign-in for the CLI (it lives `CLI_LOGIN_TTL_MS`, database
+ * clock). Codes that have run out are deleted on the way, so the table needs no cleanup job.
+ */
+export async function createCliLogin(
+  db: Executor,
+  input: { userId: string; codeHash: string; challenge: string },
+): Promise<void> {
+  checkHash(input.codeHash);
+  if (!PKCE_CHALLENGE.test(input.challenge)) {
+    throw new AuthStoreError("challenge must be a base64url SHA-256 digest");
+  }
+  await db.delete(cliLogins).where(sql`${cliLogins.expiresAt} < now()`);
+  await db.insert(cliLogins).values({
+    ...input,
+    expiresAt: sql`now() + make_interval(secs => ${CLI_LOGIN_TTL_MS / 1000})`,
+  });
+}
+
+/**
+ * Takes a code: who it was issued to and the challenge it is bound to, or nothing (unknown, used,
+ * expired). It is gone after this call whether or not the caller then proves it holds the verifier,
+ * so a stolen code cannot be tried more than once.
+ */
+export async function takeCliLogin(
+  db: Executor,
+  codeHash: string,
+): Promise<{ userId: string; challenge: string } | undefined> {
+  checkHash(codeHash);
+  const [row] = await db
+    .delete(cliLogins)
+    .where(and(eq(cliLogins.codeHash, codeHash), gt(cliLogins.expiresAt, sql`now()`)))
+    .returning({ userId: cliLogins.userId, challenge: cliLogins.challenge });
+  return row;
+}
+
+/** Revokes a token by its id, whoever owns it: for the token's own holder ending it. */
+export async function revokeApiTokenById(db: Executor, id: string): Promise<ApiToken | undefined> {
+  const [row] = await db
+    .update(apiTokens)
+    .set({ revokedAt: sql`now()` })
+    .where(and(eq(apiTokens.id, id), isNull(apiTokens.revokedAt)))
     .returning();
   return row;
 }

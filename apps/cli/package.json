@@ -7,6 +7,13 @@
     "orch": "./src/main.ts"
   },
   "dependencies": {
+    "@orch/api-client": "workspace:*",
     "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@orch/api": "workspace:*",
+    "@orch/core": "workspace:*",
+    "@orch/db": "workspace:*",
+    "drizzle-orm": "0.45.4"
   }
 }

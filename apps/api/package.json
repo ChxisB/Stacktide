@@ -3,7 +3,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/app.ts"
+    ".": "./src/app.ts",
+    "./credentials": "./src/credentials.ts",
+    "./tokens": "./src/tokens.ts"
   },
   "dependencies": {
     "@elysiajs/openapi": "1.4.16",

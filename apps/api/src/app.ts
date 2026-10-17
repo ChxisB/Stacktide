@@ -10,6 +10,7 @@ import { openapiPlugin } from "./openapi";
 import type { PrincipalResolver } from "./principal";
 import { type AuthDeps, authRoutes } from "./routes/auth";
 import { type CiDeps, ciRoutes } from "./routes/ci";
+import { cliRoutes } from "./routes/cli";
 import { connectionRoutes } from "./routes/connections";
 import { environmentRoutes } from "./routes/environments";
 import { importRoutes } from "./routes/imports";
@@ -101,6 +102,7 @@ export function createApp(deps: AppDeps) {
     )
     .use(auditPlugin(principal))
     .use(authRoutes(deps))
+    .use(cliRoutes(deps))
     .use(ciRoutes(deps))
     .use(organizationRoutes(deps))
     .use(projectRoutes(deps))

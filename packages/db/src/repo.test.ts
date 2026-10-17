@@ -392,11 +392,12 @@ describe("schema conventions", () => {
   // ci_tokens rows are written once and then only expire or cascade away; webhook_deliveries rows
   // are inserted once (their job id is set in the same transaction) and cascade away.
   // variable_versions rows are never changed (a trigger refuses it) and cascade away.
+  // cli_logins rows are written once and then only consumed (deleted), expire or cascade away.
   test("every table has created_at and updated_at, append-only ones excepted", async () => {
     const rows = await t.db.execute(sql`
       SELECT t.table_name AS name FROM information_schema.tables t
       WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE'
-        AND t.table_name NOT IN ('audit_events', 'ci_tokens', 'variable_versions', 'webhook_deliveries')
+        AND t.table_name NOT IN ('audit_events', 'ci_tokens', 'cli_logins', 'variable_versions', 'webhook_deliveries')
         AND (SELECT count(*) FROM information_schema.columns c
              WHERE c.table_schema = 'public' AND c.table_name = t.table_name
                AND c.column_name IN ('created_at', 'updated_at')) < 2`);
