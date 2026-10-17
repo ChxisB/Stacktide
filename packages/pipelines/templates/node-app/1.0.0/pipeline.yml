@@ -1,0 +1,44 @@
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+default:
+  image: "node:{{ params.nodeVersion }}"
+  # every job installs for itself: the cache only makes that fast, a job never relies on it
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+
+stages:
+  - check
+  - build
+
+typecheck:
+  stage: check
+  script:
+    - "npm run {{ params.typecheckScript }}"
+
+lint:
+  stage: check
+  script:
+    - "npm run {{ params.lintScript }}"
+
+test:
+  stage: check
+  script:
+    - "npm run {{ params.testScript }}"
+
+build:
+  stage: build
+  script:
+    - "npm run {{ params.buildScript }}"
+  artifacts:
+    paths:
+      - "{{ params.buildOutput }}"
+    expire_in: 1 week

@@ -1,0 +1,31 @@
+{
+  "name": "docker-image",
+  "version": "1.0.0",
+  "description": "Build a Docker image on merge requests and, on the default branch, push it to the project's GitLab container registry tagged with the commit and latest. Needs a runner that allows Docker-in-Docker.",
+  "params": {
+    "type": "object",
+    "properties": {
+      "dockerVersion": {
+        "type": "string",
+        "description": "Tag of the docker and docker:dind images.",
+        "default": "27",
+        "pattern": "^[0-9][0-9A-Za-z.-]{0,30}$"
+      },
+      "dockerfile": {
+        "type": "string",
+        "description": "Path of the Dockerfile, from the repository root.",
+        "default": "Dockerfile",
+        "pattern": "^(?![/-])(?!.*\\.\\.)[A-Za-z0-9._/-]{1,100}$"
+      },
+      "context": {
+        "type": "string",
+        "description": "Build context directory, from the repository root.",
+        "default": ".",
+        "pattern": "^(?![/-])(?!.*\\.\\.)[A-Za-z0-9._/-]{1,100}$"
+      }
+    },
+    "required": []
+  },
+  "detects": ["docker"],
+  "requiresVariables": []
+}

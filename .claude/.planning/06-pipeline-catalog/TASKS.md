@@ -4,7 +4,7 @@
 Do: `packages/pipelines` zod schema for the manifest; loader that validates every template under `templates/`; params validated against the manifest's JSON schema.
 Done when: tests reject malformed manifests, unknown param types and missing files.
 
-### PIPE-2 - Starter templates  `[ ]` M - deps: PIPE-1
+### PIPE-2 - Starter templates  `[x]` M - deps: PIPE-1
 Do: `bun-app` (install, typecheck, lint, test, build), `node-app`, `docker-image` (build and push to the GitLab registry).
 Done when: each template validates and renders with defaults; snapshots committed.
 

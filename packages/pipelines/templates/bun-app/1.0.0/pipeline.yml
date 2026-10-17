@@ -1,0 +1,44 @@
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+default:
+  image: "oven/bun:{{ params.bunVersion }}"
+  # every job installs for itself: the cache only makes that fast, a job never relies on it
+  cache:
+    key:
+      files:
+        - bun.lock
+    paths:
+      - node_modules/
+  before_script:
+    - bun install --frozen-lockfile
+
+stages:
+  - check
+  - build
+
+typecheck:
+  stage: check
+  script:
+    - "bun run {{ params.typecheckScript }}"
+
+lint:
+  stage: check
+  script:
+    - "bun run {{ params.lintScript }}"
+
+test:
+  stage: check
+  script:
+    - "bun run {{ params.testScript }}"
+
+build:
+  stage: build
+  script:
+    - "bun run {{ params.buildScript }}"
+  artifacts:
+    paths:
+      - "{{ params.buildOutput }}"
+    expire_in: 1 week

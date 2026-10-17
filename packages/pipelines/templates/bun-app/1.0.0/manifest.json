@@ -1,0 +1,49 @@
+{
+  "name": "bun-app",
+  "version": "1.0.0",
+  "description": "Install, typecheck, lint, test and build a Bun project, on merge requests and the default branch. Needs Bun 1.2 or later (the bun.lock lockfile).",
+  "params": {
+    "type": "object",
+    "properties": {
+      "bunVersion": {
+        "type": "string",
+        "description": "Tag of the oven/bun image the jobs run in.",
+        "default": "1",
+        "pattern": "^[0-9][0-9A-Za-z.-]{0,30}$"
+      },
+      "typecheckScript": {
+        "type": "string",
+        "description": "package.json script that typechecks.",
+        "default": "typecheck",
+        "pattern": "^[A-Za-z0-9_][A-Za-z0-9:_-]{0,39}$"
+      },
+      "lintScript": {
+        "type": "string",
+        "description": "package.json script that lints.",
+        "default": "lint",
+        "pattern": "^[A-Za-z0-9_][A-Za-z0-9:_-]{0,39}$"
+      },
+      "testScript": {
+        "type": "string",
+        "description": "package.json script that runs the tests.",
+        "default": "test",
+        "pattern": "^[A-Za-z0-9_][A-Za-z0-9:_-]{0,39}$"
+      },
+      "buildScript": {
+        "type": "string",
+        "description": "package.json script that builds.",
+        "default": "build",
+        "pattern": "^[A-Za-z0-9_][A-Za-z0-9:_-]{0,39}$"
+      },
+      "buildOutput": {
+        "type": "string",
+        "description": "Directory the build writes, kept as the job's artifact.",
+        "default": "dist/",
+        "pattern": "^(?![/-])(?!.*\\.\\.)[A-Za-z0-9._/-]{1,100}$"
+      }
+    },
+    "required": []
+  },
+  "detects": ["bun"],
+  "requiresVariables": []
+}

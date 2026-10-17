@@ -1,0 +1,35 @@
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+default:
+  image: "docker:{{ params.dockerVersion }}"
+  services:
+    - "docker:{{ params.dockerVersion }}-dind"
+
+variables:
+  DOCKER_TLS_CERTDIR: /certs
+
+stages:
+  - build
+  - release
+
+# merge requests only prove the image builds: nothing is pushed from a branch that is not merged
+build:
+  stage: build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - 'docker build --pull -f "{{ params.dockerfile }}" "{{ params.context }}"'
+
+publish:
+  stage: release
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - 'docker build --pull -f "{{ params.dockerfile }}" -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" -t "$CI_REGISTRY_IMAGE:latest" "{{ params.context }}"'
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE:latest"
