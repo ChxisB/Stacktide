@@ -58,12 +58,14 @@ const allowed: Record<string, string[]> = {
   "variable.update": MAINTAINER_UP,
   "variable.delete": MAINTAINER_UP,
   "secret.reveal": MAINTAINER_UP,
+  "variable.restore": MAINTAINER_UP,
   // The organization's own variables: org rules, so a project maintainer holds none of them.
   "variable.org.read": ORG_ALL,
   "variable.org.create": ["org admin", "org owner"],
   "variable.org.update": ["org admin", "org owner"],
   "variable.org.delete": ["org admin", "org owner"],
   "secret.reveal.org": ["org admin", "org owner"],
+  "variable.org.restore": ["org admin", "org owner"],
   // Org rules, so a project maintainer holds none of them.
   "connection.create": ["org admin", "org owner"],
   "connection.read": ["org admin", "org owner"],

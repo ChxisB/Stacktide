@@ -205,3 +205,46 @@ export function resolveVariables(inputs: readonly VariableInput[]): Resolution {
 
   return { variables: [...done.values()].sort((a, b) => compare(a.key, b.key)), issues };
 }
+
+/** One variable as it is, or as it was: what a restore compares. */
+export interface RestoreEntry {
+  id: string;
+  key: string;
+  kind: VariableKind;
+  value: string;
+}
+
+/** `kind` is the one the key had back then. A `conflict` is a key that has another kind now. */
+export type RestoreChange<E extends RestoreEntry = RestoreEntry> =
+  | { change: "update"; key: string; kind: VariableKind; current: E; wanted: E }
+  | { change: "create"; key: string; kind: VariableKind; wanted: E }
+  | { change: "remove"; key: string; kind: VariableKind; current: E }
+  | { change: "conflict"; key: string; kind: VariableKind; current: E; wanted: E };
+
+/**
+ * What it takes to make `current` hold what `wanted` held, key by key: `update` a value that
+ * differs, `create` a key that is gone, `remove` a key that was not there yet, `conflict` a key
+ * whose kind differs (a kind cannot change, so it is left alone). Equal keys are left out, so a
+ * plan made after a restore is empty. Sorted by key. Pure.
+ */
+export function planRestore<E extends RestoreEntry>(
+  wanted: readonly E[],
+  current: readonly E[],
+): RestoreChange<E>[] {
+  const was = new Map(wanted.map((e) => [e.key, e]));
+  const is = new Map(current.map((e) => [e.key, e]));
+  const changes: RestoreChange<E>[] = [];
+  for (const key of new Set([...was.keys(), ...is.keys()])) {
+    const w = was.get(key);
+    const c = is.get(key);
+    if (w && c) {
+      if (w.kind !== c.kind)
+        changes.push({ change: "conflict", key, kind: w.kind, current: c, wanted: w });
+      else if (w.value !== c.value) {
+        changes.push({ change: "update", key, kind: w.kind, current: c, wanted: w });
+      }
+    } else if (w) changes.push({ change: "create", key, kind: w.kind, wanted: w });
+    else if (c) changes.push({ change: "remove", key, kind: c.kind, current: c });
+  }
+  return changes.sort((a, b) => compare(a.key, b.key));
+}

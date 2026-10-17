@@ -16,7 +16,7 @@ Done when: table + property tests cover precedence, override, cycles, missing re
 Do: create/update/delete/list/get, resolved-set endpoint per environment, version history, `GET .../value` reveal; every mutation and reveal audited.
 Done when: endpoint tests pass, and a leak test serialises every response and log line of the suite and asserts no secret plaintext appears.
 
-### VAR-5 - Rollback and snapshots  `[ ]` M - deps: VAR-4
+### VAR-5 - Rollback and snapshots  `[x]` M - deps: VAR-4
 Do: restore a variable to an earlier version (creates a new version); environment snapshot at a point in time (`?at=`) and restore of a whole environment with a dry-run diff first.
 Done when: tests cover restore of changed, deleted and added keys, and that dry-run changes nothing.
 

@@ -40,11 +40,14 @@ export const RULES = {
   "variable.update": { project: "maintainer" },
   "variable.delete": { project: "maintainer" },
   "secret.reveal": { project: "maintainer" },
+  // Putting a whole level back to an earlier moment creates, changes and (with prune) deletes: its own action, so a token needs it by name.
+  "variable.restore": { project: "maintainer" },
   "variable.org.read": { org: "viewer" },
   "variable.org.create": { org: "admin" },
   "variable.org.update": { org: "admin" },
   "variable.org.delete": { org: "admin" },
   "secret.reveal.org": { org: "admin" },
+  "variable.org.restore": { org: "admin" },
   // Credentials for outside systems: org admins only, also to read (what they connect to is theirs to know).
   "connection.create": { org: "admin" },
   "connection.read": { org: "admin" },

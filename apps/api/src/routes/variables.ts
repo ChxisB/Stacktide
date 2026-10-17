@@ -19,9 +19,12 @@ import {
   listVariables,
   listVersions,
   openChain,
+  restoreLevel,
+  restorePlan,
   revealVariable,
   type Scope,
   setVariable,
+  snapshotLevel,
   type Variable,
   type VariableInfo,
   type VariableVersion,
@@ -146,6 +149,42 @@ const patch = z
   .refine((o) => o.reason === undefined || o.value !== undefined, "a reason needs a value");
 const revealQuery = z.object({ version: z.coerce.number().int().min(1).optional() });
 
+// A moment to go back to: not in the future, and with a zone. In a query an unencoded "+" is a space.
+const at = z.iso
+  .datetime({
+    offset: true,
+    error: "must be an ISO 8601 date-time; write a + offset as %2B in a query",
+  })
+  .refine((s) => Date.parse(s) <= Date.now(), "must not be in the future");
+const atQuery = z.object({ at });
+const restoreOne = z.strictObject({ version: z.number().int().min(1), reason: reason.optional() });
+const restoreAll = z.strictObject({ at, prune: z.boolean().optional() });
+
+const snapshotSchema = z.object({
+  at: z.iso.datetime(),
+  variables: z.array(
+    z.object({
+      id: z.uuid(),
+      key: z.string(),
+      kind: z.enum(VARIABLE_KINDS),
+      description: z.string(),
+      /** The version that held at that moment. */
+      version: z.number().int(),
+      value: z.string().nullable(),
+    }),
+  ),
+});
+const changeSchema = z.object({
+  change: z.enum(["update", "create", "remove", "conflict"]),
+  key: z.string(),
+  kind: z.enum(VARIABLE_KINDS),
+});
+const planSchema = z.object({ at: z.iso.datetime(), changes: z.array(changeSchema) });
+const restoredSchema = z.object({
+  at: z.iso.datetime(),
+  changes: z.array(changeSchema.extend({ applied: z.boolean() })),
+});
+
 // One schema for all three levels: the path says which ids exist.
 const params = z.object({
   orgId: z.uuid(),
@@ -163,7 +202,14 @@ interface Level {
   level: VariableLevel;
   prefix: string;
   /** The guard actions: the organization's variables are held to a stricter set. */
-  actions: { read: string; create: string; update: string; delete: string; reveal: string };
+  actions: {
+    read: string;
+    create: string;
+    update: string;
+    delete: string;
+    reveal: string;
+    restore: string;
+  };
   /** Throws the 404 for a parent that is not there. */
   parent: (db: RouteDeps["db"], p: Params) => Promise<unknown>;
 }
@@ -173,6 +219,7 @@ const projectActions = {
   update: "variable.update",
   delete: "variable.delete",
   reveal: "secret.reveal",
+  restore: "variable.restore",
 };
 const organizationLevel: Level = {
   level: "organization",
@@ -183,6 +230,7 @@ const organizationLevel: Level = {
     update: "variable.org.update",
     delete: "variable.org.delete",
     reveal: "secret.reveal.org",
+    restore: "variable.org.restore",
   },
   parent: async (db, p) =>
     (await getOrganization(db, p.orgId)) ?? Promise.reject(notFound("Organization")),
@@ -431,6 +479,145 @@ const levelRoutes = (
         response: { 200: revealedSchema, ...reads },
         audit: "variable.reveal",
         guard: actions.reveal,
+      },
+    )
+    .post(
+      "/:varId/restore",
+      async ({ params: p, body, audit, set, principal: caller }) => {
+        const k = sealing();
+        const actor = actorOf(caller);
+        const restored = await db
+          .transaction(async (tx) => {
+            const old = await revealVariable(tx, k, scopeOf(p), p.varId, body.version);
+            if (!old) throw notFound("Variable");
+            // A new version with the old value: the history only grows.
+            const reason = body.reason ?? `restored from version ${body.version}`;
+            const v = await setVariable(tx, k, scopeOf(p), p.varId, {
+              value: old.value,
+              actor,
+              reason,
+            });
+            if (!v) throw notFound("Variable");
+            await audit(
+              tx,
+              audited("variable.update", level, v, {
+                fields: ["value"],
+                version: v.currentVersion,
+                restoredVersion: body.version,
+              }),
+            );
+            return v;
+          })
+          .catch(failingWith(set));
+        return dto(level, restored);
+      },
+      {
+        params: itemParams,
+        body: restoreOne,
+        parse: "json",
+        response: { 200: variableSchema, ...writes },
+        audit: "variable.update",
+        guard: actions.restore,
+      },
+    )
+    .get(
+      "/snapshot",
+      async ({ params: p, query, set }) => {
+        const k = sealing();
+        await spec.parent(db, p);
+        const moment = new Date(query.at);
+        const held = await snapshotLevel(db, k, scopeOf(p), moment).catch(failingWith(set));
+        return {
+          at: moment.toISOString(),
+          variables: held.map(({ id, key, kind, description, version, value }) => ({
+            id,
+            key,
+            kind,
+            description,
+            version,
+            value,
+          })),
+        };
+      },
+      {
+        params,
+        query: atQuery,
+        response: { 200: snapshotSchema, ...reads },
+        guard: actions.read,
+      },
+    )
+    .get(
+      "/restore-plan",
+      async ({ params: p, query, set }) => {
+        const k = sealing();
+        await spec.parent(db, p);
+        const moment = new Date(query.at);
+        const changes = await restorePlan(db, k, scopeOf(p), moment).catch(failingWith(set));
+        return { at: moment.toISOString(), changes };
+      },
+      {
+        params,
+        query: atQuery,
+        response: { 200: planSchema, ...reads },
+        guard: actions.restore,
+      },
+    )
+    .post(
+      "/restore",
+      async ({ params: p, body, audit, set, principal: caller }) => {
+        const k = sealing();
+        const actor = actorOf(caller);
+        await spec.parent(db, p);
+        const moment = new Date(body.at);
+        const prune = body.prune === true;
+        const done = await db
+          .transaction(async (tx) => {
+            const changes = await restoreLevel(tx, k, scopeOf(p), moment, { actor, prune });
+            for (const c of changes) {
+              if (!c.applied || !c.variable || c.change === "conflict") continue;
+              const extra = { restoredTo: moment.toISOString() };
+              await audit(
+                tx,
+                c.change === "remove"
+                  ? audited("variable.delete", level, c.variable, extra)
+                  : audited(
+                      c.change === "create" ? "variable.create" : "variable.update",
+                      level,
+                      c.variable,
+                      { ...extra, version: c.variable.currentVersion },
+                    ),
+              );
+            }
+            // One row for the restore itself, so a restore that changes nothing is on record too.
+            await audit(tx, {
+              action: "variable.restore_level",
+              resourceType: "variable",
+              organizationId: p.orgId,
+              ...(p.projectId && { projectId: p.projectId }),
+              metadata: {
+                level,
+                ...(p.envId && { environmentId: p.envId }),
+                restoredTo: moment.toISOString(),
+                prune,
+                plannedCount: changes.length,
+                appliedCount: changes.filter((c) => c.applied).length,
+              },
+            });
+            return changes;
+          })
+          .catch(failingWith(set));
+        return {
+          at: moment.toISOString(),
+          changes: done.map(({ change, key, kind, applied }) => ({ change, key, kind, applied })),
+        };
+      },
+      {
+        params,
+        body: restoreAll,
+        parse: "json",
+        response: { 200: restoredSchema, ...writes },
+        audit: ["variable.create", "variable.update", "variable.delete", "variable.restore_level"],
+        guard: actions.restore,
       },
     );
 };

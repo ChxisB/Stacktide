@@ -137,6 +137,8 @@ const writes = () =>
           ["POST", path, { key: "NOPE", kind: "plain", value: "v" }],
           ["PATCH", `${path}/${NO_CONNECTION}`, { value: "x" }],
           ["DELETE", `${path}/${NO_CONNECTION}`],
+          ["POST", `${path}/${NO_CONNECTION}/restore`, { version: 1 }],
+          ["POST", `${path}/restore`, { at: "2020-01-01T00:00:00Z", prune: true }],
         ] as const,
     ),
   ] as const;
@@ -167,7 +169,7 @@ describe("coverage", () => {
     expect(unguardedRoutes(app)).toEqual(["GET /openapi/json"]);
   });
 
-  /** The seven routes of one level of variables. */
+  /** The eleven routes of one level of variables. */
   const variableGuards = (path: string, family: string, reveal: string) => ({
     [`GET ${path}`]: `${family}.read`,
     [`POST ${path}`]: `${family}.create`,
@@ -176,6 +178,10 @@ describe("coverage", () => {
     [`DELETE ${path}/:varId`]: `${family}.delete`,
     [`GET ${path}/:varId/versions`]: `${family}.read`,
     [`GET ${path}/:varId/value`]: reveal,
+    [`POST ${path}/:varId/restore`]: `${family}.restore`,
+    [`GET ${path}/snapshot`]: `${family}.read`,
+    [`GET ${path}/restore-plan`]: `${family}.restore`,
+    [`POST ${path}/restore`]: `${family}.restore`,
   });
 
   test("the guard of every route, written out", () => {
@@ -252,7 +258,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(47);
+    expect(routes.length).toBe(59);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

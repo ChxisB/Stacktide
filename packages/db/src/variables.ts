@@ -1,4 +1,10 @@
-import type { VariableInput, VariableLevel } from "@orch/core";
+import {
+  planRestore,
+  type RestoreChange,
+  type RestoreEntry,
+  type VariableInput,
+  type VariableLevel,
+} from "@orch/core";
 import {
   aad,
   type Dek,
@@ -9,7 +15,7 @@ import {
   unwrapDek,
   wrapDek,
 } from "@orch/crypto";
-import { and, asc, desc, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNull, lt, or, sql } from "drizzle-orm";
 import type { AuditContext } from "./audit";
 import type { Executor, Page } from "./repo";
 import { type VariableKind, variableKeys, variables, variableVersions } from "./schema";
@@ -77,19 +83,19 @@ const ownerIs = (o: Owner) =>
   );
 
 /**
- * A live variable of exactly this level (the organization's, a project's without an environment,
- * or one environment's): with an `id`, that one. An id from another level finds nothing.
+ * A variable of exactly this level (the organization's, a project's without an environment, or one
+ * environment's), deleted or not: with an `id`, that one. An id from another level finds nothing.
  */
-const live = (s: Scope, id?: string) =>
+const levelOf = (s: Scope, id?: string) =>
   and(
     eq(variables.organizationId, s.organizationId),
     s.projectId === undefined ? isNull(variables.projectId) : eq(variables.projectId, s.projectId),
     s.environmentId === undefined
       ? isNull(variables.environmentId)
       : eq(variables.environmentId, s.environmentId),
-    isNull(variables.deletedAt),
     id === undefined ? undefined : eq(variables.id, id),
   );
+const live = (s: Scope, id?: string) => and(levelOf(s, id), isNull(variables.deletedAt));
 
 /** The current version of each variable selected. */
 const currentVersion = and(
@@ -421,4 +427,160 @@ export async function openChain(
     kind: row.kind,
     value: values[i] ?? "",
   }));
+}
+
+// A timestamp has microseconds and a Date milliseconds (so does what the API shows): "at 12:00:00.123"
+// has to include all of that millisecond, or a version could not be asked for by its own time.
+const through = (at: Date) => new Date(at.getTime() + 1);
+
+/**
+ * The variables of one level that existed at `at` (not yet deleted), each with its latest version
+ * made by then; without `at`, the live ones with their current version. The description is the
+ * current one: only values are versioned. The inner join drops nothing it should keep: a variable
+ * and its first version are written in one transaction, so they share a `created_at`.
+ */
+function rowsAt(db: Executor, scope: Scope, at?: Date): Promise<Sealed[]> {
+  const upto = at && through(at);
+  return db
+    .select(sealedColumns)
+    .from(variables)
+    .innerJoin(
+      variableVersions,
+      and(
+        eq(variableVersions.variableId, variables.id),
+        eq(
+          variableVersions.version,
+          upto
+            ? sql`(select max(v.version) from variable_versions v where v.variable_id = ${variables.id} and v.created_at < ${upto.toISOString()}::timestamptz)`
+            : variables.currentVersion,
+        ),
+      ),
+    )
+    .where(
+      upto
+        ? and(
+            levelOf(scope),
+            lt(variables.createdAt, upto),
+            or(isNull(variables.deletedAt), gte(variables.deletedAt, upto)),
+          )
+        : live(scope),
+    )
+    .orderBy(asc(variables.id));
+}
+
+/**
+ * One level as it was at `at`: `plain` values come back, `secret` and `file` values do not (a
+ * secret of the past is revealed no more than a current one). `version` is the one that held then.
+ */
+export async function snapshotLevel(
+  db: Executor,
+  keys: KeyProvider,
+  scope: Scope,
+  at: Date,
+): Promise<(Variable & { version: number })[]> {
+  const rows = await rowsAt(db, scope, at);
+  const values = await unseal(db, keys, rows, (r) => r.kind === "plain");
+  return rows.map((row, i) => ({ ...info(row), version: row.version, value: values[i] ?? null }));
+}
+
+type Held = RestoreEntry & { description: string };
+
+/** Every value of the level opened, now or `at`: to compare, and to restore from. */
+async function holdings(db: Executor, keys: KeyProvider, scope: Scope, at?: Date) {
+  const rows = await rowsAt(db, scope, at);
+  const values = await unseal(db, keys, rows, () => true);
+  return rows.map(
+    (r, i): Held => ({
+      id: r.id,
+      key: r.key,
+      kind: r.kind,
+      description: r.description,
+      value: values[i] ?? "",
+    }),
+  );
+}
+
+const planAt = async (db: Executor, keys: KeyProvider, scope: Scope, at: Date) =>
+  planRestore(await holdings(db, keys, scope, at), await holdings(db, keys, scope));
+
+/** A step of a restore: never a value. */
+export interface PlannedChange {
+  change: RestoreChange["change"];
+  key: string;
+  kind: VariableKind;
+}
+
+/** What `restoreLevel` would do for the same `at`. Changes nothing. */
+export async function restorePlan(
+  db: Executor,
+  keys: KeyProvider,
+  scope: Scope,
+  at: Date,
+): Promise<PlannedChange[]> {
+  return (await planAt(db, keys, scope, at)).map(({ change, key, kind }) => ({
+    change,
+    key,
+    kind,
+  }));
+}
+
+export interface AppliedChange extends PlannedChange {
+  /** False for a `conflict`, for a `remove` without `prune`, and for a variable deleted meanwhile. */
+  applied: boolean;
+  /** What the change made or removed, for the audit trail. */
+  variable?: VariableInfo;
+}
+
+const bare = ({ value: _value, ...variable }: Variable): VariableInfo => variable;
+
+/**
+ * Makes the level hold what it held at `at`, in one transaction: a changed value is put back as a
+ * new version, a deleted variable is made again (a new id), and a variable added since is deleted
+ * only with `prune`. A key whose kind changed is left alone. Idempotent: once done, the same call
+ * changes nothing. History is never rewritten. Keys and values only: a description is not put back
+ * (a variable made again gets the one it had when it was deleted). Nothing is locked, so an edit that
+ * lands while this runs is overwritten and a variable made meanwhile is left alone.
+ */
+export function restoreLevel(
+  db: Executor,
+  keys: KeyProvider,
+  scope: Scope,
+  at: Date,
+  opts: { actor: Actor; prune: boolean },
+): Promise<AppliedChange[]> {
+  const { actor } = opts;
+  const reason = `restored to ${at.toISOString()}`;
+  return db.transaction(async (tx) => {
+    const done: AppliedChange[] = [];
+    for (const c of await planAt(tx, keys, scope, at)) {
+      const step = { change: c.change, key: c.key, kind: c.kind };
+      if (c.change === "update") {
+        const v = await setVariable(tx, keys, scope, c.current.id, {
+          value: c.wanted.value,
+          actor,
+          reason,
+        });
+        done.push({ ...step, applied: v !== undefined, ...(v && { variable: bare(v) }) });
+      } else if (c.change === "create") {
+        const { value, description } = c.wanted;
+        const v = await createVariable(tx, keys, {
+          ...scope,
+          key: c.key,
+          kind: c.kind,
+          description,
+          value,
+          actor,
+          reason,
+        });
+        done.push({ ...step, applied: true, variable: bare(v) });
+      } else if (c.change === "remove" && opts.prune) {
+        const v = await describeVariable(tx, scope, c.current.id);
+        const gone = v !== undefined && (await deleteVariable(tx, scope, c.current.id));
+        done.push({ ...step, applied: gone, ...(v && { variable: v }) });
+      } else {
+        done.push({ ...step, applied: false });
+      }
+    }
+    return done;
+  });
 }

@@ -138,6 +138,7 @@ interface Dto {
   description: string;
   projectId: string | null;
   environmentId: string | null;
+  createdAt: string;
 }
 let k = 0;
 const make = async (path: string, over: object = {}, who: Who = "alice") => {
@@ -683,6 +684,452 @@ describe("when the stored secrets cannot be opened", () => {
     const mine = lines.slice(from);
     expect(mine.some((l) => l.includes("cannot be opened") && l.includes('"code"'))).toBe(true);
     expect(mine.join("\n")).not.toContain(value);
+  });
+});
+
+const wait = () => Bun.sleep(8); // more than the millisecond a moment is named by
+const versionsOf = async (path: string) =>
+  (await call("alice", "GET", `${path}/versions`)).json.items as {
+    version: number;
+    reason: string | null;
+  }[];
+
+describe("rolling one variable back", () => {
+  test("an earlier value is put back as a new version; a secret stays hidden", async () => {
+    const [a, b, c] = [sekrit("rb-1"), sekrit("rb-2"), sekrit("rb-3")];
+    const v = await make(base.environment(), { kind: "secret", value: a });
+    const path = `${base.environment()}/${v.id}`;
+    for (const value of [b, c])
+      expect((await call("alice", "PATCH", path, { value })).status).toBe(200);
+
+    const res = await call("alice", "POST", `${path}/restore`, { version: 1 });
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ id: v.id, kind: "secret", version: 4, value: null });
+    expect((await call("alice", "GET", `${path}/value`)).json).toMatchObject({
+      version: 4,
+      value: a,
+    });
+    // the history is only added to
+    expect((await call("alice", "GET", `${path}/value?version=2`)).json.value).toBe(b);
+    expect((await call("alice", "GET", `${path}/value?version=3`)).json.value).toBe(c);
+    expect(await versionsOf(path)).toMatchObject([
+      { version: 4, reason: "restored from version 1" },
+      { version: 3 },
+      { version: 2 },
+      { version: 1 },
+    ]);
+
+    // a reason of its own, and the current version can be put back too
+    const again = await call("alice", "POST", `${path}/restore`, {
+      version: 2,
+      reason: "ticket 7",
+    });
+    expect(again.json.version).toBe(5);
+    expect((await versionsOf(path))[0]).toMatchObject({ version: 5, reason: "ticket 7" });
+    expect((await call("alice", "GET", `${path}/value`)).json.value).toBe(b);
+
+    const plain = await make(base.project(), { value: "first" });
+    const plainPath = `${base.project()}/${plain.id}`;
+    await call("alice", "PATCH", plainPath, { value: "second" });
+    expect(
+      (await call("alice", "POST", `${plainPath}/restore`, { version: 1 })).json,
+    ).toMatchObject({
+      version: 3,
+      value: "first",
+    });
+  });
+
+  test("is audited with the version it came from, never the value", async () => {
+    const v = await make(base.project(), { kind: "secret", value: sekrit("rb-audit") });
+    const path = `${base.project()}/${v.id}`;
+    await call("alice", "PATCH", path, { value: sekrit("rb-audit-2") });
+    await call("alice", "POST", `${path}/restore`, { version: 1 });
+    const rows = (await events("variable.update")).filter((e) => e.resourceId === v.id);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((e) => e.metadata)).toContainEqual({
+      level: "project",
+      key: v.key,
+      kind: "secret",
+      fields: ["value"],
+      version: 3,
+      restoredVersion: 1,
+    });
+  });
+
+  test("a version or a variable that is not there is a 404, and the body names one version", async () => {
+    const v = await make(base.environment(), { value: "x" });
+    const path = `${base.environment()}/${v.id}`;
+    const gone = await make(base.environment(), { value: "x" });
+    await call("alice", "DELETE", `${base.environment()}/${gone.id}`);
+    for (const url of [
+      `${path}/restore`, // version 99 below
+      `${base.environment()}/${gone.id}/restore`,
+      `${base.environment()}/${crypto.randomUUID()}/restore`,
+      `${base.project()}/${v.id}/restore`, // an environment's variable, asked for as the project's
+    ]) {
+      const res = await call("alice", "POST", url, { version: url === `${path}/restore` ? 99 : 1 });
+      expect([url, res.status]).toEqual([url, 404]);
+    }
+    for (const body of [
+      {},
+      { version: 0 },
+      { version: 1.5 },
+      { version: "1" },
+      { version: 1, key: "X" },
+    ]) {
+      const res = await call("alice", "POST", `${path}/restore`, body);
+      expect([JSON.stringify(body), res.status]).toEqual([JSON.stringify(body), 422]);
+    }
+    expect(await versionsOf(path)).toHaveLength(1);
+  });
+
+  test("needs the right to write and the master keys", async () => {
+    const v = await make(base.project(), { kind: "secret", value: sekrit("rb-who") });
+    const path = `${base.project()}/${v.id}/restore`;
+    expect((await call("carol", "POST", path, { version: 1 })).status).toBe(403);
+    expect((await call("erin", "POST", path, { version: 1 })).status).toBe(404);
+    expect((await call(undefined, "POST", path, { version: 1 })).status).toBe(401);
+    expect((await call("bob", "POST", path, { version: 1 })).status).toBe(200);
+    const org = await make(base.organization(), { value: "o" });
+    const orgPath = `${base.organization()}/${org.id}/restore`;
+    expect((await call("bob", "POST", orgPath, { version: 1 })).status).toBe(403);
+    expect((await call("alice", "POST", orgPath, { version: 1 })).status).toBe(200);
+    const before = (await versionsOf(`${base.project()}/${v.id}`)).length;
+    const bare = await call("alice", "POST", path, { version: 1 }, makeApp(undefined));
+    expect([bare.status, bare.json.code]).toEqual([503, "secrets_unavailable"]);
+    expect(await versionsOf(`${base.project()}/${v.id}`)).toHaveLength(before);
+  });
+});
+
+let freshCount = 0;
+/** An organization of its own, so that a level holds only what a test put there. */
+async function fresh() {
+  const slug = `fx${++freshCount}-${Bun.randomUUIDv7().slice(-8)}`;
+  const org = (await createOrganization(t.db, { slug, name: slug })).id;
+  const project = (await createProject(t.db, { organizationId: org, name: "fx" })).id;
+  const env = (
+    await createEnvironment(t.db, {
+      organizationId: org,
+      projectId: project,
+      name: "fx",
+      slug: "fx",
+    })
+  ).id;
+  const alice = roleTable.get(901);
+  roleTable.set(901, { orgRoles: { ...alice?.orgRoles, [org]: "admin" }, projectRoles: {} });
+  return {
+    organization: base.organization(org),
+    project: base.project(project, org),
+    environment: base.environment(env, project, org),
+  };
+}
+
+/**
+ * What a level goes through after the moment `T`: A and B change, C is deleted, D is added, E stays,
+ * and F is deleted and made again as another kind.
+ */
+async function timeline(path: string) {
+  const mk = (key: string, kind: string, value: string) =>
+    make(path, { key, kind, value, description: `about ${key}` });
+  const [b1, b2, f1] = [sekrit("tl-b1"), sekrit("tl-b2"), sekrit("tl-f1")];
+  const A = await mk("A", "plain", "a1");
+  const B = await mk("B", "secret", b1);
+  const C = await mk("C", "plain", "c1");
+  const E = await mk("E", "plain", "e1");
+  const F = await mk("F", "secret", f1);
+  await wait();
+  const T = F.createdAt as string;
+  await wait();
+  await call("alice", "PATCH", `${path}/${A.id}`, { value: "a2" });
+  await call("alice", "PATCH", `${path}/${B.id}`, { value: b2 });
+  await call("alice", "DELETE", `${path}/${C.id}`);
+  const D = await mk("D", "plain", "d1");
+  await call("alice", "DELETE", `${path}/${F.id}`);
+  await mk("F", "plain", "f2");
+  return { A, B, C, D, E, F, T, b1, b2 };
+}
+
+const counts = async () => ({
+  variables: (await t.db.select({ n: count() }).from(variables))[0]?.n,
+  versions: (await t.db.select({ n: count() }).from(variableVersions))[0]?.n,
+  audits: (await t.db.select({ n: count() }).from(auditEvents))[0]?.n,
+});
+// biome-ignore lint/suspicious/noExplicitAny: response bodies are checked by the assertions
+const byKey = (rows: { key: string }[]): Record<string, any> =>
+  Object.fromEntries(rows.map((r) => [r.key, r]));
+const list = async (path: string) =>
+  byKey((await call("alice", "GET", `${path}?limit=100`)).json.items);
+
+describe("a level at an earlier moment", () => {
+  test("shows what existed then: values of plain variables, versions of the others", async () => {
+    const f = await fresh();
+    for (const level of LEVELS) {
+      const path = f[level];
+      const { T, A, B, C, D } = await timeline(path);
+      const then = await call("alice", "GET", `${path}/snapshot?at=${T}`);
+      expect(then.status).toBe(200);
+      expect(then.json.at).toBe(T);
+      expect(then.json.variables.map((v: { key: string }) => v.key)).toEqual([
+        "A",
+        "B",
+        "C",
+        "E",
+        "F",
+      ]);
+      const got = byKey(then.json.variables);
+      expect(got.A).toMatchObject({ id: A.id, kind: "plain", value: "a1", version: 1 });
+      expect(got.B).toMatchObject({ id: B.id, kind: "secret", value: null, version: 1 });
+      expect(got.C).toMatchObject({ id: C.id, value: "c1" });
+      expect(got.F).toMatchObject({ kind: "secret", value: null });
+      expect(got).not.toHaveProperty("D");
+      expect(Object.keys(then.json.variables[0]).sort()).toEqual([
+        "description",
+        "id",
+        "key",
+        "kind",
+        "value",
+        "version",
+      ]);
+
+      const now = await call("alice", "GET", `${path}/snapshot?at=${new Date().toISOString()}`);
+      const current = byKey(now.json.variables);
+      expect(Object.keys(current).sort()).toEqual(["A", "B", "D", "E", "F"]);
+      expect(current.A).toMatchObject({ value: "a2", version: 2 });
+      expect(current.B).toMatchObject({ value: null, version: 2 });
+      expect(current.D.id).toBe(D.id);
+      expect(current.F).toMatchObject({ kind: "plain", value: "f2" });
+
+      const before = await call("alice", "GET", `${path}/snapshot?at=2000-01-01T00:00:00Z`);
+      expect(before.json.variables).toEqual([]);
+    }
+  });
+
+  test("asks for a moment that is there and not ahead of us, at a level that is there", async () => {
+    const f = await fresh();
+    for (const at of ["", "?at=", "?at=yesterday", "?at=2020-01-01", "?at=2999-01-01T00:00:00Z"]) {
+      for (const route of ["snapshot", "restore-plan"]) {
+        const res = await call("alice", "GET", `${f.environment}/${route}${at}`);
+        expect([route, at, res.status]).toEqual([route, at, 422]);
+      }
+    }
+    // an unencoded "+" reaches the server as a space, and the answer says what to do
+    const spaced = await call(
+      "alice",
+      "GET",
+      `${f.environment}/snapshot?at=2020-01-01T02:00:00+02:00`,
+    );
+    expect([spaced.status, spaced.text]).toEqual([422, expect.stringContaining("%2B")]);
+    // a zone is part of the moment: 02:00 at +02:00 is midnight UTC
+    const zoned = await call(
+      "alice",
+      "GET",
+      `${f.environment}/snapshot?at=2020-01-01T02:00:00%2B02:00`,
+    );
+    expect([zoned.status, zoned.json.at]).toEqual([200, "2020-01-01T00:00:00.000Z"]);
+    const missing = base.environment(crypto.randomUUID(), ids.p1);
+    for (const route of ["snapshot", "restore-plan"]) {
+      const res = await call("alice", "GET", `${missing}/${route}?at=2020-01-01T00:00:00Z`);
+      expect([route, res.status]).toEqual([route, 404]);
+    }
+    const res = await call("alice", "POST", `${missing}/restore`, { at: "2020-01-01T00:00:00Z" });
+    expect(res.status).toBe(404);
+  });
+
+  test("the plan says what a restore would do, names no value and changes nothing", async () => {
+    const f = await fresh();
+    const { T } = await timeline(f.environment);
+    const before = await counts();
+    const res = await call("alice", "GET", `${f.environment}/restore-plan?at=${T}`);
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({
+      at: T,
+      changes: [
+        { change: "update", key: "A", kind: "plain" },
+        { change: "update", key: "B", kind: "secret" },
+        { change: "create", key: "C", kind: "plain" },
+        { change: "remove", key: "D", kind: "plain" },
+        { change: "conflict", key: "F", kind: "secret" },
+      ],
+    });
+    for (const text of ["a1", "a2", "c1", "d1", "f2"]) expect(res.text).not.toContain(`"${text}"`);
+    expect(await counts()).toEqual(before);
+    // a plan for a moment when nothing was there asks to remove everything, and still changes nothing
+    const wipe = await call(
+      "alice",
+      "GET",
+      `${f.environment}/restore-plan?at=2000-01-01T00:00:00Z`,
+    );
+    expect(wipe.json.changes.map((c: { change: string }) => c.change)).toEqual([
+      "remove",
+      "remove",
+      "remove",
+      "remove",
+      "remove",
+    ]);
+    expect(await counts()).toEqual(before);
+  });
+
+  test("a restore puts back what changed or went, keeps what was added, and never touches another level", async () => {
+    for (const level of LEVELS) {
+      const f = await fresh();
+      const others = LEVELS.filter((l) => l !== level);
+      for (const other of others) await make(f[other], { key: "A", value: `other-${level}` });
+      const path = f[level];
+      const { T, A, B, C, D, F, b1 } = await timeline(path);
+      const before = await counts();
+
+      const res = await call("alice", "POST", `${path}/restore`, { at: T });
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual({
+        at: T,
+        changes: [
+          { change: "update", key: "A", kind: "plain", applied: true },
+          { change: "update", key: "B", kind: "secret", applied: true },
+          { change: "create", key: "C", kind: "plain", applied: true },
+          { change: "remove", key: "D", kind: "plain", applied: false },
+          { change: "conflict", key: "F", kind: "secret", applied: false },
+        ],
+      });
+
+      const now = await list(path);
+      expect(now.A).toMatchObject({ id: A.id, value: "a1", version: 3 });
+      expect(now.B).toMatchObject({ id: B.id, value: null, version: 3 });
+      expect((await call("alice", "GET", `${path}/${B.id}/value`)).json.value).toBe(b1);
+      expect(now.C).toMatchObject({
+        kind: "plain",
+        value: "c1",
+        version: 1,
+        description: "about C",
+      });
+      expect(now.C.id).not.toBe(C.id);
+      expect((await call("alice", "GET", `${path}/${C.id}`)).status).toBe(404);
+      expect(now.D.id).toBe(D.id); // added since: kept without prune
+      expect(now.F).toMatchObject({ kind: "plain", value: "f2" }); // a kind cannot change
+      expect(now.F.id).not.toBe(F.id);
+      expect((await versionsOf(`${path}/${A.id}`))[0]).toMatchObject({
+        version: 3,
+        reason: `restored to ${T}`,
+      });
+      for (const other of others) expect((await list(f[other])).A.value).toBe(`other-${level}`);
+      const after = await counts();
+      expect(after.variables).toBe((before.variables ?? 0) + 1); // C, made again
+      expect(after.versions).toBe((before.versions ?? 0) + 3);
+    }
+  });
+
+  test("done twice, it changes nothing the second time; with prune it removes what was added", async () => {
+    const f = await fresh();
+    const path = f.project;
+    const { T, D } = await timeline(path);
+    expect((await call("alice", "POST", `${path}/restore`, { at: T })).status).toBe(200);
+    const plan = await call("alice", "GET", `${path}/restore-plan?at=${T}`);
+    expect(plan.json.changes).toEqual([
+      { change: "remove", key: "D", kind: "plain" },
+      { change: "conflict", key: "F", kind: "secret" },
+    ]);
+    const before = await counts();
+    const again = await call("alice", "POST", `${path}/restore`, { at: T });
+    expect(again.json.changes.every((c: { applied: boolean }) => !c.applied)).toBe(true);
+    expect({ ...(await counts()), audits: 0 }).toEqual({ ...before, audits: 0 });
+
+    const pruned = await call("alice", "POST", `${path}/restore`, { at: T, prune: true });
+    expect(pruned.json.changes).toEqual([
+      { change: "remove", key: "D", kind: "plain", applied: true },
+      { change: "conflict", key: "F", kind: "secret", applied: false },
+    ]);
+    expect((await call("alice", "GET", `${path}/${D.id}`)).status).toBe(404);
+    expect((await call("alice", "GET", `${path}/restore-plan?at=${T}`)).json.changes).toEqual([
+      { change: "conflict", key: "F", kind: "secret" },
+    ]);
+  });
+
+  test("is audited: a row for each change, and one for the restore, with names and counts only", async () => {
+    const f = await fresh();
+    const path = f.environment;
+    const { T } = await timeline(path);
+    await call("alice", "POST", `${path}/restore`, { at: T, prune: true });
+    const mine = (action: string) =>
+      events(action).then((rows) =>
+        rows.filter((e) => (e.metadata as { restoredTo?: string } | null)?.restoredTo === T),
+      );
+    const names = async (action: string) =>
+      (await mine(action)).map((e) => (e.metadata as { key?: string }).key).sort();
+    expect(await names("variable.update")).toEqual(["A", "B"]);
+    expect(await names("variable.create")).toEqual(["C"]);
+    expect(await names("variable.delete")).toEqual(["D"]);
+    const [summary, ...rest] = await mine("variable.restore_level");
+    expect(rest).toEqual([]);
+    expect(summary?.metadata).toEqual({
+      level: "environment",
+      environmentId: expect.any(String),
+      restoredTo: T,
+      prune: true,
+      plannedCount: 5,
+      appliedCount: 4,
+    });
+    // nothing to do is on record too
+    const rowsBefore = (await mine("variable.restore_level")).length;
+    await call("alice", "POST", `${path}/restore`, { at: T });
+    expect((await mine("variable.restore_level")).length).toBe(rowsBefore + 1);
+  });
+
+  test("who may: readers look, maintainers restore a project, only admins an organization", async () => {
+    const past = "2020-01-01T00:00:00Z";
+    const level = (
+      who: Who | undefined,
+      path: string,
+      method: string,
+      tail: string,
+      body?: unknown,
+    ) => call(who, method, `${path}/${tail}`, body).then((r) => r.status);
+    expect(await level("carol", base.project(), "GET", `snapshot?at=${past}`)).toBe(200);
+    // a plan compares secrets with their past, so it takes the right to restore
+    expect(await level("carol", base.project(), "GET", `restore-plan?at=${past}`)).toBe(403);
+    expect(await level("bob", base.project(), "GET", `restore-plan?at=${past}`)).toBe(200);
+    expect(await level("bob", base.organization(), "GET", `restore-plan?at=${past}`)).toBe(403);
+    const one = await make(base.project(), { value: "x" });
+    expect(await level("carol", base.project(), "POST", `${one.id}/restore`, { version: 1 })).toBe(
+      403,
+    );
+    expect(await level("carol", base.organization(), "GET", `snapshot?at=${past}`)).toBe(404);
+    expect(await level("carol", base.project(), "POST", "restore", { at: past })).toBe(403);
+    expect(await level("carol", base.environment(), "POST", "restore", { at: past })).toBe(403);
+    expect(await level("bob", base.project(), "POST", "restore", { at: past })).toBe(200);
+    expect(await level("bob", base.environment(), "POST", "restore", { at: past })).toBe(200);
+    expect(await level("bob", base.organization(), "GET", `snapshot?at=${past}`)).toBe(200);
+    expect(await level("bob", base.organization(), "POST", "restore", { at: past })).toBe(403);
+    expect(await level("alice", base.organization(), "POST", "restore", { at: past })).toBe(200);
+    expect(await level("erin", base.project(), "GET", `snapshot?at=${past}`)).toBe(404);
+    expect(await level("erin", base.project(), "POST", "restore", { at: past })).toBe(404);
+    expect(await level(undefined, base.project(), "GET", `snapshot?at=${past}`)).toBe(401);
+  });
+
+  test("needs the master keys, and a body that names a moment and nothing else", async () => {
+    const f = await fresh();
+    const { T } = await timeline(f.environment);
+    const bare = makeApp(undefined);
+    const before = await counts();
+    for (const [method, tail, body] of [
+      ["GET", `snapshot?at=${T}`],
+      ["GET", `restore-plan?at=${T}`],
+      ["POST", "restore", { at: T }],
+    ] as const) {
+      const res = await call("alice", method, `${f.environment}/${tail}`, body, bare);
+      expect([tail, res.status, res.json.code]).toEqual([tail, 503, "secrets_unavailable"]);
+    }
+    expect(await counts()).toEqual(before);
+    for (const body of [
+      {},
+      { at: "yesterday" },
+      { at: "2999-01-01T00:00:00Z" },
+      { at: T, prune: "yes" },
+      { at: T, prune: 1 },
+      { at: T, extra: true },
+    ]) {
+      const res = await call("alice", "POST", `${f.environment}/restore`, body);
+      expect([JSON.stringify(body), res.status]).toEqual([JSON.stringify(body), 422]);
+    }
+    expect(await counts()).toEqual(before);
   });
 });
 

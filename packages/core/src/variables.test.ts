@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   KEY_PATTERN,
   MAX_RESOLVED_LENGTH,
+  planRestore,
   type ResolveIssue,
   resolveVariables,
   type VariableInput,
@@ -619,5 +620,68 @@ describe("properties (seeded, 1500 random chains)", () => {
         ).toBe(true);
       }
     }
+  });
+});
+
+describe("planRestore", () => {
+  const e = (
+    key: string,
+    value: string,
+    kind: VariableKind = "plain",
+    id = `id-${key}-${value}`,
+  ) => ({
+    id,
+    key,
+    kind,
+    value,
+  });
+  const brief = (wanted: ReturnType<typeof e>[], current: ReturnType<typeof e>[]) =>
+    planRestore(wanted, current).map((c) => `${c.change} ${c.key} ${c.kind}`);
+
+  test("says what each key needs, sorted by key, and nothing for what is equal", () => {
+    expect(
+      brief(
+        [e("SAME", "1"), e("CHANGED", "old"), e("GONE", "g", "secret"), e("B_KIND", "x", "secret")],
+        [e("SAME", "1"), e("CHANGED", "new"), e("ADDED", "a", "file"), e("B_KIND", "x", "plain")],
+      ),
+    ).toEqual(
+      [
+        "remove ADDED file",
+        "conflict B_KIND secret",
+        "update CHANGED plain",
+        "create GONE secret",
+      ].sort((a, b) => (a.split(" ")[1] ?? "").localeCompare(b.split(" ")[1] ?? "")),
+    );
+  });
+
+  test("an update carries both entries, a create the old one, a remove the current one", () => {
+    const [update, create, remove] = planRestore(
+      [e("A", "old"), e("B", "b")],
+      [e("A", "new"), e("C", "c")],
+    );
+    expect(update).toMatchObject({
+      change: "update",
+      current: { value: "new" },
+      wanted: { value: "old" },
+    });
+    expect(create).toMatchObject({ change: "create", wanted: { value: "b" } });
+    expect(remove).toMatchObject({ change: "remove", current: { value: "c" } });
+    expect(create).not.toHaveProperty("current");
+    expect(remove).not.toHaveProperty("then");
+  });
+
+  test("a restore leaves nothing to restore: same values, same kinds, in any order", () => {
+    const set = [e("A", "1"), e("B", "2", "secret"), e("C", "3", "file")];
+    expect(planRestore(set, [...set].reverse())).toEqual([]);
+    expect(planRestore([], [])).toEqual([]);
+    expect(brief([], set)).toEqual(["remove A plain", "remove B secret", "remove C file"]);
+    expect(brief(set, [])).toEqual(["create A plain", "create B secret", "create C file"]);
+  });
+
+  test("a value equal in text but not in kind is a conflict, and kinds are compared before values", () => {
+    expect(brief([e("K", "same", "secret")], [e("K", "same", "plain")])).toEqual([
+      "conflict K secret",
+    ]);
+    expect(brief([e("K", "a", "secret")], [e("K", "b", "plain")])).toEqual(["conflict K secret"]);
   });
 });
