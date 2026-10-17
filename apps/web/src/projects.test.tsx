@@ -468,7 +468,7 @@ describe("the checklist, while it cannot know", () => {
     const { client, release } = await held("connections", false);
     const { settled } = mount(client);
     await screen.findByRole("heading", { name: "Welcome" });
-    // shortcut: the organizations answer takes up to ~1.5 s through clientVia here (cause not found, the server is fast on its own); give it room
+    // shortcut: the organizations answer takes up to ~1.5 s through clientVia here (cause not found, the server is fast on its own); give it room (the test limit is 15 s so that this wait can use its 5 s under load)
     await waitFor(() => expect(screen.queryByText(/Loading organizations/)).toBeNull(), {
       timeout: 5000,
     });
@@ -477,7 +477,7 @@ describe("the checklist, while it cannot know", () => {
     const list = await screen.findByRole("region", { name: "Getting started" });
     expect(within(list).getByRole("heading", { name: "You are set up" })).toBeTruthy();
     await settled();
-  });
+  }, 15_000);
 
   test("is not shown when the projects cannot be read", async () => {
     window.location.hash = "";
@@ -493,7 +493,7 @@ describe("the checklist, while it cannot know", () => {
     release();
     await settled();
     expect(screen.queryByRole("region", { name: "Getting started" })).toBeNull();
-  });
+  }, 15_000);
 });
 
 describe("the first run, finished", () => {

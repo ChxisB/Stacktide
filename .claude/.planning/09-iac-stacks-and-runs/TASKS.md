@@ -4,7 +4,7 @@
 Do: `stack.yml` zod schema; `stacks` table; scanner that reads the repo tree and markers (`packages/iac`); reports stacks missing `backend "http" {}`.
 Done when: fixture trees cover valid, invalid, duplicate-name and nested stacks.
 
-### IAC-2 - Dependency DAG  `[ ]` M - deps: FND-3
+### IAC-2 - Dependency DAG  `[x]` M - deps: FND-3
 Do: pure graph build, cycle detection with readable path, topological waves, `affected(changed)` with transitive dependents.
 Done when: table + property tests (random DAGs) prove wave order, cycle errors and dependent closure.
 
