@@ -3,8 +3,8 @@ import { createDb, pingDb } from "@orch/db";
 import { z } from "zod";
 import { createApp } from "./app";
 import { accessEnv, authEnv, authFromEnv } from "./auth-config";
+import { callerPrincipal } from "./credentials";
 import { devPrincipal } from "./principal";
-import { sessionPrincipal } from "./session";
 
 const config = loadConfig(
   z
@@ -41,7 +41,7 @@ const app = createApp({
   db,
   principal: devAuth
     ? devPrincipal
-    : sessionPrincipal({ db, platformAdmins: config.ORCH_PLATFORM_ADMIN_GITLAB_IDS }),
+    : callerPrincipal({ db, platformAdmins: config.ORCH_PLATFORM_ADMIN_GITLAB_IDS }),
   ready: () => pingDb(db),
   auth: authFromEnv(config),
 }).listen({

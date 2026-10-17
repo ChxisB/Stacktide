@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   can,
   isAction,
+  isScope,
   type OrgRole,
   type ProjectRole,
   RULES,
@@ -256,5 +257,45 @@ describe("visibleOrganizations", () => {
     expect(visibleOrganizations(token()).length).toBe(0);
     expect(visibleOrganizations(token(["project.read"])).length).toBe(0);
     expect(visibleOrganizations(token(["organization.read"])).sort()).toEqual(["org-a", "org-b"]);
+  });
+});
+
+describe("isScope", () => {
+  test("is an action, a resource wildcard of an existing resource, or everything", () => {
+    for (const ok of ["*", ...Object.keys(RULES), "project.*", "organization.*", "secret.*"]) {
+      expect([ok, isScope(ok)]).toEqual([ok, true]);
+    }
+  });
+
+  test("is nothing else: no typos, no patterns, no empty parts", () => {
+    for (const bad of [
+      "",
+      ".",
+      ".*",
+      "project",
+      "project.",
+      "project.reed",
+      "proj.*",
+      "proj*",
+      "**",
+      "*.read",
+      "project.read.*",
+      "constructor",
+      "__proto__",
+      "nothing.*",
+    ]) {
+      expect([bad, isScope(bad)]).toEqual([bad, false]);
+    }
+  });
+
+  test("every scope it accepts is understood by can()", () => {
+    const subject: Subject = {
+      kind: "token",
+      orgRoles: { [ORG]: "owner" },
+      projectRoles: {},
+      scopes: ["project.*"],
+    };
+    expect(can(subject, "project.read", res)).toBe(true);
+    expect(can(subject, "environment.read", res)).toBe(false);
   });
 });

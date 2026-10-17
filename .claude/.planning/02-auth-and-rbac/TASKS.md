@@ -12,7 +12,7 @@ Done when: a table-driven test covers every role x action pair; unknown action d
 Do: Replace the dev principal stub; route-level `guard(action)`; unauthenticated -> 401, unauthorised -> 403 (404 where existence must not leak).
 Done when: a test enumerates every registered route and fails if any lacks a guard or an explicit `public` marker.
 
-### AUTH-4 - API tokens  `[ ]` M - deps: AUTH-3
+### AUTH-4 - API tokens  `[x]` M - deps: AUTH-3
 Do: `api_tokens` table; create (shown once), list, revoke; hashed storage with lookup prefix; scopes; expiry; `last_used_at`.
 Done when: tests prove the plaintext is never stored or logged, expired/revoked tokens fail, and scopes narrow access.
 

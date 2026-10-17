@@ -28,3 +28,27 @@ export const sessions = pgTable(
   },
   (t) => [index("sessions_user_idx").on(t.userId), index("sessions_expires_idx").on(t.expiresAt)],
 );
+
+/**
+ * A personal API token. The token is `orch_<id>.<secret>`; only its SHA-256 is stored, and `prefix`
+ * (`orch_<id>`) is what lists show so a token can be recognised without being revealed. It acts as
+ * its owner, narrowed to `scopes`. Always expires; revoking keeps the row.
+ */
+export const apiTokens = pgTable(
+  "api_tokens",
+  {
+    id: id(),
+    userId: uuid()
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    prefix: text().notNull(),
+    tokenHash: text().notNull().unique("api_tokens_token_hash_key"),
+    scopes: text().array().notNull(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    lastUsedAt: timestamp({ withTimezone: true }),
+    revokedAt: timestamp({ withTimezone: true }),
+    ...timestamps(),
+  },
+  (t) => [index("api_tokens_user_idx").on(t.userId)],
+);

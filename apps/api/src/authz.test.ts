@@ -163,13 +163,22 @@ describe("coverage", () => {
       "GET /ready",
       "POST /auth/logout",
     ]);
-    expect(marked("x-signed-in")).toEqual(["GET /organizations"]);
+    expect(marked("x-signed-in").sort()).toEqual([
+      "DELETE /tokens/:tokenId",
+      "GET /organizations",
+      "GET /tokens",
+      "POST /tokens",
+    ]);
   });
 });
 
 describe("without a session", () => {
   const fill = (p: string) =>
-    p.replace(":orgId", ids.o1).replace(":projectId", ids.p1).replace(":envId", ids.e1);
+    p
+      .replace(":orgId", ids.o1)
+      .replace(":projectId", ids.p1)
+      .replace(":envId", ids.e1)
+      .replace(":tokenId", crypto.randomUUID());
 
   test("every route that is not public answers 401", async () => {
     const open = new Set(["GET /openapi/json"]);
@@ -177,7 +186,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(15);
+    expect(routes.length).toBe(18);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

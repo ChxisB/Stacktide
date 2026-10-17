@@ -13,3 +13,18 @@ export function safeEqual(a: string, b: string): boolean {
   const [x, y] = [hashToken(a), hashToken(b)];
   return timingSafeEqual(Buffer.from(x), Buffer.from(y));
 }
+
+const API_TOKEN = /^orch_[A-Za-z0-9_-]{8}\.[A-Za-z0-9_-]{43}$/;
+
+/** Does `value` have the shape of an API token? Anything else is not worth a database lookup. */
+export const isApiToken = (value: string) => API_TOKEN.test(value);
+
+/**
+ * A new API token, `orch_<8 random chars>.<256 random bits>`: the plaintext (shown once), the
+ * `prefix` lists show to recognise it, and the `tokenHash` that is stored.
+ */
+export function newApiToken() {
+  const prefix = `orch_${randomToken(6)}`;
+  const token = `${prefix}.${randomToken(32)}`;
+  return { token, prefix, tokenHash: hashToken(token) };
+}

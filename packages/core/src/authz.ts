@@ -38,6 +38,9 @@ export type Action = keyof typeof RULES;
 
 export const isAction = (action: string): action is Action => Object.hasOwn(RULES, action);
 
+/** A scope a token may carry: one that allows at least one action. */
+export const isScope = (scope: string) => Object.keys(RULES).some((a) => scopeMatches(scope, a));
+
 /** Who is asking, as resolved by the caller from the session, token or CI claims. */
 export interface Subject {
   kind: "user" | "token" | "ci";
@@ -70,14 +73,15 @@ const KINDS: readonly string[] = ["user", "token", "ci"];
 const own = <T>(record: Readonly<Record<string, T>> | undefined, key: string | undefined) =>
   record && key !== undefined && Object.hasOwn(record, key) ? record[key] : undefined;
 
+/** Does `scope` allow `action`? An action, `resource.*` or `*`: nothing else is a pattern. */
+const scopeMatches = (scope: string, action: string) =>
+  scope === "*" ||
+  scope === action ||
+  (scope.endsWith(".*") && action.startsWith(scope.slice(0, -1)));
+
 // Scopes may come from decoded claims: anything that is not a list of strings allows nothing.
 const inScope = (scopes: unknown, action: string) =>
-  Array.isArray(scopes) &&
-  scopes.some(
-    (s) =>
-      typeof s === "string" &&
-      (s === "*" || s === action || (s.endsWith(".*") && action.startsWith(s.slice(0, -1)))),
-  );
+  Array.isArray(scopes) && scopes.some((s) => typeof s === "string" && scopeMatches(s, action));
 
 /** Pure and total: bad input, an unknown action or an unknown role is a no. */
 export function can(subject: Subject, action: string, resource: Resource = {}): boolean {

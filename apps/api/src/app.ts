@@ -10,6 +10,7 @@ import { type AuthDeps, authRoutes } from "./routes/auth";
 import { environmentRoutes } from "./routes/environments";
 import { organizationRoutes } from "./routes/organizations";
 import { projectRoutes } from "./routes/projects";
+import { tokenRoutes } from "./routes/tokens";
 
 export type { Problem } from "./routes/shared";
 
@@ -82,7 +83,8 @@ export function createApp(deps: AppDeps) {
     .use(authRoutes(deps))
     .use(organizationRoutes(deps))
     .use(projectRoutes(deps))
-    .use(environmentRoutes(deps));
+    .use(environmentRoutes(deps))
+    .use(tokenRoutes(deps));
   const open = unguardedRoutes(app, DOCS);
   if (open.length > 0) throw new Error(`routes without a guard: ${open.join(", ")}`);
   return app;

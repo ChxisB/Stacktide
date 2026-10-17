@@ -1,8 +1,9 @@
-import { and, eq, gt, sql } from "drizzle-orm";
-import type { Executor } from "./repo";
-import { sessions, users } from "./schema";
+import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
+import type { Executor, Page } from "./repo";
+import { apiTokens, sessions, users } from "./schema";
 
 export type User = typeof users.$inferSelect;
+export type ApiToken = typeof apiTokens.$inferSelect;
 
 /** A refused input. The message never carries the value. */
 export class AuthStoreError extends Error {
@@ -84,5 +85,95 @@ export async function deleteSession(
     .delete(sessions)
     .where(eq(sessions.tokenHash, tokenHash))
     .returning({ sessionId: sessions.id, userId: sessions.userId });
+  return row;
+}
+
+export const MAX_TOKEN_TTL_DAYS = 365;
+const MAX_TOKEN_TTL_MS = MAX_TOKEN_TTL_DAYS * 86_400_000;
+
+/** Stores a token by its hash. It always expires `ttlMs` from now (database clock), within a year. */
+export async function createApiToken(
+  db: Executor,
+  input: {
+    userId: string;
+    name: string;
+    prefix: string;
+    tokenHash: string;
+    scopes: readonly string[];
+    ttlMs: number;
+  },
+): Promise<ApiToken> {
+  checkHash(input.tokenHash);
+  if (!Number.isInteger(input.ttlMs) || input.ttlMs < 1000 || input.ttlMs > MAX_TOKEN_TTL_MS) {
+    throw new AuthStoreError("token ttl must be between one second and 365 days");
+  }
+  const { ttlMs, scopes, ...rest } = input;
+  const [row] = await db
+    .insert(apiTokens)
+    .values({
+      ...rest,
+      scopes: [...scopes],
+      expiresAt: sql`now() + make_interval(secs => ${ttlMs / 1000})`,
+    })
+    .returning();
+  if (!row) throw new Error("insert returned no row");
+  return row;
+}
+
+/**
+ * The live token behind a hash (not revoked, not expired) and its owner, or nothing. Records the
+ * use, at most once a minute, so a busy token costs one query and no write on most requests.
+ */
+export async function useApiToken(
+  db: Executor,
+  tokenHash: string,
+): Promise<{ token: ApiToken; user: User } | undefined> {
+  checkHash(tokenHash);
+  const [row] = await db
+    .select({
+      token: apiTokens,
+      user: users,
+      stale: sql<boolean>`${apiTokens.lastUsedAt} is null or ${apiTokens.lastUsedAt} < now() - interval '1 minute'`,
+    })
+    .from(apiTokens)
+    .innerJoin(users, eq(users.id, apiTokens.userId))
+    .where(
+      and(
+        eq(apiTokens.tokenHash, tokenHash),
+        isNull(apiTokens.revokedAt),
+        gt(apiTokens.expiresAt, sql`now()`),
+      ),
+    );
+  if (!row) return undefined;
+  if (row.stale) {
+    await db
+      .update(apiTokens)
+      .set({ lastUsedAt: sql`now()` })
+      .where(eq(apiTokens.id, row.token.id));
+  }
+  return { token: row.token, user: row.user };
+}
+
+/** The user's tokens, revoked and expired ones included, oldest first. */
+export function listApiTokens(db: Executor, userId: string, page: Page<string>) {
+  return db
+    .select()
+    .from(apiTokens)
+    .where(and(eq(apiTokens.userId, userId), page.after ? gt(apiTokens.id, page.after) : undefined))
+    .orderBy(asc(apiTokens.id))
+    .limit(page.limit);
+}
+
+/** Revokes the user's own token. Nothing for an unknown, foreign or already revoked one. */
+export async function revokeApiToken(
+  db: Executor,
+  userId: string,
+  id: string,
+): Promise<ApiToken | undefined> {
+  const [row] = await db
+    .update(apiTokens)
+    .set({ revokedAt: sql`now()` })
+    .where(and(eq(apiTokens.id, id), eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)))
+    .returning();
   return row;
 }

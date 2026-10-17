@@ -17,25 +17,25 @@ export interface SessionOptions {
   platformAdmins?: readonly number[];
 }
 
-/** The signed-in user behind the `orch_session` cookie, or nobody (no cookie, unknown, ended). */
-export const sessionPrincipal =
+/** What `user` may do, as the subject of a request made as them (by cookie, or by token). */
+export const subjectOf =
   ({
-    db,
     roles = () => ({ orgRoles: {}, projectRoles: {} }),
     platformAdmins = [],
-  }: SessionOptions): PrincipalResolver =>
-  async (request) => {
+  }: Pick<SessionOptions, "roles" | "platformAdmins">) =>
+  async (user: User, kind: Subject["kind"]): Promise<Subject> => ({
+    kind,
+    platformAdmin: platformAdmins.includes(user.gitlabId),
+    ...(await roles(user)),
+  });
+
+/** The signed-in user behind the `orch_session` cookie, or nobody (no cookie, unknown, ended). */
+export const sessionPrincipal = (options: SessionOptions): PrincipalResolver => {
+  const subject = subjectOf(options);
+  return async (request) => {
     const token = readCookie(request, SESSION_COOKIE);
-    const found = token ? await findSession(db, hashToken(token)) : undefined;
+    const found = token ? await findSession(options.db, hashToken(token)) : undefined;
     if (!found) return undefined;
-    const { user } = found;
-    return {
-      id: user.id,
-      kind: "user",
-      subject: {
-        kind: "user",
-        platformAdmin: platformAdmins.includes(user.gitlabId),
-        ...(await roles(user)),
-      },
-    };
+    return { id: found.user.id, kind: "user", subject: await subject(found.user, "user") };
   };
+};

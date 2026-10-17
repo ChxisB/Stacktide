@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { createSession, upsertUser } from "@orch/db";
+import { createApiToken, createSession, upsertUser } from "@orch/db";
 import { createTestDb } from "@orch/db/testing";
-import { hashToken, randomToken } from "./tokens";
+import { hashToken, newApiToken, randomToken } from "./tokens";
 
 const script = fileURLToPath(new URL("./index.ts", import.meta.url));
 const t = await createTestDb();
@@ -98,6 +98,28 @@ describe("api entrypoint", () => {
     expect(
       (await fetch(`${base}/organizations`, { headers: { cookie: "orch_session=x" } })).status,
     ).toBe(401);
+    child.proc.kill("SIGTERM");
+    await child.proc.exited;
+  });
+
+  test("an API token is a caller too, limited to its scopes", async () => {
+    const user = await upsertUser(t.db, { gitlabId: 434343, username: "tk", name: "TK" });
+    const fresh = newApiToken();
+    await createApiToken(t.db, {
+      userId: user.id,
+      name: "t",
+      prefix: fresh.prefix,
+      tokenHash: fresh.tokenHash,
+      scopes: ["organization.read"],
+      ttlMs: 60_000,
+    });
+    const child = start({ DATABASE_URL: t.url, NODE_ENV: "production" });
+    const base = `http://127.0.0.1:${await child.port()}`;
+    const as = (token: string) => ({ headers: { authorization: `Bearer ${token}` } });
+    expect((await fetch(`${base}/organizations`, as(fresh.token))).status).toBe(200);
+    expect((await fetch(`${base}/organizations`, as(newApiToken().token))).status).toBe(401);
+    // Listing tokens is for people: a token, whatever its scopes, is refused.
+    expect((await fetch(`${base}/tokens`, as(fresh.token))).status).toBe(403);
     child.proc.kill("SIGTERM");
     await child.proc.exited;
   });
