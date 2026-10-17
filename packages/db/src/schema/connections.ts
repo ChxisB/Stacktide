@@ -13,6 +13,9 @@ const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
  * base URL). The secret is sealed with the connection's own data key (`secret_enc`), and that key
  * is stored wrapped by a master key (`dek_*`, see ADR-0007): a database read alone yields nothing.
  * Only `connections.ts` in this package reads the three secret columns.
+ *
+ * `webhook_secret_hash` is the SHA-256 of the secret GitLab sends with webhooks (shown once, never
+ * stored); null means the connection takes no webhooks.
  */
 export const connections = pgTable(
   "connections",
@@ -28,6 +31,7 @@ export const connections = pgTable(
     secretEnc: bytea().notNull(),
     dekKeyId: text().notNull(),
     dekWrapped: bytea().notNull(),
+    webhookSecretHash: text(),
     ...timestamps(),
   },
   (t) => [

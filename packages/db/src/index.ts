@@ -15,6 +15,7 @@ export * from "./pg-error";
 export * from "./repo";
 export * from "./schedules";
 export * from "./schema";
+export * from "./webhooks";
 
 /** `max` caps the pool; Bun opens several connections per client by default. */
 export function createDb(url: string, max = 10) {

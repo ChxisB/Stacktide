@@ -171,6 +171,7 @@ describe("coverage", () => {
       [`DELETE ${O}/:orgId/connections/:connectionId`]: "connection.delete",
       [`GET ${O}/:orgId/connections/:connectionId/gitlab-projects`]: "project.import",
       [`POST ${O}/:orgId/connections/:connectionId/imports`]: "project.import",
+      [`POST ${O}/:orgId/connections/:connectionId/webhook-secret`]: "connection.webhook",
     });
   });
 
@@ -185,6 +186,7 @@ describe("coverage", () => {
       "GET /ready",
       "POST /auth/ci/exchange",
       "POST /auth/logout",
+      "POST /webhooks/gitlab/:connectionId",
     ]);
     expect(marked("x-signed-in").sort()).toEqual([
       "DELETE /tokens/:tokenId",
@@ -210,7 +212,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(24);
+    expect(routes.length).toBe(25);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

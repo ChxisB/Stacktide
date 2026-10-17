@@ -15,6 +15,7 @@ import { importRoutes } from "./routes/imports";
 import { organizationRoutes } from "./routes/organizations";
 import { projectRoutes } from "./routes/projects";
 import { tokenRoutes } from "./routes/tokens";
+import { webhookRoutes } from "./routes/webhooks";
 
 export type { Problem } from "./routes/shared";
 
@@ -96,6 +97,7 @@ export function createApp(deps: AppDeps) {
     .use(projectRoutes(deps))
     .use(connectionRoutes(deps))
     .use(importRoutes(deps))
+    .use(webhookRoutes(deps))
     .use(environmentRoutes(deps))
     .use(tokenRoutes(deps));
   const open = unguardedRoutes(app, DOCS);

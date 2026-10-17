@@ -28,6 +28,6 @@ Done when: tests prove the token is encrypted at rest, never returned by any end
 Do: discover projects the connection can see; import selected ones into `projects`; detect type tags from the repo tree; store them.
 Done when: fixture trees for Bun, Node, Docker, Terraform and mixed repos produce the expected tags; re-import is idempotent.
 
-### GL-8 - Webhook receiver  `[ ]` M - deps: GL-6, API-6
+### GL-8 - Webhook receiver  `[x]` M - deps: GL-6, API-6
 Do: `POST /webhooks/gitlab/:connectionId`; constant-time secret check; dedupe by delivery id; enqueue a job per event; ignore unknown events.
 Done when: tests cover bad/missing secret (401), duplicate delivery (processed once), unknown event (accepted, ignored) and handler failure retry.

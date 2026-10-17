@@ -26,7 +26,7 @@ const visible = {
 };
 export type Connection = Omit<
   typeof connections.$inferSelect,
-  "secretEnc" | "dekKeyId" | "dekWrapped"
+  "secretEnc" | "dekKeyId" | "dekWrapped" | "webhookSecretHash"
 >;
 
 // What the secret and the data key are bound to: a ciphertext (or a wrapped key) moved to

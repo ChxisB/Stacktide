@@ -389,12 +389,13 @@ describe("schema conventions", () => {
   });
 
   // Append-only tables have a single timestamp (`at`, `created_at`): an `updated_at` could never change.
-  // ci_tokens rows are written once and then only expire or cascade away.
+  // ci_tokens rows are written once and then only expire or cascade away; webhook_deliveries rows
+  // are inserted once (their job id is set in the same transaction) and cascade away.
   test("every table has created_at and updated_at, append-only ones excepted", async () => {
     const rows = await t.db.execute(sql`
       SELECT t.table_name AS name FROM information_schema.tables t
       WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE'
-        AND t.table_name NOT IN ('audit_events', 'ci_tokens')
+        AND t.table_name NOT IN ('audit_events', 'ci_tokens', 'webhook_deliveries')
         AND (SELECT count(*) FROM information_schema.columns c
              WHERE c.table_schema = 'public' AND c.table_name = t.table_name
                AND c.column_name IN ('created_at', 'updated_at')) < 2`);

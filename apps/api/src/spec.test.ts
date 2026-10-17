@@ -12,7 +12,12 @@ test("every API operation documents its guard, audit action and the problems it 
     paths: Record<string, Record<string, Record<string, unknown>>>;
   };
   const ops = Object.entries(spec.paths)
-    .filter(([path]) => !["/health", "/ready"].includes(path) && !path.startsWith("/auth/"))
+    .filter(
+      ([path]) =>
+        !["/health", "/ready"].includes(path) &&
+        !path.startsWith("/auth/") &&
+        !path.startsWith("/webhooks/"),
+    )
     .flatMap(([path, item]) =>
       Object.entries(item).map(([method, op]) => ({
         id: `${method.toUpperCase()} ${path}`,
@@ -20,7 +25,7 @@ test("every API operation documents its guard, audit action and the problems it 
         op,
       })),
     );
-  expect(ops.length).toBe(24); // 5 per resource (list, get, create, update, delete) + 3 for tokens + 4 for connections + 2 for imports
+  expect(ops.length).toBe(25); // 5 per resource (list, get, create, update, delete) + 3 for tokens + 4 for connections + 2 for imports + 1 webhook secret
   for (const { id, method, op } of ops) {
     const codes = Object.keys(op.responses as object).sort();
     const writes = method !== "get";
@@ -55,6 +60,16 @@ test("the sign-in operations document their answers and audit actions", async ()
   expect(answers("/auth/logout", "post")).toEqual(["204", "401", "415"]);
   expect(spec.paths["/auth/callback"]?.get?.["x-audit"]).toEqual(["auth.login"]);
   expect(spec.paths["/auth/logout"]?.post?.["x-audit"]).toEqual(["auth.logout"]);
+});
+
+test("the webhook receiver is public, documents its answers and has no audit action", async () => {
+  const spec = JSON.parse(await buildSpec()) as {
+    paths: Record<string, Record<string, Record<string, unknown>>>;
+  };
+  const op = spec.paths["/webhooks/gitlab/{connectionId}"]?.post;
+  expect(Object.keys((op?.responses ?? {}) as object).sort()).toEqual(["200", "400", "401", "413"]);
+  expect(op?.["x-public"]).toBeString();
+  expect(op?.["x-audit"]).toBeUndefined();
 });
 
 test("the document is served as JSON, and the docs UI (which loads CDN scripts) is off", async () => {

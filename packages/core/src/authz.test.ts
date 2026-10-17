@@ -60,6 +60,7 @@ const allowed: Record<string, string[]> = {
   "connection.test": ["org admin", "org owner"],
   "project.import": ["org admin", "org owner"],
   "connection.delete": ["org admin", "org owner"],
+  "connection.webhook": ["org admin", "org owner"],
 };
 
 describe("role x action", () => {

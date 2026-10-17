@@ -46,7 +46,7 @@ describe("connections at rest", () => {
     const c = await make((await org()).id);
     const row = await raw(c.id);
     const bytes = (v: unknown) => Buffer.from(v as Uint8Array).toString("latin1");
-    for (const value of Object.values(row)) {
+    for (const value of Object.values(row).filter((v) => v !== null)) {
       expect(JSON.stringify(value) + bytes(value)).not.toContain(TOKEN);
     }
     expect(Buffer.from(row.secret_enc as Uint8Array).length).toBeGreaterThan(TOKEN.length);
