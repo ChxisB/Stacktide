@@ -1,6 +1,17 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: `${KEY}` is the reference syntax under test
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "@orch/api";
@@ -26,7 +37,10 @@ let t: TestDb;
 let app: ReturnType<typeof makeApp>;
 let api: string;
 let dir: string;
-const ids = {} as Record<"org" | "web" | "other" | "dev" | "stage" | "prod" | "bare", string>;
+const ids = {} as Record<
+  "org" | "web" | "other" | "dev" | "stage" | "prod" | "bare" | "nul",
+  string
+>;
 const tokens = {} as Record<"admin" | "maintainer" | "reporter", string>;
 const roleTable = new Map<number, Pick<Subject, "orgRoles" | "projectRoles">>();
 
@@ -69,6 +83,7 @@ beforeAll(async () => {
   ids.dev = await env(ids.web, "dev");
   ids.stage = await env(ids.web, "stage");
   ids.prod = await env(ids.web, "prod");
+  ids.nul = await env(ids.web, "nul");
 
   let gitlabId = 800;
   for (const name of ["admin", "maintainer", "reporter"] as const) {
@@ -128,6 +143,7 @@ beforeAll(async () => {
   await set(`${p}/environments/${ids.dev}`, "TLS_CERT", "file", certificate);
   await set(`${p}/environments/${ids.prod}`, "BROKEN", "plain", "x${NOT_THERE}y");
   await set(`${p}/environments/${ids.prod}`, "FINE", "plain", "1");
+  await set(`${p}/environments/${ids.nul}`, "NULLY", "plain", "a\u0000b");
 });
 afterAll(async () => {
   await app.stop(true);
@@ -143,7 +159,7 @@ interface Run {
   stdin?: string;
   /** Answers `confirm`; without it there is no terminal to ask. */
   answer?: boolean;
-  env?: Record<string, string>;
+  env?: Record<string, string | undefined>;
   /** `pull` and `export` print values on purpose; their stdout is not checked for them. */
   prints?: boolean;
 }
@@ -721,5 +737,232 @@ describe("push", () => {
     expect(res.code).toBe(1);
     expect(res.err[0]).toContain("forbidden");
     expect(await held(ids.stage)).not.toHaveProperty("REP");
+  });
+});
+
+describe("run", () => {
+  const bun = process.execPath;
+  const file = (name: string) => join(dir, name);
+  const exists = (path: string) => Bun.file(path).exists();
+  const until = async (path: string) => {
+    for (let i = 0; i < 200 && !(await exists(path)); i++) await Bun.sleep(50);
+    expect(await exists(path)).toBe(true);
+  };
+  /** A command that writes `$1` to the file named by `$GOT`, to see what it was given. */
+  const dumpEnv = "await Bun.write(process.env.GOT, JSON.stringify(process.env))";
+
+  test("the command gets the resolved variables over its own environment, and its exit code is ours", async () => {
+    const got = file("run-env.json");
+    const res = await orch(["run", ...dev(), "--", bun, "-e", `${dumpEnv}; process.exit(7)`], {
+      env: { GOT: got, KEEP: "mine", REGION: "from-the-parent", UNSET: undefined },
+    });
+    // the command writes its own output; orch adds nothing
+    expect(res).toEqual({ code: 7, out: [], err: [] });
+    const seen = JSON.parse(await readFile(got, "utf8"));
+    expect(seen).toMatchObject(expectedDev);
+    expect(seen.KEEP).toBe("mine");
+    // the token that fetched the variables stays with orch; the API address is not a secret
+    expect(seen).not.toHaveProperty("ORCH_TOKEN");
+    expect(seen.ORCH_API_URL).toBe(api);
+    // a name the parent has unset is not handed on as the text "undefined"
+    expect(seen).not.toHaveProperty("UNSET");
+  });
+
+  test("an exit code passes through, also one made by a signal", async () => {
+    const run = (script: string) => orch(["run", ...dev(), "--", "sh", "-c", script]);
+    expect((await run("exit 0")).code).toBe(0);
+    expect((await run("exit 3")).code).toBe(3);
+    expect((await run("kill -9 $$")).code).toBe(137);
+  });
+
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    test(`${signal} reaches the command, whose answer is ours; nothing stays listening`, async () => {
+      const ready = file(`ready-${signal}`);
+      const got = file(`got-${signal}`);
+      const before = process.listenerCount(signal);
+      const script = `process.on("${signal}", async () => { await Bun.write(process.env.GOT, "${signal}"); process.exit(42); }); await Bun.write(process.env.READY, "1"); setInterval(() => {}, 1000);`;
+      const running = orch(["run", ...dev(), "--", bun, "-e", script], {
+        env: { READY: ready, GOT: got },
+      });
+      await until(ready);
+      expect(process.listenerCount(signal)).toBe(before + 1);
+      process.emit(signal, signal);
+      expect((await running).code).toBe(42);
+      expect(await readFile(got, "utf8")).toBe(signal);
+      expect(process.listenerCount(signal)).toBe(before);
+    });
+  }
+
+  test("nothing is written to disk by orch", async () => {
+    const listing = async () => (await readdir(dir, { recursive: true })).sort();
+    const before = await listing();
+    // the command checks what it was given and writes nothing itself
+    const res = await orch([
+      "run",
+      ...dev(),
+      "--",
+      "sh",
+      "-c",
+      'test "$DB_PASSWORD" = "$1" && test "$REGION" = eu-west-1',
+      "sh",
+      dbPassword,
+    ]);
+    expect(res).toEqual({ code: 0, out: [], err: [] });
+    expect(await listing()).toEqual(before);
+  });
+
+  test("an environment that does not resolve never starts the command, unless told to take the rest", async () => {
+    const got = file("prod-env.json");
+    const refused = await orch(["run", ...at("prod"), "--", bun, "-e", dumpEnv], {
+      env: { GOT: got },
+    });
+    expect(refused.code).toBe(1);
+    expect(refused.err[0]).toContain("does not resolve (missing BROKEN)");
+    expect(await exists(got)).toBe(false);
+
+    const lenient = await orch(
+      ["run", ...at("prod", ["--ignore-issues"]), "--", bun, "-e", dumpEnv],
+      { env: { GOT: got } },
+    );
+    expect(lenient.code).toBe(0);
+    expect(lenient.err[0]).toContain("warning: left out 1 that do not resolve (missing BROKEN)");
+    const seen = JSON.parse(await readFile(got, "utf8"));
+    expect(seen).toMatchObject({ FINE: "1", REGION: "eu-west-1" });
+    expect(seen).not.toHaveProperty("BROKEN");
+  });
+
+  test("without the right to reveal, or a sign-in, or a value an environment can hold, the command never starts", async () => {
+    const got = file("never.txt");
+    const script = ["sh", "-c", 'echo ran > "$GOT"'];
+    const reporter = await orch(["run", ...dev(), "--", ...script], {
+      token: tokens.reporter,
+      env: { GOT: got },
+    });
+    expect(reporter.code).toBe(1);
+    expect(reporter.err[0]).toContain("forbidden");
+    const signedOut = await orch(["run", ...dev(), "--", ...script], {
+      token: undefined,
+      env: { GOT: got },
+    });
+    expect(signedOut.code).toBe(1);
+    expect(signedOut.err[0]).toBe("error: not signed in; run: orch login");
+    const nul = await orch(["run", ...at("nul"), "--", ...script], { env: { GOT: got } });
+    expect(nul.code).toBe(1);
+    expect(nul.err[0]).toBe(
+      "error: NULLY holds a NUL character, which an environment cannot carry",
+    );
+    expect(await exists(got)).toBe(false);
+  });
+
+  test("everything after the first -- is the command's: options, --json and --env included", async () => {
+    const got = file("argv.txt");
+    const res = await orch(
+      [
+        "run",
+        ...dev(),
+        "--",
+        "sh",
+        "-c",
+        'printf "%s\\n" "$@" > "$GOT"',
+        "sh",
+        "--json",
+        "--env",
+        "prod",
+        "-x",
+        "--",
+      ],
+      { env: { GOT: got } },
+    );
+    expect(res.code).toBe(0);
+    expect((await readFile(got, "utf8")).split("\n").slice(0, -1)).toEqual([
+      "--json",
+      "--env",
+      "prod",
+      "-x",
+      "--",
+    ]);
+  });
+
+  test("the command starts in the directory orch was run from", async () => {
+    const work = file("work");
+    await mkdir(work, { recursive: true });
+    const got = file("cwd.txt");
+    await orch(["run", ...dev(), "--", "sh", "-c", 'pwd -P > "$GOT"'], {
+      cwd: work,
+      env: { GOT: got },
+    });
+    expect((await readFile(got, "utf8")).trim()).toBe(await realpath(work));
+  });
+
+  test("a command that is missing or not allowed to run is said, with the shell's exit codes", async () => {
+    const missing = await orch(["run", ...dev(), "--", "orch-no-such-command"]);
+    expect(missing.code).toBe(127);
+    expect(missing.err).toEqual(["error: cannot run 'orch-no-such-command': not found"]);
+    const plain = file("not-executable");
+    await writeFile(plain, "echo hi\n", { mode: 0o644 });
+    const denied = await orch(["run", ...dev(), "--", plain]);
+    expect(denied.code).toBe(126);
+    expect(denied.err).toEqual([`error: cannot run '${plain}': not permitted`]);
+  });
+
+  describe("through the real entry point", () => {
+    const main = join(import.meta.dir, "main.ts");
+    const start = (args: string[], extra: Record<string, string> = {}, stdin?: Response) =>
+      Bun.spawn([bun, main, "run", ...dev(), "--", ...args], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: dir,
+          ORCH_CONFIG: join(dir, "no-config.json"),
+          ORCH_API_URL: api,
+          ORCH_TOKEN: tokens.admin,
+          ...extra,
+        },
+        stdin: stdin ?? "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+    test("the command's own streams and exit code are the process's", async () => {
+      const proc = start(
+        ["sh", "-c", "cat; echo out-$REGION; echo err-$REGION >&2; exit 5"],
+        {},
+        new Response("piped in\n"),
+      );
+      const [out, err, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      expect({ out, err, code }).toEqual({
+        out: "piped in\nout-eu-west-1\n",
+        err: "err-eu-west-1\n",
+        code: 5,
+      });
+    });
+
+    test("a real SIGTERM sent to orch reaches the command", async () => {
+      const ready = file("real-ready");
+      const got = file("real-got");
+      const script = `process.on("SIGTERM", async () => { await Bun.write(process.env.GOT, "term"); process.exit(42); }); await Bun.write(process.env.READY, "1"); setInterval(() => {}, 1000);`;
+      const proc = start([bun, "-e", script], { READY: ready, GOT: got });
+      await until(ready);
+      proc.kill("SIGTERM");
+      expect(await proc.exited).toBe(42);
+      expect(await readFile(got, "utf8")).toBe("term");
+    });
+  });
+
+  test("usage: the command must follow a --, and orch's own words must be options", async () => {
+    for (const argv of [
+      ["run", ...dev(), "true"],
+      ["run", ...dev(), "--"],
+      ["run", ...dev(["stray"]), "--", "true"],
+      ["run", "--bogus", "--", "true"],
+      ["run"],
+    ]) {
+      const res = await orch(argv);
+      expect({ argv, code: res.code }).toEqual({ argv, code: 2 });
+      expect(res.out).toEqual([]);
+    }
   });
 });

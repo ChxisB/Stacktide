@@ -38,8 +38,12 @@ export const say = (ctx: Context, text: string, doc: object) =>
 
 export interface Command {
   summary: string;
-  /** `args` are what follows the command name; a `--` and what follows it are kept for `parse`. */
-  run: (ctx: Context, args: string[]) => Promise<void> | void;
+  /**
+   * `args` are what follows the command name; a `--` and what follows it are kept for `parse`. The
+   * result is the exit code when it is not 0 and not a failure to explain (`run` passes the child's on).
+   */
+  // biome-ignore lint/suspicious/noConfusingVoidType: most commands return nothing
+  run: (ctx: Context, args: string[]) => Promise<number | void> | number | void;
 }
 
 export interface CliDeps
@@ -123,8 +127,11 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   }
   try {
     const { env, cwd, home, stdin, open, confirm } = deps;
-    await command.run({ io, env, cwd, home, stdin, open, confirm, json }, [...rest, ...tail]);
-    return 0;
+    const code = await command.run({ io, env, cwd, home, stdin, open, confirm, json }, [
+      ...rest,
+      ...tail,
+    ]);
+    return typeof code === "number" ? code : 0;
   } catch (e) {
     if (e instanceof CliError) {
       fail(e.message);

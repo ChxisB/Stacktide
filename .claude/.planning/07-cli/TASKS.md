@@ -12,7 +12,7 @@ Done when: tests against a stubbed server cover success, denied login, expired t
 Do: `pull`/`export` in dotenv, json, shell formats; `push` with a diff preview and confirmation (`--yes` for CI).
 Done when: tests cover each format's quoting/escaping edge cases and that `push` previews without sending values to the terminal.
 
-### CLI-4 - `run --`  `[ ]` S - deps: CLI-3
+### CLI-4 - `run --`  `[x]` S - deps: CLI-3
 Do: spawn the command with the resolved environment, forward signals, return its exit code.
 Done when: tests cover exit-code passthrough, SIGTERM forwarding and that nothing is written to disk.
 

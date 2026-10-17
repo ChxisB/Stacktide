@@ -292,8 +292,68 @@ const push: Command = {
   },
 };
 
+const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+const runCommand: Command = {
+  summary:
+    "run a command with an environment's variables, kept off disk, exiting as it does (126/127 if it cannot start): orch run [options] -- <command> [args]",
+  async run(ctx, args) {
+    const usage = () => new CliError("usage: orch run [options] -- <command> [args...]", 2);
+    // the command and its words are everything after the first `--`, so none of them is ours
+    const split = args.indexOf("--");
+    if (split === -1) throw usage();
+    const { values, positionals } = parse(args.slice(0, split), {
+      ...targetOptions,
+      "ignore-issues": { type: "boolean" },
+    });
+    noExtra(positionals);
+    const [command, ...rest] = args.slice(split + 1);
+    if (!command) throw usage();
+
+    const { pairs } = await loadEnvironment(ctx, values);
+    const nul = pairs.find((p) => p.value.includes("\0"));
+    if (nul)
+      throw new CliError(`${nul.key} holds a NUL character, which an environment cannot carry`);
+    // fromEntries, not assignment: a variable called `__proto__` must stay a variable. The token that
+    // fetched them is not handed on: a command (and what it runs) has no need to call the API as the user.
+    const env = Object.fromEntries([
+      ...Object.entries(ctx.env).filter(([name]) => name !== "ORCH_TOKEN"),
+      ...pairs.map(({ key, value }) => [key, value] as const),
+    ]);
+
+    // Installed before the spawn: with no handler a SIGTERM kills orch and leaves the command running.
+    // Handlers run on a later turn of the event loop, by when the (synchronous) spawn has finished.
+    let child: Bun.Subprocess | undefined;
+    // shortcut: in a terminal Ctrl-C reaches the child itself and is passed on once more here; upgrade
+    // if a program is found that takes the second SIGINT as "stop now"
+    const relays = FORWARDED.map((signal) => [signal, () => child?.kill(signal)] as const);
+    for (const [signal, relay] of relays) process.on(signal, relay);
+    try {
+      try {
+        child = Bun.spawn([command, ...rest], {
+          cwd: ctx.cwd,
+          env,
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        });
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") throw new CliError(`cannot run '${command}': not found`, 127);
+        if (code === "EACCES") throw new CliError(`cannot run '${command}': not permitted`, 126);
+        throw new CliError(`cannot run '${command}'`);
+      }
+      // a child that dies of a signal ends as 128 + the signal, like a shell reports it
+      return await child.exited;
+    } finally {
+      for (const [signal, relay] of relays) process.off(signal, relay);
+    }
+  },
+};
+
 export const varsCommands = (): Record<string, Command> => ({
   pull,
   export: exportCommand,
   push,
+  run: runCommand,
 });
