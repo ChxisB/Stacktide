@@ -24,7 +24,7 @@ Done when: tests prove the plan view has no value-rendering path for secrets.
 Do: detect -> select -> generated params form -> rendered diff and lint result -> Create MR; link to the MR.
 Done when: tests cover missing-variable warnings, lint errors blocking creation, and re-run updating the same MR.
 
-### UI-7 - Pipelines dashboard  `[ ]` S - deps: UI-1, PIPE-8
+### UI-7 - Pipelines dashboard  `[x]` S - deps: UI-1, PIPE-8
 Do: latest pipeline per project/environment, status, failure reason, retry.
 Done when: tests cover each status and an empty state.
 

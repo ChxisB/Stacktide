@@ -324,3 +324,19 @@ code.revealed {
 .diff-del {
   color: var(--danger);
 }
+.status-ok {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.status-bad {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.status-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.status-quiet {
+  color: var(--muted);
+  border-color: var(--muted);
+}

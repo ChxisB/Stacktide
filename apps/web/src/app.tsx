@@ -7,6 +7,7 @@ import { Checklist } from "./onboarding";
 import { OrgProvider, RequireOrg } from "./org";
 import { PipelinePage } from "./pipeline";
 import { ProjectsPage } from "./projects";
+import { RunsPage } from "./runs";
 import { type Page, Shell } from "./shell";
 import { SyncPage } from "./sync";
 import { VariablesPage } from "./variables";
@@ -46,6 +47,13 @@ const Pipeline = () => (
   </>
 );
 
+const Status = () => (
+  <>
+    <h1>Pipeline status</h1>
+    <RequireOrg>{(org) => <RunsPage key={org.id} orgId={org.id} />}</RequireOrg>
+  </>
+);
+
 /** The pages, in navigation order; the first is home. Each screen adds itself here. */
 const pages: readonly Page[] = [
   { path: "", label: "Home", element: <Home /> },
@@ -53,6 +61,7 @@ const pages: readonly Page[] = [
   { path: "variables", label: "Variables", element: <Variables /> },
   { path: "sync", label: "Sync", element: <Sync /> },
   { path: "pipeline", label: "Pipeline", element: <Pipeline /> },
+  { path: "status", label: "Status", element: <Status /> },
 ];
 
 export const newQueryClient = () =>
