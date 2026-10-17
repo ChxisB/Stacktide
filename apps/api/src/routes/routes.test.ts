@@ -566,6 +566,9 @@ describe("audit coverage", () => {
         "pipeline.upgrade",
         "pipeline.apply", // the same row, written for each project of an upgrade
         "pipeline.retry",
+        // the environment's resolved set with its values: a row for each secret revealed, and one for the request
+        "variable.reveal",
+        "variable.export",
         ...["organization", "project", "environment", "sync_target"].flatMap((r) =>
           ["create", "update", "delete"].map((v) => `${r}.${v}`),
         ),

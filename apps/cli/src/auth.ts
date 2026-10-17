@@ -1,5 +1,5 @@
 import { apiUrlOf, call, clientFor, resolveApi } from "./api";
-import { CliError, type Command, type Context, parse } from "./cli";
+import { CliError, type Command, type Context, parse, say } from "./cli";
 import { configPath, loadConfig, saveConfig } from "./config";
 
 const TOKEN = /^[A-Za-z0-9._-]{8,200}$/;
@@ -9,9 +9,6 @@ const randomToken = (bytes: number) =>
   Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))).toString("base64url");
 const sha256 = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("base64url");
 const same = (a: string, b: string) => sha256(a) === sha256(b);
-
-const say = (ctx: Context, text: string, doc: object) =>
-  ctx.io.out(ctx.json ? JSON.stringify(doc) : text);
 
 const page = (status: number, text: string) =>
   new Response(text, {

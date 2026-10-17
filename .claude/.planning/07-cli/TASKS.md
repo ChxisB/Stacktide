@@ -8,7 +8,7 @@ Done when: `orch --version` runs from the compiled binary; config-file permissio
 Do: browser login with loopback callback and a paste-token fallback; store the token; `whoami` prints principal and org.
 Done when: tests against a stubbed server cover success, denied login, expired token and the token never printed.
 
-### CLI-3 - Pull, export, push  `[ ]` M - deps: CLI-2, VAR-4
+### CLI-3 - Pull, export, push  `[x]` M - deps: CLI-2, VAR-4
 Do: `pull`/`export` in dotenv, json, shell formats; `push` with a diff preview and confirmation (`--yes` for CI).
 Done when: tests cover each format's quoting/escaping edge cases and that `push` previews without sending values to the terminal.
 

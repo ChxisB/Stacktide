@@ -79,6 +79,7 @@ const ctx = (env: Record<string, string>): Context => ({
   home: dir,
   stdin: async () => "",
   open: async () => {},
+  confirm: async () => false,
   json: false,
 });
 

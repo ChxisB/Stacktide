@@ -26,9 +26,15 @@ export interface Context {
   stdin: () => Promise<string>;
   /** Shows a URL in the user's browser; it may fail, so callers also print the URL. */
   open: (url: string) => Promise<void>;
+  /** Asks the user a yes/no question on the terminal; refuses (exit 2) when there is no terminal to ask. */
+  confirm: (question: string) => Promise<boolean>;
   /** `--json`: commands print one JSON document instead of text. */
   json: boolean;
 }
+
+/** Prints `text`, or with `--json` the one JSON document `doc`. */
+export const say = (ctx: Context, text: string, doc: object) =>
+  ctx.io.out(ctx.json ? JSON.stringify(doc) : text);
 
 export interface Command {
   summary: string;
@@ -36,7 +42,8 @@ export interface Command {
   run: (ctx: Context, args: string[]) => Promise<void> | void;
 }
 
-export interface CliDeps extends Pick<Context, "io" | "env" | "cwd" | "home" | "stdin" | "open"> {
+export interface CliDeps
+  extends Pick<Context, "io" | "env" | "cwd" | "home" | "stdin" | "open" | "confirm"> {
   version: string;
   commands: Record<string, Command>;
 }
@@ -115,8 +122,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
     return 2;
   }
   try {
-    const { env, cwd, home, stdin, open } = deps;
-    await command.run({ io, env, cwd, home, stdin, open, json }, [...rest, ...tail]);
+    const { env, cwd, home, stdin, open, confirm } = deps;
+    await command.run({ io, env, cwd, home, stdin, open, confirm, json }, [...rest, ...tail]);
     return 0;
   } catch (e) {
     if (e instanceof CliError) {

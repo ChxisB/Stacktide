@@ -11,6 +11,7 @@ const run = async (argv: string[], commands: Record<string, Command> = {}) => {
     home: "/home/me",
     stdin: async () => "",
     open: async () => {},
+    confirm: async () => false,
     version: "1.2.3",
     commands,
   });

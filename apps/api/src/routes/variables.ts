@@ -993,6 +993,7 @@ export const variableRoutes = (deps: RouteDeps & { keys?: KeyProvider; logger: L
     .use(levelRoutes(deps, projectLevel))
     .use(levelRoutes(deps, environmentLevel))
     .use(resolvedRoute(deps))
+    .use(exportRoute(deps))
     .use(searchRoute(deps));
 
 /** What an environment sees: the three levels laid over each other, references filled in. */
@@ -1030,6 +1031,93 @@ const resolvedRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger })
         params: z.object({ orgId: z.uuid(), projectId: z.uuid(), envId: z.uuid() }),
         response: { 200: resolvedSchema, ...reads },
         guard: "variable.read",
+      },
+    );
+
+const exportedSchema = z.object({
+  variables: z.array(
+    z.object({
+      key: z.string(),
+      kind: z.enum(VARIABLE_KINDS),
+      /** The resolved value, whatever its kind: this is a reveal. */
+      value: z.string(),
+    }),
+  ),
+  issues: resolvedSchema.shape.issues,
+});
+
+/**
+ * The environment's resolved set with every value, secrets and files included (CLI-3): what
+ * `orch pull`, `export` and `run` need, since the set above holds back each value that is not
+ * plain. It takes the right to reveal a secret in the project (**REVIEW**: the organization's
+ * variables come as the environment's pipelines receive them, not behind `secret.reveal.org`).
+ * The values are read in the transaction that writes the audit rows (one `variable.reveal` for
+ * each secret or file, one `variable.export` for the request): no rows, no values.
+ */
+const exportRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =>
+  new Elysia()
+    .use(auditPlugin(deps.principal))
+    .use(guardPlugin)
+    .get(
+      "/organizations/:orgId/projects/:projectId/environments/:envId/resolved-variables/values",
+      async ({ params: { orgId, projectId, envId }, audit, set }) => {
+        set.headers["cache-control"] = "no-store";
+        const { keys, db } = deps;
+        if (!keys) throw noKeys();
+        if (!(await getEnvironment(db, orgId, projectId, envId))) throw notFound("Environment");
+        const result = await db
+          .transaction(async (tx) => {
+            const chain = await openChain(tx, keys, {
+              organizationId: orgId,
+              projectId,
+              environmentId: envId,
+            });
+            const { variables, issues } = resolveVariables(chain);
+            const versions = new Map(chain.map((c) => [c.id, c.version]));
+            const hidden = variables.filter((v) => v.kind !== "plain");
+            for (const v of hidden) {
+              await audit(tx, {
+                action: "variable.reveal",
+                resourceType: "variable",
+                resourceId: v.id,
+                organizationId: orgId,
+                projectId,
+                metadata: {
+                  level: v.level,
+                  environmentId: envId,
+                  key: v.key,
+                  kind: v.kind,
+                  version: versions.get(v.id),
+                  via: "export",
+                },
+              });
+            }
+            await audit(tx, {
+              action: "variable.export",
+              resourceType: "environment",
+              resourceId: envId,
+              organizationId: orgId,
+              projectId,
+              metadata: {
+                environmentId: envId,
+                count: variables.length,
+                revealedCount: hidden.length,
+                issueCount: issues.length,
+              },
+            });
+            return { variables, issues };
+          })
+          .catch(failing(deps.logger)(set));
+        return {
+          variables: result.variables.map(({ key, kind, value }) => ({ key, kind, value })),
+          issues: result.issues,
+        };
+      },
+      {
+        params: z.object({ orgId: z.uuid(), projectId: z.uuid(), envId: z.uuid() }),
+        response: { 200: exportedSchema, ...reads },
+        audit: ["variable.reveal", "variable.export"],
+        guard: "secret.reveal",
       },
     );
 

@@ -239,6 +239,7 @@ describe("coverage", () => {
       ...variableGuards(`${P}/:projectId/variables`, "variable", "secret.reveal"),
       ...variableGuards(`${E}/:envId/variables`, "variable", "secret.reveal"),
       [`GET ${E}/:envId/resolved-variables`]: "variable.read",
+      [`GET ${E}/:envId/resolved-variables/values`]: "secret.reveal",
       [`POST ${O}/:orgId/variable-search`]: "variable.org.read",
     });
   });
@@ -287,7 +288,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(86);
+    expect(routes.length).toBe(87);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

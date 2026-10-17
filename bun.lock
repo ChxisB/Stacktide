@@ -37,6 +37,7 @@
       "devDependencies": {
         "@orch/api": "workspace:*",
         "@orch/core": "workspace:*",
+        "@orch/crypto": "workspace:*",
         "@orch/db": "workspace:*",
         "drizzle-orm": "0.45.4",
       },

@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { homedir } from "node:os";
+import { createInterface } from "node:readline/promises";
 import pkg from "../package.json" with { type: "json" };
-import { runCli } from "./cli";
+import { CliError, runCli } from "./cli";
 import { commands } from "./commands";
 import { openCommand } from "./open";
 
@@ -20,6 +21,17 @@ process.exitCode = await runCli(process.argv.slice(2), {
       stdout: "ignore",
       stderr: "ignore",
     }).exited;
+  },
+  confirm: async (question) => {
+    if (!process.stdin.isTTY || !process.stderr.isTTY) {
+      throw new CliError("cannot ask for confirmation without a terminal; pass --yes", 2);
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    try {
+      return /^y(es)?$/i.test((await rl.question(`${question} [y/N] `)).trim());
+    } finally {
+      rl.close();
+    }
   },
   version: pkg.version,
   commands,

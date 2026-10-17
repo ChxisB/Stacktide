@@ -77,6 +77,7 @@ async function orch(argv: string[], options: Run = {}) {
     open: async (url) => {
       await options.open?.(url);
     },
+    confirm: async () => false,
     version: "0.0.0",
     commands: authCommands({ timeoutMs: options.timeoutMs ?? 5000 }),
   });
