@@ -32,6 +32,7 @@ Done when: tests cover each status and an empty state.
 Do: connections, members/roles view, API tokens (create shows once), audit log viewer once GOV-1 exists.
 Done when: token creation shows the value exactly once; role-restricted screens hide for viewers.
 
-### UI-9 - End-to-end smoke  `[ ]` M - deps: UI-6, UI-5
+### UI-9 - End-to-end smoke  `[!]` M - deps: UI-6, UI-5
 Do: Playwright happy path against the mock GitLab backend in CI.
 Done when: the scripted journey in Acceptance passes in the pipeline.
+Blocked: the journey is built and passing as `apps/web/src/journey.test.tsx` (happy-dom, the real API and database, the mock GitLab; no new dependency). Remaining human steps: approve Playwright (a heavy dependency: a browser download in CI), port the journey to it, add the CI job and see it pass on a real pipeline (needs FND-6 verified).
