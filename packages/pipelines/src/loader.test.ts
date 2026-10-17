@@ -109,10 +109,42 @@ describe("loadTemplates", () => {
       "c/1.0.0/pipeline.yml": "",
     });
     expect(problems).toEqual([
-      "a/1.0.0: pipeline.yml is not YAML",
-      "b/1.0.0: pipeline.yml is not a mapping",
-      "c/1.0.0: pipeline.yml is not a mapping",
+      expect.stringMatching(/^a\/1\.0\.0: pipeline\.yml: .+ at line 1, column \d+$/),
+      "b/1.0.0: pipeline.yml: the pipeline is not a mapping",
+      "c/1.0.0: pipeline.yml: the pipeline is not a mapping",
     ]);
+  });
+
+  test("a pipeline and a manifest that disagree about the parameters are refused", async () => {
+    const params = {
+      type: "object",
+      properties: { a: { type: "string", default: "x", pattern: "^[a-z]+$" } },
+    };
+    const problems = await problemsOf({
+      ...template("a", "1.0.0", { params }),
+      ...template("b", "1.0.0", { params }),
+      "b/1.0.0/pipeline.yml": 'x: "{{ params.a }}"\ny: "{{ params.b }}"\nz: {{ params.a }}\n',
+      ...template("c", "1.0.0", { params }),
+      "c/1.0.0/pipeline.yml": 'x: "{{ params.a }}"\n',
+    });
+    expect(problems).toEqual([
+      "a/1.0.0: pipeline.yml: parameter a is declared but never used",
+      "b/1.0.0: pipeline.yml: a map or a list is used as a key: is a placeholder not quoted?",
+    ]);
+  });
+
+  test("a pipeline that uses its parameters loads", async () => {
+    const params = {
+      type: "object",
+      properties: { a: { type: "string", default: "x", pattern: "^[a-z]+$" } },
+    };
+    const found = await loadTemplates(
+      await tree({
+        ...template("a", "1.0.0", { params }),
+        "a/1.0.0/pipeline.yml": 'x: "{{ params.a }}"\n',
+      }),
+    );
+    expect(found).toHaveLength(1);
   });
 
   test("every bad template is reported in one pass, the good ones are not", async () => {

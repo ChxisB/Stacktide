@@ -68,6 +68,9 @@ export const manifestSchema = z
       }
       if (p.maxLength !== undefined && p.type !== "string")
         refuse("maxLength", "only a string has a length");
+      // a string ends up in a script: its template says what shape it may have, there is no free text by default
+      if (p.type === "string" && p.pattern === undefined && p.enum === undefined)
+        refuse("pattern", "a string needs an enum or a pattern: it ends up in a script");
       if ((p.minimum !== undefined || p.maximum !== undefined) && !number) {
         refuse("minimum", "only a number has a range");
       } else if ((p.minimum ?? -Infinity) > (p.maximum ?? Infinity)) {

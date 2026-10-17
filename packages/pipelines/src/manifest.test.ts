@@ -12,7 +12,7 @@ const valid = {
       runner: { type: "string", enum: ["small", "large"], default: "small" },
       retries: { type: "integer", minimum: 0, maximum: 3, default: 0 },
       cache: { type: "boolean", default: true },
-      image: { type: "string" },
+      image: { type: "string", pattern: ".*" },
     },
     required: ["image"],
   },
@@ -55,17 +55,23 @@ describe("manifest", () => {
     ["a parameter without a type", only({}), "params.properties.x.type"],
     [
       "a parameter with a keyword the subset lacks",
-      only({ type: "string", $ref: "#/x" }),
+      only({ type: "string", pattern: ".*", $ref: "#/x" }),
       "params.properties.x",
     ],
     [
       "a parameter name that is not an identifier",
-      { params: { type: "object", properties: { "a b": { type: "string" } }, required: [] } },
+      {
+        params: {
+          type: "object",
+          properties: { "a b": { type: "string", pattern: ".*" } },
+          required: [],
+        },
+      },
       "params.properties.a b",
     ],
     [
       "a required parameter that is not declared",
-      only({ type: "string" }, ["nope"]),
+      only({ type: "string", pattern: ".*" }, ["nope"]),
       "params.required",
     ],
     [
@@ -83,15 +89,19 @@ describe("manifest", () => {
       only({ type: "string", pattern: "^a", default: "b" }),
       "params.properties.x.default",
     ],
-    ["an empty enum", only({ type: "string", enum: [] }), "params.properties.x.enum"],
+    [
+      "an empty enum",
+      only({ type: "string", pattern: ".*", enum: [] }),
+      "params.properties.x.enum",
+    ],
     [
       "a required parameter named like an inherited property",
-      only({ type: "string" }, ["toString"]),
+      only({ type: "string", pattern: ".*" }, ["toString"]),
       "params.required",
     ],
     [
       "a required parameter with a default",
-      only({ type: "string", default: "a" }, ["x"]),
+      only({ type: "string", pattern: ".*", default: "a" }, ["x"]),
       "params.required",
     ],
     [
@@ -109,7 +119,11 @@ describe("manifest", () => {
       only({ type: "integer", maxLength: 3 }),
       "params.properties.x.maxLength",
     ],
-    ["a range on a string", only({ type: "string", minimum: 1 }), "params.properties.x.minimum"],
+    [
+      "a range on a string",
+      only({ type: "string", pattern: ".*", minimum: 1 }),
+      "params.properties.x.minimum",
+    ],
     [
       "a range that is empty",
       only({ type: "integer", minimum: 5, maximum: 1 }),
@@ -143,8 +157,17 @@ describe("manifest", () => {
     ]);
   });
 
-  test("a parameter with only a type is fine", () => {
-    expect(problems({ ...valid, ...only({ type: "string" }) })).toEqual([]);
+  test("a number or a flag needs nothing but its type", () => {
+    expect(problems({ ...valid, ...only({ type: "integer" }) })).toEqual([]);
+    expect(problems({ ...valid, ...only({ type: "boolean" }) })).toEqual([]);
+  });
+
+  test("a string needs an enum or a pattern, either one", () => {
+    expect(problems({ ...valid, ...only({ type: "string" }) })).toEqual([
+      "params.properties.x.pattern: a string needs an enum or a pattern: it ends up in a script",
+    ]);
+    expect(problems({ ...valid, ...only({ type: "string", enum: ["a"] }) })).toEqual([]);
+    expect(problems({ ...valid, ...only({ type: "string", pattern: "^a$" }) })).toEqual([]);
   });
 });
 
@@ -179,7 +202,9 @@ describe("paramsSchema", () => {
     expect(schema.safeParse({ image: "a".repeat(1000) }).success).toBe(true);
     expect(schema.safeParse({ image: "a".repeat(1001) }).success).toBe(false);
     const withLimit = (maxLength: number) =>
-      paramsSchema(manifestSchema.parse({ ...valid, ...only({ type: "string", maxLength }) }));
+      paramsSchema(
+        manifestSchema.parse({ ...valid, ...only({ type: "string", pattern: ".*", maxLength }) }),
+      );
     expect(withLimit(3).safeParse({ x: "abc" }).success).toBe(true);
     expect(withLimit(3).safeParse({ x: "abcd" }).success).toBe(false);
     expect(withLimit(5000).safeParse({ x: "a".repeat(5000) }).success).toBe(true);

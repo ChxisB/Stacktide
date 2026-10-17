@@ -8,7 +8,7 @@ Done when: tests reject malformed manifests, unknown param types and missing fil
 Do: `bun-app` (install, typecheck, lint, test, build), `node-app`, `docker-image` (build and push to the GitLab registry).
 Done when: each template validates and renders with defaults; snapshots committed.
 
-### PIPE-3 - Layered renderer  `[ ]` M - deps: PIPE-1
+### PIPE-3 - Layered renderer  `[x]` M - deps: PIPE-1
 Do: parse template YAML, substitute scalar placeholders, deep-merge layers, emit deterministic YAML (`yaml` package).
 Done when: tests prove precedence of layers, list replacement, that a param containing YAML syntax stays an inert string, and output is byte-stable across runs.
 

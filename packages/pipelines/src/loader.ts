@@ -1,12 +1,13 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { type Manifest, manifestSchema } from "./manifest";
+import { checkPipeline } from "./pipeline";
 
 export const TEMPLATES_DIR = join(import.meta.dir, "..", "templates");
 
 export interface Template {
   manifest: Manifest;
-  /** `pipeline.yml` as written: the renderer (PIPE-3) parses it. */
+  /** `pipeline.yml` as written; `render` parses it. */
   pipeline: string;
 }
 
@@ -32,7 +33,7 @@ const byVersion = (a: string, b: string) => {
 
 /**
  * Loads `<root>/<name>/<version>/{manifest.json,pipeline.yml}` and checks each: the manifest against
- * its schema and against the directory it lives in, the pipeline for existing and being YAML.
+ * its schema and against the directory it lives in, the pipeline for existing and being sound (`checkPipeline`).
  * Sorted by name, then version. Throws a `TemplateError` listing every template that is wrong.
  */
 export async function loadTemplates(root = TEMPLATES_DIR): Promise<Template[]> {
@@ -70,13 +71,7 @@ export async function loadTemplates(root = TEMPLATES_DIR): Promise<Template[]> {
         fail(`manifest version "${manifest.version}" does not match its directory`);
 
       const pipeline = await pipelineFile.text();
-      try {
-        const doc: unknown = Bun.YAML.parse(pipeline);
-        if (typeof doc !== "object" || doc === null || Array.isArray(doc))
-          fail("pipeline.yml is not a mapping");
-      } catch {
-        fail("pipeline.yml is not YAML");
-      }
+      for (const why of checkPipeline(manifest, pipeline)) fail(`pipeline.yml: ${why}`);
       found.push({ manifest, pipeline });
     }
   }
