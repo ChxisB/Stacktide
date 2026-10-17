@@ -15,6 +15,7 @@ import { importRoutes } from "./routes/imports";
 import { organizationRoutes } from "./routes/organizations";
 import { projectRoutes } from "./routes/projects";
 import { tokenRoutes } from "./routes/tokens";
+import { variableRoutes } from "./routes/variables";
 import { webhookRoutes } from "./routes/webhooks";
 
 export type { Problem } from "./routes/shared";
@@ -99,7 +100,8 @@ export function createApp(deps: AppDeps) {
     .use(importRoutes(deps))
     .use(webhookRoutes(deps))
     .use(environmentRoutes(deps))
-    .use(tokenRoutes(deps));
+    .use(tokenRoutes(deps))
+    .use(variableRoutes(deps));
   const open = unguardedRoutes(app, DOCS);
   if (open.length > 0) throw new Error(`routes without a guard: ${open.join(", ")}`);
   return app;

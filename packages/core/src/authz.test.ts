@@ -53,7 +53,17 @@ const allowed: Record<string, string[]> = {
   "environment.create": MAINTAINER_UP,
   "environment.update": MAINTAINER_UP,
   "environment.delete": MAINTAINER_UP,
+  "variable.read": REPORTER_UP,
+  "variable.create": MAINTAINER_UP,
+  "variable.update": MAINTAINER_UP,
+  "variable.delete": MAINTAINER_UP,
   "secret.reveal": MAINTAINER_UP,
+  // The organization's own variables: org rules, so a project maintainer holds none of them.
+  "variable.org.read": ORG_ALL,
+  "variable.org.create": ["org admin", "org owner"],
+  "variable.org.update": ["org admin", "org owner"],
+  "variable.org.delete": ["org admin", "org owner"],
+  "secret.reveal.org": ["org admin", "org owner"],
   // Org rules, so a project maintainer holds none of them.
   "connection.create": ["org admin", "org owner"],
   "connection.read": ["org admin", "org owner"],
@@ -197,6 +207,18 @@ describe("scopes", () => {
     expect(can(reporter, "project.read", res)).toBe(true);
     expect(can(reporter, "project.update", res)).toBe(false);
     expect(can(reporter, "secret.reveal", res)).toBe(false);
+  });
+
+  test("variable.* reads and writes variables but never reveals a secret", () => {
+    const t = token(["variable.*"]);
+    for (const action of ["variable.read", "variable.create", "variable.org.update"]) {
+      expect([action, can(t, action, res)]).toEqual([action, true]);
+    }
+    for (const action of ["secret.reveal", "secret.reveal.org"]) {
+      expect([action, can(t, action, res)]).toEqual([action, false]);
+    }
+    expect(can(token(["secret.*"]), "secret.reveal.org", res)).toBe(true);
+    expect(can(token(["secret.reveal"]), "secret.reveal.org", res)).toBe(false); // not a prefix match
   });
 
   test("resource.* covers that resource's actions only, * covers all", () => {

@@ -32,7 +32,19 @@ export const RULES = {
   "environment.create": { project: "maintainer" },
   "environment.update": { project: "maintainer" },
   "environment.delete": { project: "maintainer" },
+  // Variables: a project's and an environment's need a project role, the organization's an org role.
+  // Reading lists key names and `plain` values; the value of a `secret` or `file` comes out only
+  // through `secret.reveal` (or `secret.reveal.org`), which is audited.
+  "variable.read": { project: "reporter" },
+  "variable.create": { project: "maintainer" },
+  "variable.update": { project: "maintainer" },
+  "variable.delete": { project: "maintainer" },
   "secret.reveal": { project: "maintainer" },
+  "variable.org.read": { org: "viewer" },
+  "variable.org.create": { org: "admin" },
+  "variable.org.update": { org: "admin" },
+  "variable.org.delete": { org: "admin" },
+  "secret.reveal.org": { org: "admin" },
   // Credentials for outside systems: org admins only, also to read (what they connect to is theirs to know).
   "connection.create": { org: "admin" },
   "connection.read": { org: "admin" },

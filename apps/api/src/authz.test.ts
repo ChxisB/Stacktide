@@ -11,6 +11,7 @@ import {
   organizations,
   projects,
   upsertUser,
+  variables,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { count, eq } from "drizzle-orm";
@@ -126,13 +127,36 @@ const writes = () =>
     ],
     ["POST", `${connPath()}/${NO_CONNECTION}/test`],
     ["DELETE", `${connPath()}/${NO_CONNECTION}`],
+    ...[
+      `${orgPath()}/variables`,
+      `${projectPath()}/variables`,
+      `${envPath()}/${ids.e1}/variables`,
+    ].flatMap(
+      (path) =>
+        [
+          ["POST", path, { key: "NOPE", kind: "plain", value: "v" }],
+          ["PATCH", `${path}/${NO_CONNECTION}`, { value: "x" }],
+          ["DELETE", `${path}/${NO_CONNECTION}`],
+        ] as const,
+    ),
   ] as const;
 
 async function rowCounts() {
   const n = async (
-    table: typeof organizations | typeof projects | typeof environments | typeof connections,
+    table:
+      | typeof organizations
+      | typeof projects
+      | typeof environments
+      | typeof connections
+      | typeof variables,
   ) => (await t.db.select({ n: count() }).from(table))[0]?.n;
-  return [await n(organizations), await n(projects), await n(environments), await n(connections)];
+  return [
+    await n(organizations),
+    await n(projects),
+    await n(environments),
+    await n(connections),
+    await n(variables),
+  ];
 }
 
 describe("coverage", () => {
@@ -141,6 +165,17 @@ describe("coverage", () => {
 
   test("every route declares a guard, signedIn or public; only the OpenAPI document is exempt", () => {
     expect(unguardedRoutes(app)).toEqual(["GET /openapi/json"]);
+  });
+
+  /** The seven routes of one level of variables. */
+  const variableGuards = (path: string, family: string, reveal: string) => ({
+    [`GET ${path}`]: `${family}.read`,
+    [`POST ${path}`]: `${family}.create`,
+    [`GET ${path}/:varId`]: `${family}.read`,
+    [`PATCH ${path}/:varId`]: `${family}.update`,
+    [`DELETE ${path}/:varId`]: `${family}.delete`,
+    [`GET ${path}/:varId/versions`]: `${family}.read`,
+    [`GET ${path}/:varId/value`]: reveal,
   });
 
   test("the guard of every route, written out", () => {
@@ -172,6 +207,10 @@ describe("coverage", () => {
       [`GET ${O}/:orgId/connections/:connectionId/gitlab-projects`]: "project.import",
       [`POST ${O}/:orgId/connections/:connectionId/imports`]: "project.import",
       [`POST ${O}/:orgId/connections/:connectionId/webhook-secret`]: "connection.webhook",
+      ...variableGuards(`${O}/:orgId/variables`, "variable.org", "secret.reveal.org"),
+      ...variableGuards(`${P}/:projectId/variables`, "variable", "secret.reveal"),
+      ...variableGuards(`${E}/:envId/variables`, "variable", "secret.reveal"),
+      [`GET ${E}/:envId/resolved-variables`]: "variable.read",
     });
   });
 
@@ -204,6 +243,7 @@ describe("without a session", () => {
       .replace(":projectId", ids.p1)
       .replace(":envId", ids.e1)
       .replace(":tokenId", crypto.randomUUID())
+      .replace(":varId", NO_CONNECTION)
       .replace(":connectionId", NO_CONNECTION);
 
   test("every route that is not public answers 401", async () => {
@@ -212,7 +252,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(25);
+    expect(routes.length).toBe(47);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

@@ -12,7 +12,7 @@ Done when: tests cover unique-key rules, soft delete, append-only versions and t
 Do: Pure functions in `packages/core`: resolve a scope chain into a key/value set for an environment; `${REF}` interpolation with cycle/missing detection; secret-taint propagation.
 Done when: table + property tests cover precedence, override, cycles, missing refs, nested refs and taint.
 
-### VAR-4 - Variables API  `[ ]` M - deps: VAR-2, VAR-3, AUTH-3, API-8
+### VAR-4 - Variables API  `[x]` M - deps: VAR-2, VAR-3, AUTH-3, API-8
 Do: create/update/delete/list/get, resolved-set endpoint per environment, version history, `GET .../value` reveal; every mutation and reveal audited.
 Done when: endpoint tests pass, and a leak test serialises every response and log line of the suite and asserts no secret plaintext appears.
 

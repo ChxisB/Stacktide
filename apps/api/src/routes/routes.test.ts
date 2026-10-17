@@ -560,6 +560,10 @@ describe("audit coverage", () => {
         ...["organization", "project", "environment"].flatMap((r) =>
           ["create", "update", "delete"].map((v) => `${r}.${v}`),
         ),
+        // The same four at each of the three levels of variables.
+        ...["organization", "project", "environment"].flatMap(() =>
+          ["create", "update", "delete", "reveal"].map((v) => `variable.${v}`),
+        ), // one set per level; the action names do not say which level
       ].sort(),
     );
   });

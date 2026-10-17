@@ -76,11 +76,17 @@ const ownerIs = (o: Owner) =>
       : eq(variableKeys.projectId, o.projectId),
   );
 
-/** A live variable of the owner: with an `id`, that one (at any environment of the project). */
-const live = (o: Owner, id?: string) =>
+/**
+ * A live variable of exactly this level (the organization's, a project's without an environment,
+ * or one environment's): with an `id`, that one. An id from another level finds nothing.
+ */
+const live = (s: Scope, id?: string) =>
   and(
-    eq(variables.organizationId, o.organizationId),
-    o.projectId === undefined ? isNull(variables.projectId) : eq(variables.projectId, o.projectId),
+    eq(variables.organizationId, s.organizationId),
+    s.projectId === undefined ? isNull(variables.projectId) : eq(variables.projectId, s.projectId),
+    s.environmentId === undefined
+      ? isNull(variables.environmentId)
+      : eq(variables.environmentId, s.environmentId),
     isNull(variables.deletedAt),
     id === undefined ? undefined : eq(variables.id, id),
   );
@@ -127,7 +133,7 @@ async function sealingKey(db: Executor, keys: KeyProvider, o: Owner): Promise<De
     .returning({ id: variableKeys.id });
   if (made.length > 0) return dek;
   const winner = await findKey(db, keys, o);
-  if (!winner) throw new Error("variable key vanished");
+  if (!winner) throw new Error("variable key vanished, or the project is in another organization");
   return winner;
 }
 
@@ -178,6 +184,8 @@ async function readVariables(db: Executor, keys: KeyProvider, rows: Sealed[]): P
  * owner's data key (made here if need be); the plaintext is written nowhere. A key already used
  * by a live variable at that level is a unique violation (23505), an invalid key or kind a check
  * violation (23514), a project or environment that is not there a foreign key violation (23503).
+ * That last one holds only while the project has no data key: a project that has one, named with
+ * another organization, fails with a plain `Error`, so a caller checks the parent first.
  */
 export async function createVariable(
   db: Executor,
@@ -224,12 +232,12 @@ export async function createVariable(
 export async function setVariable(
   db: Executor,
   keys: KeyProvider,
-  owner: Owner,
+  scope: Scope,
   id: string,
   patch: { value?: string; description?: string; actor: Actor; reason?: string },
 ): Promise<Variable | undefined> {
   if (patch.value === undefined && patch.description === undefined) {
-    return getVariable(db, keys, owner, id);
+    return getVariable(db, keys, scope, id);
   }
   return db.transaction(async (tx) => {
     // The update takes the row lock: concurrent writers get a version each, in turn.
@@ -239,45 +247,55 @@ export async function setVariable(
         ...(patch.description !== undefined && { description: patch.description }),
         ...(patch.value !== undefined && { currentVersion: sql`${variables.currentVersion} + 1` }),
       })
-      .where(live(owner, id))
+      .where(live(scope, id))
       .returning({ version: variables.currentVersion });
     if (!row) return undefined;
     if (patch.value !== undefined) {
-      const dek = await existingKey(tx, keys, owner);
+      const dek = await existingKey(tx, keys, scope);
       await tx.insert(variableVersions).values({
         variableId: id,
         version: row.version,
-        valueEnc: encrypt(dek, patch.value, valueAad(owner, id, row.version)),
+        valueEnc: encrypt(dek, patch.value, valueAad(scope, id, row.version)),
         actorKind: patch.actor.kind,
         actorId: patch.actor.id,
         reason: patch.reason ?? null,
       });
     }
-    return getVariable(tx, keys, owner, id);
+    return getVariable(tx, keys, scope, id);
   });
 }
 
 /** Marks a variable deleted: it is gone from every read and its key is free, its history stays. True if it was live. */
-export async function deleteVariable(db: Executor, owner: Owner, id: string) {
+export async function deleteVariable(db: Executor, scope: Scope, id: string) {
   const rows = await db
     .update(variables)
     .set({ deletedAt: sql`now()` })
-    .where(live(owner, id))
+    .where(live(scope, id))
     .returning({ id: variables.id });
   return rows.length > 0;
+}
+
+/** A live variable of exactly this level, without opening its value: to check it is there and say what it is. */
+export async function describeVariable(
+  db: Executor,
+  scope: Scope,
+  id: string,
+): Promise<VariableInfo | undefined> {
+  const [row] = await db.select(visible).from(variables).where(live(scope, id));
+  return row;
 }
 
 export async function getVariable(
   db: Executor,
   keys: KeyProvider,
-  owner: Owner,
+  scope: Scope,
   id: string,
 ): Promise<Variable | undefined> {
   const rows = await db
     .select(sealedColumns)
     .from(variables)
     .innerJoin(variableVersions, currentVersion)
-    .where(live(owner, id));
+    .where(live(scope, id));
   return (await readVariables(db, keys, rows))[0];
 }
 
@@ -292,15 +310,7 @@ export async function listVariables(
     .select(sealedColumns)
     .from(variables)
     .innerJoin(variableVersions, currentVersion)
-    .where(
-      and(
-        live(scope),
-        scope.environmentId === undefined
-          ? isNull(variables.environmentId)
-          : eq(variables.environmentId, scope.environmentId),
-        page.after ? gt(variables.id, page.after) : undefined,
-      ),
-    )
+    .where(and(live(scope), page.after ? gt(variables.id, page.after) : undefined))
     .orderBy(asc(variables.id))
     .limit(page.limit);
   return readVariables(db, keys, rows);
@@ -309,7 +319,7 @@ export async function listVariables(
 /** A live variable's versions, newest first; `after` is the last version of the previous page. */
 export function listVersions(
   db: Executor,
-  owner: Owner,
+  scope: Scope,
   id: string,
   page: Page<number>,
 ): Promise<VariableVersion[]> {
@@ -323,7 +333,7 @@ export function listVersions(
     })
     .from(variableVersions)
     .innerJoin(variables, eq(variables.id, variableVersions.variableId))
-    .where(and(live(owner, id), page.after ? lt(variableVersions.version, page.after) : undefined))
+    .where(and(live(scope, id), page.after ? lt(variableVersions.version, page.after) : undefined))
     .orderBy(desc(variableVersions.version))
     .limit(page.limit);
 }
@@ -337,7 +347,7 @@ export function listVersions(
 export async function revealVariable(
   db: Executor,
   keys: KeyProvider,
-  owner: Owner,
+  scope: Scope,
   id: string,
   version?: number,
 ): Promise<{ variable: VariableInfo; version: number; value: string } | undefined> {
@@ -351,7 +361,7 @@ export async function revealVariable(
         eq(variableVersions.version, version ?? variables.currentVersion),
       ),
     )
-    .where(live(owner, id));
+    .where(live(scope, id));
   const [row] = rows;
   if (!row) return undefined;
   const [value] = await unseal(db, keys, rows, () => true);

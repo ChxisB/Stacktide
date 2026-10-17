@@ -333,28 +333,40 @@ describe("levels and scoping", () => {
     expect([...first, ...rest].map((v) => v.id)).toEqual(proj.map((v) => v.id).sort());
   });
 
-  test("an id is found only under its own organization and project", async () => {
+  test("an id is found only under its own organization, project and level", async () => {
     const w = await world();
     const w2 = await world();
     const v = await make(w.at.project, { kind: "plain", value: "x" });
     const org = await make(w.at.org, { kind: "plain", value: "y" });
-    const reach = [
+    const e = await make(w.at.env, { kind: "plain", value: "e" });
+    const otherEnv = { ...w.at.env, environmentId: w.other.id };
+    const reach = (hidden: { id: string }, scopes: Scope[]) =>
+      Promise.all(
+        scopes.map(async (scope) => {
+          expect(await getVariable(t.db, keys, scope, hidden.id)).toBeUndefined();
+          expect(await revealVariable(t.db, keys, scope, hidden.id)).toBeUndefined();
+          expect(
+            await setVariable(t.db, keys, scope, hidden.id, { value: "z", actor }),
+          ).toBeUndefined();
+          expect(await deleteVariable(t.db, scope, hidden.id)).toBe(false);
+          expect(await listVersions(t.db, scope, hidden.id, { limit: 5 })).toEqual([]);
+        }),
+      );
+    await reach(v, [
       w2.at.project, // another org and project
       { organizationId: w.org.id, projectId: w2.project.id }, // right org, wrong project
-      w.at.org, // org level does not see project-level rows
-    ];
-    for (const owner of reach) {
-      expect(await getVariable(t.db, keys, owner, v.id)).toBeUndefined();
-      expect(await revealVariable(t.db, keys, owner, v.id)).toBeUndefined();
-      expect(await setVariable(t.db, keys, owner, v.id, { value: "z", actor })).toBeUndefined();
-      expect(await deleteVariable(t.db, owner, v.id)).toBe(false);
-      expect(await listVersions(t.db, owner, v.id, { limit: 5 })).toEqual([]);
-    }
-    expect(await getVariable(t.db, keys, w.at.project, org.id)).toBeUndefined(); // project path, org-level row
+      w.at.org, // the org level does not see project-level rows
+      w.at.env, // nor does an environment
+    ]);
+    await reach(org, [w.at.project, w.at.env]);
+    // Only the environment itself reaches an environment's variable: not its project, not a sibling.
+    await reach(e, [w.at.project, w.at.org, otherEnv, w2.at.env]);
     expect((await getVariable(t.db, keys, w.at.project, v.id))?.value).toBe("x");
-    // An environment-level variable is reached through its project.
-    const e = await make(w.at.env, { kind: "plain", value: "e" });
-    expect((await getVariable(t.db, keys, w.at.project, e.id))?.environmentId).toBe(w.env.id);
+    expect((await getVariable(t.db, keys, w.at.org, org.id))?.value).toBe("y");
+    expect((await getVariable(t.db, keys, w.at.env, e.id))?.environmentId).toBe(w.env.id);
+    // ...and the hidden ones are untouched by all of that.
+    expect((await getVariable(t.db, keys, w.at.env, e.id))?.currentVersion).toBe(1);
+    expect(await listVersions(t.db, w.at.project, v.id, { limit: 5 })).toHaveLength(1);
   });
 });
 

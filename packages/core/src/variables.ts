@@ -3,8 +3,8 @@ export const VARIABLE_KINDS = ["plain", "secret", "file"] as const;
 export type VariableKind = (typeof VARIABLE_KINDS)[number];
 
 /** Least to most specific: the more specific one wins. */
-const LEVELS = ["organization", "project", "environment"] as const;
-export type VariableLevel = (typeof LEVELS)[number];
+export const VARIABLE_LEVELS = ["organization", "project", "environment"] as const;
+export type VariableLevel = (typeof VARIABLE_LEVELS)[number];
 
 // The database check `variables_key_check` says the same: change both together.
 const KEY = "[A-Za-z_][A-Za-z0-9_]{0,254}";
@@ -108,8 +108,8 @@ export function resolveVariables(inputs: readonly VariableInput[]): Resolution {
   const candidates = new Map<string, VariableInput[]>();
   for (const input of inputs) {
     const held = candidates.get(input.key) ?? [];
-    const rank = LEVELS.indexOf(input.level);
-    const heldRank = LEVELS.indexOf(held[0]?.level ?? input.level);
+    const rank = VARIABLE_LEVELS.indexOf(input.level);
+    const heldRank = VARIABLE_LEVELS.indexOf(held[0]?.level ?? input.level);
     if (!held[0] || rank > heldRank) candidates.set(input.key, [input]);
     else if (rank === heldRank) held.push(input);
   }
