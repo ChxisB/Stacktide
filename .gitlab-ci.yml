@@ -1,0 +1,30 @@
+default:
+  image: oven/bun:1.4.2
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+variables:
+  BUN_INSTALL_CACHE_DIR: $CI_PROJECT_DIR/.bun-cache
+  # Throwaway credentials for the ephemeral service container below.
+  POSTGRES_USER: orch
+  POSTGRES_PASSWORD: orch
+  POSTGRES_DB: orch
+  DATABASE_URL: postgres://orch:orch@postgres:5432/orch
+
+check:
+  stage: test
+  services:
+    - name: postgres:18-alpine
+      alias: postgres
+  cache:
+    key:
+      files:
+        - bun.lock
+    paths:
+      - .bun-cache
+  script:
+    - bun install --frozen-lockfile
+    - bun run check

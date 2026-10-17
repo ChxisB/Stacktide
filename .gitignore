@@ -1,6 +1,7 @@
 node_modules
 dist
 coverage
+.bun-cache
 .DS_Store
 
 # secrets: never committed; .env.example is the template

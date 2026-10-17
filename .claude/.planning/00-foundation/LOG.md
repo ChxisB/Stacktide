@@ -36,3 +36,10 @@
 - Security (inline): port bound to `127.0.0.1` only; credentials are throwaway dev defaults, labelled as such in `.env.example`; no real `.env` created.
 - Port 5433, not 5432: this machine already runs other projects' Postgres on 5432/5499 and Redis on 6379 (not touched). The `orch-db-1` container is left running for the following tasks.
 - New deps: none (image `postgres:18-alpine` pulled from Docker Hub).
+
+## 2026-10-17 FND-6 - BLOCKED (human gate: real GitLab)
+- `.gitlab-ci.yml`: `oven/bun:1.4.2`, `check` job (`bun install --frozen-lockfile` then `bun run check`) with `postgres:18-alpine` service aliased `postgres`, bun install cache keyed on `bun.lock`, pipelines only for MRs and the default branch. `.bun-cache` added to `.gitignore`.
+- Verified locally: YAML parses; the job's script lines and variables run green in the pinned image from a clean copy of the committable files (no `node_modules`), on a docker network with a Postgres service reachable at `postgres:5432` (`SELECT 1` ok). `bun.lock` carries the linux-x64 Biome and TypeScript binaries CI needs. Temporary sim containers/network removed.
+- NOT verified: GitLab CI lint and a green pipeline on `main`. Needs a GitLab project and a push (human gate), and `glab` is not installed here. **To finish: create the project, push `main`, run `glab ci lint` (or the UI lint), confirm the pipeline is green, then mark FND-6 `[x]`.**
+- Consequence: CLI-7 and OPS-1 list FND-6 as a dep and stay blocked behind it.
+- Config only: no `/code-review`. Inline security: only throwaway service creds in the file; no secrets, no deploy, no push to default branch.

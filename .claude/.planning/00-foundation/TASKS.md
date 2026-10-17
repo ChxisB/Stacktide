@@ -20,6 +20,7 @@ Done when: tests prove invalid env throws listing all bad keys without values; l
 Do: `docker-compose.yml` with Postgres (pinned major, healthcheck, named volume); `.env.example`; script `dev:db`; README section.
 Done when: `bun run dev:db` then a `psql`/`Bun.sql` `SELECT 1` succeeds using only `.env.example` values.
 
-### FND-6 - Dogfood CI  `[ ]` S - deps: FND-3, FND-5
+### FND-6 - Dogfood CI  `[!]` S - deps: FND-3, FND-5
 Do: `.gitlab-ci.yml`: pinned `oven/bun` image, cached bun install cache, a `check` job with a Postgres service.
 Done when: config passes GitLab CI lint (`glab ci lint` or the UI) and the pipeline is green on `main`.
+Blocked: file written and job proven locally (see LOG). Remaining is outward-facing: create the GitLab project, push `main`, confirm lint + green pipeline. Then flip to `[x]`.
