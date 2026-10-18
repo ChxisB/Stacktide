@@ -1,9 +1,9 @@
 import { z } from "zod";
 import type { AwsCreds, AwsDeps } from "./aws";
-import { failed, kmsKeySchema, label, OWNER_TAG, prefixSchema, regionSchema } from "./aws-common";
+import { failed, kmsKeySchema, OWNER_TAG, prefixSchema, regionSchema } from "./aws-common";
 import { AwsApiError, awsJson } from "./aws-json";
 import { SyncError } from "./errors";
-import { byKeyThenScope } from "./ref";
+import { byKeyThenScope, label } from "./ref";
 import {
   ALL_SCOPES,
   type Capabilities,

@@ -4,6 +4,7 @@ import { envKeyProvider } from "@orch/crypto";
 import {
   auditEvents,
   createConnection,
+  createEnvironment,
   createOrganization,
   createProject,
   createSession,
@@ -14,8 +15,8 @@ import {
   upsertUser,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
-import { OWNER_TAG } from "@orch/sync";
-import { fakeAws } from "@orch/sync/testing";
+import { type Fetch, MANAGED_LABEL, OWNER_TAG, PLAIN_ANNOTATION } from "@orch/sync";
+import { fakeAws, fakeKube } from "@orch/sync/testing";
 import { createApp } from "./app";
 import { callerPrincipal } from "./credentials";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
@@ -31,18 +32,39 @@ const BASE = {
   accessKeyId: "AKIAPLATFORM000000",
   secretAccessKey: "platform-secret-key-CANARY-01",
 };
+const KUBE_SERVER = "https://k8s.example.test:6443";
+const KUBE_TOKEN = "eyJhbGciOiJSUzI1NiJ9.kube-token-CANARY-0123456789";
+const NAMESPACE = "apps";
+
 /** What no plan, row, audit event or log line may hold: the credentials at every step of the way. */
-const CREDENTIALS = [EXTERNAL_ID, BASE.secretAccessKey, "assumed-secret-", "assumed-token-"];
+const CREDENTIALS = [
+  EXTERNAL_ID,
+  BASE.secretAccessKey,
+  "assumed-secret-",
+  "assumed-token-",
+  KUBE_TOKEN,
+];
 
 const aws = fakeAws({ base: BASE, roleArn: ROLE, externalId: EXTERNAL_ID, region: REGION });
+const kube = fakeKube({
+  server: KUBE_SERVER,
+  token: KUBE_TOKEN,
+  namespaces: [NAMESPACE, "staging"],
+});
+/** One cloud for the platform to reach: the cluster is its own host, everything else is AWS. */
+const reach: Fetch = (url, init) =>
+  url.startsWith(KUBE_SERVER) ? kube.fetch(url, init) : aws.fetch(url, init);
 const lines: string[] = [];
 const logger = createLogger({ level: "debug", write: (line) => lines.push(line) });
-const cloud = { fetch: aws.fetch, aws: () => BASE };
+const cloud = { fetch: reach, aws: () => BASE };
 
 let t: TestDb;
 let o1: string;
 let o2: string;
-const conns = {} as Record<"role" | "wrongId" | "gitlab" | "other", string>;
+const conns = {} as Record<
+  "role" | "wrongId" | "gitlab" | "other" | "kube" | "kubeWrongToken" | "kubeOther",
+  string
+>;
 let worker: Worker;
 type Roles = Pick<Subject, "orgRoles" | "projectRoles">;
 const roleTable = new Map<number, Roles>();
@@ -58,7 +80,7 @@ const makeApp = (platform: boolean) =>
     }),
     ready: async () => {},
     keys,
-    cloud: { fetch: aws.fetch, aws: () => (platform ? BASE : undefined) },
+    cloud: { fetch: reach, aws: () => (platform ? BASE : undefined) },
   });
 let app: ReturnType<typeof makeApp>;
 
@@ -78,6 +100,16 @@ beforeAll(async () => {
   conns.wrongId = await connect(o1, "aws_assume_role", "wrong-id", role, "not-the-external-id");
   conns.gitlab = await connect(o1, "gitlab", "gl", { baseUrl: "https://gitlab.example.test" }, "x");
   conns.other = await connect(o2, "aws_assume_role", "role", role, EXTERNAL_ID);
+  const cluster = { server: KUBE_SERVER, namespaces: [NAMESPACE, "staging"] };
+  conns.kube = await connect(o1, "kubernetes", "cluster", cluster, KUBE_TOKEN);
+  conns.kubeWrongToken = await connect(
+    o1,
+    "kubernetes",
+    "cluster-wrong",
+    cluster,
+    "not-the-cluster-token-0123456789",
+  );
+  conns.kubeOther = await connect(o2, "kubernetes", "cluster", cluster, KUBE_TOKEN);
   let gitlabId = 900;
   for (const name of ["alice", "bob"] as const) {
     const user = await upsertUser(t.db, { gitlabId: ++gitlabId, username: name, name });
@@ -149,6 +181,8 @@ async function world(
 ) {
   const id = ++n;
   const prefix = `/orch/w${id}`;
+  const secretName = `env-w${id}`;
+  const cluster = over.type === "kubernetes-secret";
   const project = (await createProject(t.db, { organizationId: o1, name: `p${id}` })).id;
   const base = `/organizations/${o1}/projects/${project}`;
   const targets = `${base}/sync-targets`;
@@ -156,19 +190,24 @@ async function world(
     call("alice", "POST", targets, {
       name: "ssm",
       type: over.type ?? "aws-ssm",
-      connectionId: over.connection ?? conns.role,
-      config: over.config ?? {
-        region: REGION,
-        prefix,
-        protected: true,
-        ...(over.layout && { layout: over.layout }),
-      },
+      connectionId: over.connection ?? (cluster ? conns.kube : conns.role),
+      config:
+        over.config ??
+        (cluster
+          ? { namespace: NAMESPACE, name: secretName, protected: true }
+          : {
+              region: REGION,
+              prefix,
+              protected: true,
+              ...(over.layout && { layout: over.layout }),
+            }),
       environmentMapping: {},
       ...(over.policy && { unmanagedPolicy: over.policy }),
       ...b,
     });
   const w = {
     prefix,
+    secretName,
     project,
     targets,
     make,
@@ -190,6 +229,9 @@ async function world(
     },
     param: (name: string) => aws.params.get(`${prefix}/${name}`),
     secret: (name: string) => aws.secrets.get(`${prefix}/${name}`),
+    /** The Secret of a kubernetes-secret target, and a key of it as text. */
+    held: () => kube.secrets.get(`${NAMESPACE}/${secretName}`),
+    text: (key: string) => kube.value(NAMESPACE, secretName, key),
     patch: (target: string, b: object) => call("alice", "PATCH", `${targets}/${target}`, b),
   };
   return w;
@@ -443,6 +485,181 @@ describe("an aws-sm target", () => {
     expect((await w.make({ name: "gl", connectionId: conns.gitlab })).json.code).toBe(
       "connection_type_mismatch",
     );
+  });
+});
+
+describe("a kubernetes-secret target", () => {
+  const make = async (over: Parameters<typeof world>[0] = {}) => {
+    const w = await world({ type: "kubernetes-secret", ...over });
+    const made = await w.make({ name: "k8s" });
+    expect(made.status).toBe(201);
+    return { w, target: made.json.id as string };
+  };
+
+  test("is planned, then applied with the connection's token, into a Secret labelled as ours", async () => {
+    const { w, target } = await make();
+    const plainValue = sekrit("kube-plain");
+    const secretValue = sekrit("kube-secret");
+    await w.put("API_URL", "plain", plainValue);
+    await w.put("DB_PASSWORD", "secret", secretValue);
+
+    const plan = await w.plan(target);
+    expect(plan.status).toBe(201);
+    expect(brief(plan)).toEqual(["create API_URL *", "create DB_PASSWORD *"]);
+    // planning reads; it writes nothing
+    expect(w.held()).toBeUndefined();
+
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.text("API_URL")).toBe(plainValue);
+    expect(w.text("DB_PASSWORD")).toBe(secretValue);
+    expect(w.held()?.labels).toEqual({ [MANAGED_LABEL]: w.secretName });
+    expect(w.held()?.annotations).toEqual({ [PLAIN_ANNOTATION]: '["API_URL"]' });
+    expect(w.held()?.type).toBe("Opaque");
+    // the token never went anywhere but the cluster's own address
+    expect(kube.calls.every((c) => c.authorization === `Bearer ${KUBE_TOKEN}`)).toBe(true);
+
+    // applying twice changes nothing: the next plan has only no-ops, plain and secret alike
+    expect(brief(await w.plan(target))).toEqual(["noop API_URL *", "noop DB_PASSWORD *"]);
+  });
+
+  test("a change is an update, and keys that someone added by hand stay", async () => {
+    const { w, target } = await make();
+    kube.seed(
+      NAMESPACE,
+      w.secretName,
+      { HAND: "by hand" },
+      { labels: { [MANAGED_LABEL]: w.secretName } },
+    );
+    await w.put("CHANGING", "plain", "first");
+    await w.finished(target, (await w.apply(target, (await w.plan(target)).json.id)).json.id);
+    expect(w.text("CHANGING")).toBe("first");
+
+    const vars = await call("alice", "GET", `/organizations/${o1}/projects/${w.project}/variables`);
+    const variable = vars.json.items.find((v: { key: string }) => v.key === "CHANGING");
+    await call(
+      "alice",
+      "PATCH",
+      `/organizations/${o1}/projects/${w.project}/variables/${variable.id}`,
+      { value: "second" },
+    );
+    const second = await w.plan(target);
+    expect(brief(second)).toEqual(["update CHANGING *"]);
+    const run = await w.finished(target, (await w.apply(target, second.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.text("CHANGING")).toBe("second");
+    expect(w.text("HAND")).toBe("by hand");
+  });
+
+  test("with the prune policy, a key of the Secret that is no longer wanted goes and the Secret stays", async () => {
+    const { w, target } = await make({ policy: "prune" });
+    kube.seed(
+      NAMESPACE,
+      w.secretName,
+      { OLD: "old", WANTED: "w" },
+      {
+        labels: { [MANAGED_LABEL]: w.secretName },
+        annotations: { [PLAIN_ANNOTATION]: '["WANTED"]' },
+      },
+    );
+    await w.put("WANTED", "plain", "w");
+    const plan = await w.plan(target);
+    expect(brief(plan)).toEqual(["delete OLD *", "noop WANTED *"]);
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.text("OLD")).toBeUndefined();
+    expect(w.text("WANTED")).toBe("w");
+    expect(w.held()?.labels).toEqual({ [MANAGED_LABEL]: w.secretName });
+  });
+
+  test("does not take over a Secret that is there but not ours", async () => {
+    const { w, target } = await make();
+    kube.seed(NAMESPACE, w.secretName, { CLASH: "by hand" });
+    await w.put("CLASH", "plain", "ours");
+    const plan = await w.plan(target);
+    expect(brief(plan)).toEqual(["create CLASH *"]);
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("failed");
+    expect(run.json.items[0].error).toContain(`${MANAGED_LABEL}=${w.secretName}`);
+    expect(w.text("CLASH")).toBe("by hand");
+    expect(w.held()?.labels).toEqual({});
+  });
+
+  test("a namespace the connection does not allow is refused when the plan is made, and nothing is sent", async () => {
+    const { w, target } = await make({ config: { namespace: "kube-system", name: "x" } });
+    const before = kube.calls.length;
+    const res = await w.plan(target);
+    expect([res.status, res.json.code]).toEqual([422, "plan_invalid"]);
+    expect(res.json.detail).toBe("the namespace is not one the connection allows");
+    expect(kube.calls.length).toBe(before);
+  });
+
+  test("a variable of an environment, which a Secret has no scope for, refuses the plan and names it", async () => {
+    const w = await world({ type: "kubernetes-secret" });
+    const env = await createEnvironment(t.db, {
+      organizationId: o1,
+      projectId: w.project,
+      name: "production",
+      slug: "production",
+    });
+    const target = (await w.make({ name: "k8s", environmentMapping: { production: "production" } }))
+      .json.id as string;
+    await w.put("API_URL", "plain", "base");
+    const set = await call(
+      "alice",
+      "POST",
+      `/organizations/${o1}/projects/${w.project}/environments/${env.id}/variables`,
+      { key: "API_URL", kind: "plain", value: "production-only" },
+    );
+    expect(set.status).toBe(201);
+    const res = await w.plan(target);
+    expect([res.status, res.json.code]).toEqual([422, "plan_invalid"]);
+    expect(res.json.detail).toContain("a Secret has no scopes");
+    expect(w.held()).toBeUndefined();
+  });
+
+  test("a cluster that rejects the token fails the plan in the adapter's words", async () => {
+    const { w, target } = await make({ connection: conns.kubeWrongToken });
+    const res = await w.plan(target);
+    expect([res.status, res.json.code]).toEqual([502, "target_failed"]);
+    expect(res.json.detail).toBe("reading the Secret: Kubernetes answered unauthorized (401)");
+    expect(res.text).not.toContain("not-the-cluster-token");
+  });
+
+  test("needs a Kubernetes connection of this organization and a valid config", async () => {
+    const w = await world({ type: "kubernetes-secret" });
+    expect((await w.make({ connectionId: conns.gitlab })).json.code).toBe(
+      "connection_type_mismatch",
+    );
+    expect((await w.make({ connectionId: conns.role })).json.code).toBe("connection_type_mismatch");
+    expect((await w.make({ connectionId: conns.kubeOther })).json.code).toBe("unknown_connection");
+    for (const config of [
+      { namespace: "Apps", name: "x" },
+      { namespace: NAMESPACE },
+      { namespace: NAMESPACE, name: "x", token: "no" },
+    ]) {
+      expect((await w.make({ config })).status).toBe(422);
+    }
+    const wrong = await world({ connection: conns.kube });
+    expect((await wrong.make()).json.code).toBe("connection_type_mismatch");
+  });
+
+  test("a connection that is not a Kubernetes one never has its secret sent to a cluster", async () => {
+    const w = await world({ type: "kubernetes-secret" });
+    // the route refuses this pairing; a row that got there some other way must not slip through
+    const row = await createSyncTarget(t.db, {
+      organizationId: o1,
+      projectId: w.project,
+      name: "sneaky",
+      type: "kubernetes-secret",
+      connectionId: conns.role,
+      config: { namespace: NAMESPACE, name: w.secretName },
+      environmentMapping: {},
+    });
+    const before = kube.calls.length;
+    const res = await w.plan(row.id);
+    expect([res.status, res.json.code]).toEqual([422, "connection_type"]);
+    expect(kube.calls.length).toBe(before);
   });
 });
 

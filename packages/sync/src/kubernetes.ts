@@ -4,10 +4,15 @@ import { type Check, CloudError, type Fetch, failure, httpsOrigin, reasonOf, sen
 /** The connection type, as `connections.type` stores it. */
 export const KUBERNETES = "kubernetes";
 
-/** What the platform does with Secrets in the namespaces it was given. */
-export const KUBE_VERBS = ["get", "list", "create", "update", "delete"] as const;
+/**
+ * What the platform does with Secrets in the namespaces it was given: reads the one it manages, makes it,
+ * and changes its keys with a merge patch (a delete of a key is a patch too). Nothing lists, replaces or
+ * deletes a Secret, so the token is not asked to be able to.
+ */
+export const KUBE_VERBS = ["get", "create", "patch"] as const;
 
-const namespace = z
+/** A namespace, and the name of a Secret in it (which Kubernetes lets run longer, with dots; this does not). */
+export const kubeName = z
   .string()
   .regex(/^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$/, "must be a namespace name");
 
@@ -22,7 +27,7 @@ const namespace = z
 export const kubernetesConfigSchema = z.strictObject({
   server: httpsOrigin,
   namespaces: z
-    .array(namespace)
+    .array(kubeName)
     .min(1)
     .max(20)
     .refine((all) => new Set(all).size === all.length, "must not repeat a namespace"),

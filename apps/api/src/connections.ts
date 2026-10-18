@@ -14,6 +14,7 @@ import {
   checkVaultAppRole,
   type Fetch,
   KUBERNETES,
+  type KubernetesConfig,
   kubernetesConfigSchema,
   VAULT_APPROLE,
   vaultConfigSchema,
@@ -198,6 +199,21 @@ export async function openGitlabConnection(
   }
   const { baseUrl } = z.object({ baseUrl: z.string() }).parse(opened.connection.config);
   return { connection: opened.connection, baseUrl, token: opened.token };
+}
+
+/** A Kubernetes connection, opened: the server, the namespaces it allows, and the service-account token. */
+export async function openKubernetesConnection(
+  deps: { db: Db; keys?: KeyProvider; logger: Logger },
+  orgId: string,
+  connectionId: string,
+  requestId: unknown,
+): Promise<{ config: KubernetesConfig; token: string }> {
+  const { connection, token } = await openAnyConnection(deps, orgId, connectionId, requestId);
+  // The type is free-form: another kind's secret must not be sent to a cluster.
+  if (connection.type !== KUBERNETES) {
+    throw new DomainError("connection_type", 422, "This is not a Kubernetes connection");
+  }
+  return { config: storedConfig(kubernetesConfigSchema, connection.config), token };
 }
 
 /**

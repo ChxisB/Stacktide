@@ -8,6 +8,7 @@ export * from "./gitlab-variables";
 export * from "./guardrails";
 export { type Check, type CheckReason, CloudError, type Fetch } from "./http";
 export * from "./kubernetes";
+export * from "./kubernetes-secret";
 export * from "./plan";
 export { byKeyThenScope, refId } from "./ref";
 export * from "./targets";

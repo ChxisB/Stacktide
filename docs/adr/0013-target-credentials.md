@@ -10,7 +10,7 @@ A target connection is a `connections` row like the GitLab one: non-secret `conf
 | Type | Config (open) | Secret (sealed) | What the platform asks for |
 |---|---|---|---|
 | `aws_assume_role` | role ARN, region | the external ID | `sts:AssumeRole` into the role with that external ID (900 s sessions), then `GetCallerIdentity` to see who it became |
-| `kubernetes` | API server origin, 1-20 namespaces, optional CA | a service-account token | `SelfSubjectAccessReview` for get, list, create, update and delete on Secrets in each namespace |
+| `kubernetes` | API server origin, 1-20 namespaces, optional CA | a service-account token | `SelfSubjectAccessReview` for get, create and patch on Secrets in each namespace |
 | `vault_approle` | address, role ID, auth mount, KV v2 mount, path prefix | the AppRole secret ID | login, `capabilities-self` on the data and metadata paths under the prefix, then revoke the client token |
 
 Type names use underscores because `connections.type` allows only `[a-z][a-z0-9_]*`.

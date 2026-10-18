@@ -17794,7 +17794,8 @@
                     "enum": [
                       "gitlab-variables",
                       "aws-ssm",
-                      "aws-sm"
+                      "aws-sm",
+                      "kubernetes-secret"
                     ]
                   },
                   "connectionId": {

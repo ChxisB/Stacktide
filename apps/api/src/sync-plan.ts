@@ -22,6 +22,8 @@ import {
   gitlabVariablesAdapter,
   type ItemInput,
   isProtected,
+  KUBERNETES_SECRET,
+  kubernetesSecretAdapter,
   type PlanAction,
   plan,
   refId,
@@ -29,7 +31,12 @@ import {
   SyncError,
   type UnmanagedPolicy,
 } from "@orch/sync";
-import { type CloudDeps, openAwsSession, openGitlabConnection } from "./connections";
+import {
+  type CloudDeps,
+  openAwsSession,
+  openGitlabConnection,
+  openKubernetesConnection,
+} from "./connections";
 import { guardrailRefusal } from "./guardrails";
 
 /** A key that could not be resolved at a scope, and why. Names only, never a value. */
@@ -204,6 +211,17 @@ export async function openTarget(
     case AWS_SM: {
       const { aws, session } = await openAwsSession(deps, organizationId, connectionId, requestId);
       return awsSmAdapter(session, aws);
+    }
+    case KUBERNETES_SECRET: {
+      const { config, token } = await openKubernetesConnection(
+        deps,
+        organizationId,
+        connectionId,
+        requestId,
+      );
+      return kubernetesSecretAdapter(config, token, {
+        fetch: deps.cloud?.fetch ?? globalThis.fetch,
+      });
     }
   }
   throw new DomainError("target_type", 422, "This type of sync target cannot be used");

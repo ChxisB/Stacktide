@@ -2,7 +2,6 @@ import { z } from "zod";
 import { AwsApiError } from "./aws-json";
 import { SyncError } from "./errors";
 import { CloudError } from "./http";
-import type { ItemRef } from "./types";
 
 /** The tag that says a parameter or secret was made by this platform for this prefix. Its value is the prefix. */
 export const OWNER_TAG = "orch-managed";
@@ -15,9 +14,6 @@ export const prefixSchema = z
   .regex(/^(\/(?!\.+(?=\/|$))[A-Za-z0-9_.-]{1,60}){1,13}$/)
   .refine((p) => !/^\/(aws|ssm)/i.test(p));
 export const kmsKeySchema = z.string().regex(/^[A-Za-z0-9:/_-]{1,2048}$/);
-
-export const label = ({ key, scope }: ItemRef) =>
-  `${JSON.stringify(key.slice(0, 64))} (${scope.slice(0, 64)})`;
 
 /** Fixed words and AWS's name for the error (a word the service defines), so nothing AWS said can reach one. */
 export function failed(what: string, e: unknown) {

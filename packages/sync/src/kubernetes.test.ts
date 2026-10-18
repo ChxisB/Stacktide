@@ -68,12 +68,12 @@ describe("checkKubernetes", () => {
 
   test("a namespace the token may not write in is `forbidden`, named with the verbs it lacks", async () => {
     const api = fakeApi(
-      (ns, verb) => !(ns === "staging" && (verb === "delete" || verb === "update")),
+      (ns, verb) => !(ns === "staging" && (verb === "create" || verb === "patch")),
     );
     const r = await checkKubernetes(config, TOKEN, { fetch: api.fetch });
     expect(r).toMatchObject({ ok: false, reason: "forbidden" });
     expect(r).toMatchObject({
-      message: expect.stringContaining("namespace staging: update, delete"),
+      message: expect.stringContaining("namespace staging: create, patch"),
     });
     expect(JSON.stringify(r)).not.toContain("apps:");
   });
