@@ -1,14 +1,14 @@
 # 13 Deploy and Operate - Tasks
 
-### OPS-1 - Container image  `[!]` M - deps: API-3, API-6, FND-6
+### OPS-1 - Container image  `[x]` M - deps: API-3, API-6, FND-6
 Do: multi-stage Dockerfile (pinned Bun), non-root user, `HEALTHCHECK`, commands `api` / `worker` / `migrate`; CI builds it (no push yet).
 Done when: the image starts, `/health` is green and `migrate` is idempotent; image runs as non-root (tested).
-Blocked: nothing can be built or started here. The Docker VM has about 275 MB free and shares its disk with other projects' databases (a full disk already put Postgres into recovery once, in EXT-5), and the CI build job needs FND-6 (a real pipeline), which is itself `[!]`. Remaining: free disk space (`docker builder prune` is the user's call), write the multi-stage Dockerfile, a test that builds it, starts it and checks `/health`, `migrate` twice and `id -u != 0`, then the `.gitlab-ci.yml` build job (no push).
+Done 2026-10-18: `Dockerfile` (pinned `oven/bun:1.4.2`, multi-stage, non-root `bun`, `HEALTHCHECK`, commands `api|worker|migrate|web`) and `deploy/image-test.sh` (builds, checks non-root, migrate twice, `/health` healthy, `/ready`). Built and tested on a GitHub Actions runner (`image` job: `image-test: ok`) because the local Docker VM has no room to build; the GitLab `image` job has not run on a real GitLab (FND-6).
 
 ### OPS-2 - Self-host compose and docs  `[!]` M - deps: OPS-1
 Do: `deploy/compose.yml` (api, worker, postgres, migrate), env reference table, first-run guide (GitLab OAuth app, master key generation).
 Done when: following the doc on a clean machine yields a working login (smoke script included).
-Blocked: needs OPS-1's image, and a working login needs a real GitLab OAuth application (a write to a real GitLab, a human gate). Remaining: compose file, env table, first-run guide and smoke script. `docs/runbook-keys-and-backup.md` (OPS-4) is already standalone and covers master key generation, backup, restore and rotation; link it from the guide.
+Blocked on the last step only: `deploy/compose.yml`, the settings table and first-run guide (`docs/self-host.md`, linking the OPS-4 runbook) and `deploy/smoke.sh` are written, and the smoke passes on GitHub Actions (migrate, `/health`, the page, `/auth/login` redirecting to the configured GitLab, no master keys in the web container). "A working login" needs a real GitLab OAuth application (a write to a real GitLab, a human gate) and a clean-machine run; neither has happened.
 
 ### OPS-3 - Metrics  `[x]` M - deps: API-3, API-6
 Do: `/metrics` (auth-protected or internal-only) with the metrics in the SPEC; labels never contain ids of secrets or values.

@@ -60,6 +60,15 @@ decide whether anything is released.
 
 ## Verified, and not
 
-Both hosts' checks, the image and the dry run have run on a real GitHub pipeline. **The GitLab file has not run on a real
-GitLab**: there is no GitLab project for this repository yet (FND-6). Push it to one and read the first pipeline before
-trusting it.
+**GitHub:** `check`, `audit`, `e2e`, `image` (the image test and the self-host smoke) and `release-preview` have run
+green on a real pull request. The **Release** workflow has not run yet: neither the dry run nor a publish. Run the dry
+run first and read its summary and artifacts.
+
+**GitLab:** `.gitlab-ci.yml` has not run on a real GitLab: there is no GitLab project for this repository yet (FND-6),
+and nothing here can lint it beyond parsing the YAML. Push it to one and read the first pipeline before trusting it. The
+parts most likely to need a fix are the ones that differ from GitHub: the Docker-in-Docker jobs (`image`,
+`release-cut`, `image-publish`), the `e2e` job (Microsoft's Playwright image plus Bun from npm) and the `RELEASE_TOKEN`
+push.
+
+**One difference to know:** the backup and restore tests need the Postgres 18 client. The GitHub `check` job installs
+it, so they run there; GitLab's `oven/bun` image has none, so they are skipped there.

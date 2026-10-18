@@ -16,8 +16,16 @@ SHA-256 matches its entry. A missing, malformed or repeated entry, a mismatch or
 installs nothing and leaves any earlier `orch` alone. It needs `https` (`ORCH_ALLOW_HTTP=1` is for
 tests), `curl`, and `sha256sum` or `shasum`.
 
-A private project's registry refuses anonymous downloads: copy the five files to somewhere the machine
-can read and point `ORCH_RELEASE_URL` there.
+A GitHub release works the same way (the **Release** workflow attaches the same five files; see
+[ci-cd.md](ci-cd.md)):
+
+```sh
+export ORCH_RELEASE_URL=https://github.com/<owner>/<repo>/releases/download/v1.2.3
+```
+
+A private project's registry or a private repository's release refuses anonymous downloads: copy the five files
+(`gh release download v1.2.3 -R <owner>/<repo>` fetches them) to somewhere the machine can read and point
+`ORCH_RELEASE_URL` there.
 
 ## What the check proves
 

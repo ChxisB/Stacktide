@@ -85,3 +85,13 @@
 - **Why:** OPS-1 needs a built and started image, and the Docker VM has about 275 MB free on a disk shared with other projects (Postgres went into recovery on it once, in EXT-5). I did not prune the shared build cache (20.7 GB reclaimable) without your say-so. OPS-2 needs OPS-1 and a real GitLab OAuth application. OPS-6 needs OPS-1, a real pipeline (FND-6 is `[!]`) and publishing, which is a human gate. OPS-7 needs OPS-6 and a real GitLab for the first PIPE and SYNC applies.
 - **Not drafted on purpose:** a Dockerfile or compose file that no build or start has run is a guess that looks finished. `docker buildx build --check` could lint a Dockerfile without disk, but it proves nothing about the task's "done when".
 - **Order when unblocked:** free disk -> OPS-1 -> OPS-2 (+ link the OPS-4 runbook) -> FND-6 -> OPS-6 dry run -> OPS-7.
+
+## 2026-10-18 OPS-1, OPS-2 built; CI on GitHub and GitLab; semver tooling
+- **Why now:** the user asked for the repository on a personal GitHub as Stacktide, CI/CD and automated semantic versions, and these tasks done on GitHub and GitLab. GitHub Actions gave the real pipeline and the disk the local Docker VM lacks (it still has none: I did not run `docker builder prune`).
+- **OPS-1:** `Dockerfile`, `.dockerignore`, `deploy/entrypoint.sh`, `deploy/image-test.sh`. `image-test: ok` on a GitHub runner. The web command binds `HOST` (default 127.0.0.1) so it is reachable in a container.
+- **OPS-2:** `deploy/compose.yml` (db, migrate, api, worker, web), `deploy/.env.example`, `deploy/smoke.sh`, `docs/self-host.md`. The smoke passes on GitHub. Still blocked: a real login needs a real GitLab OAuth app.
+- **Smoke race found by CI:** `smoke.sh` piped `docker compose exec` into `head` and `grep -q`; a reader that quits early makes docker exit 255 and `pipefail` turned that into a failure that depended on timing (green once, red once). Output is now captured whole.
+- **Semver (new, no task):** `scripts/version.ts` + `scripts/version.test.ts` (12 tests, real temp git repos): version and changelog from Conventional Commits, 0.x breaking = minor. It never commits or tags; CI does.
+- **CI:** `.github/workflows/ci.yml` and `release.yml`; `.gitlab-ci.yml` extended (`image`, `e2e`, `release-preview`, `release-cut`, `image-publish`). Publishing stays a human click (`publish` defaults to false). See `docs/ci-cd.md`.
+- **Not verified:** everything in `.gitlab-ci.yml` that is new (no GitLab project, no `glab`); the Release workflow (dry run and publish) at the time of this entry.
+- Gate: see the UI-9 entry in 08-web-ui/LOG.md. New dependencies: `@playwright/test` (approved), none else.
