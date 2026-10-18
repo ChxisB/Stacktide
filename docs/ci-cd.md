@@ -28,8 +28,8 @@ Semantic versioning, decided by the commit messages since the last `v*` tag (Con
 | `fix:`, `perf:`, `revert:` | patch |
 | `docs:`, `chore:`, `test:`, `ci:`, `refactor:`, `style:`, `build:` (and anything that is not a conventional commit) | none |
 
-Land changes with **rebase or fast-forward merges**, not merge commits or squashes that rewrite the message, or the
-commit messages the rules read are lost. `bun scripts/version.ts` prints the next version (nothing if no commit
+Land changes with a merge commit, a rebase or a fast-forward: each keeps the commits behind it, and a merge commit
+itself releases nothing. Do **not squash**: the one message that replaces them is the only one the rules read. `bun scripts/version.ts` prints the next version (nothing if no commit
 releases); `--notes FILE` writes its release notes; `--apply` also sets the version in `apps/cli/package.json` (what
 the binary reports) and `bun.lock`, and prepends `CHANGELOG.md`. It never commits or tags.
 

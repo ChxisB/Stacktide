@@ -112,6 +112,17 @@ describe("plan and apply on a real repository", () => {
     expect(await plan(r.dir, "2026-10-18")).toMatchObject({ version: "0.1.0", tag: "v0.1.0" });
   });
 
+  test("a merge commit keeps the commits behind it: a pull request merged with one still releases", async () => {
+    const r = await repo();
+    await r.commit("docs: start");
+    await r.git("tag", "v0.1.0");
+    await r.git("switch", "--quiet", "-c", "topic");
+    await r.commit("fix: on the branch");
+    await r.git("switch", "--quiet", "main");
+    await r.git("merge", "--quiet", "--no-ff", "-m", "Merge pull request #1 from x/topic", "topic");
+    expect(await plan(r.dir, "2026-10-18")).toMatchObject({ version: "0.1.1" });
+  });
+
   test("after a tag only later commits count; nothing releasable is no release", async () => {
     const r = await repo();
     await r.commit("feat: first");
