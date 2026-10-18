@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { startWeb } from "../src/server";
 import { startBackend } from "../src/testing";
 
@@ -6,7 +6,11 @@ import { startBackend } from "../src/testing";
 // mock GitLab, the job worker), with the web page in front. Where everything is goes to e2e/.state.json.
 
 const PORT = Number(process.env.E2E_PORT ?? 3111);
+const STATE = `${import.meta.dir}/.state.json`;
 const PIPELINE = "stages:\n  - test\ntest:\n  stage: test\n  script:\n    - bun test\n";
+
+// a file left by an earlier run must never be read as this run's
+await rm(STATE, { force: true });
 
 const backend = await startBackend([
   {
@@ -35,16 +39,16 @@ const admin = await backend.signIn("Journey admin", {
   projectRoles: {},
 });
 
-const web = startWeb({ api: backend.api, port: PORT });
-await mkdir(`${import.meta.dir}`, { recursive: true });
+// written before the page answers /health, which is what tells Playwright the stack is up
 await writeFile(
-  `${import.meta.dir}/.state.json`,
+  STATE,
   JSON.stringify({
     session: admin.cookie.replace("orch_session=", ""),
     org: org.id,
     gitlab: { url: mock.url, token: mock.token, projectId: gl.id, path: gl.path },
   }),
 );
+const web = startWeb({ api: backend.api, port: PORT });
 console.log(`e2e stack on ${web.url}`);
 
 for (const signal of ["SIGTERM", "SIGINT"] as const) {

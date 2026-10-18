@@ -7,11 +7,16 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 
 const SECRET = "s3cr3t-value-9f2c41";
 const PIPELINE = "stages:\n  - test\ntest:\n  stage: test\n  script:\n    - bun test\n";
-const state = JSON.parse(readFileSync(`${import.meta.dirname}/.state.json`, "utf8")) as {
+type State = {
   session: string;
   org: string;
   gitlab: { url: string; token: string; projectId: number; path: string };
 };
+// read when the tests run, not when the file loads: `playwright test --list` loads it with no server up
+const state = {} as State;
+test.beforeAll(() => {
+  Object.assign(state, JSON.parse(readFileSync(`${import.meta.dirname}/.state.json`, "utf8")));
+});
 
 /** A request to the mock GitLab, as the platform itself would make it. */
 async function gitlab(path: string) {
