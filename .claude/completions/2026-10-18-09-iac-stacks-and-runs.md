@@ -45,3 +45,4 @@ Details, mutation results (every security-critical behaviour mutated, all killed
 - **IAC-8:** `supersedeRuns` discards the planned stacks of a run whose other stacks are applying; a run without an MR cannot be applied; a merged MR can be applied by command with an older plan.
 - **IAC-9:** `orch plan <stack>` is not supported; bot replies each cost one `getNote`.
 - **IAC-11:** three audited `secret.reveal`s per environment stack per plan; the Terraform variable name must match the platform key's case; the job's own `TF_VAR_*` still pass through `--prefix`.
+- **The `stacks` table is never filled in production** (found in feature 10): `syncStacks` has no caller outside tests, so `POST /runs` answers 422 `unknown_stack` for every real project. Merge request planning is unaffected because it scans the repository itself, and so does drift (POL-1). A caller (a scan on import, or a worker step) is the follow-up.

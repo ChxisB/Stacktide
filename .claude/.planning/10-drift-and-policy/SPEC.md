@@ -1,5 +1,5 @@
 # 10 Drift and Policy - Spec
-Prefix: POL · Milestone: M4 · Status: todo
+Prefix: POL · Milestone: M4 · Status: done
 
 ## Goal
 Know when real infrastructure differs from code, tell the right people, and block unsafe changes before apply.
