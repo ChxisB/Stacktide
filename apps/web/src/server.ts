@@ -66,6 +66,8 @@ if (import.meta.main) {
   const server = startWeb({
     api: process.env.ORCH_API_URL ?? "http://127.0.0.1:3000",
     port,
+    // the image sets HOST=0.0.0.0, as for the API; on a laptop this stays on loopback
+    hostname: process.env.HOST || "127.0.0.1",
     development: process.env.NODE_ENV !== "production",
   });
   console.log(`web on http://${server.hostname}:${server.port}`);
