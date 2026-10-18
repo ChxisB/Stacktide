@@ -78,7 +78,7 @@ function fakeCloud() {
       const data = Object.fromEntries(
         (JSON.parse(body).paths as string[]).map((p) => [
           p,
-          p.includes("/data/") ? ["create", "read", "update", "delete"] : ["list"],
+          p.includes("/data/") ? ["create", "read", "update"] : ["create", "update", "list"],
         ]),
       );
       return Response.json({ data });

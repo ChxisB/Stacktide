@@ -17,6 +17,7 @@ import {
   type KubernetesConfig,
   kubernetesConfigSchema,
   VAULT_APPROLE,
+  type VaultConfig,
   vaultConfigSchema,
 } from "@orch/sync";
 import { z } from "zod";
@@ -214,6 +215,21 @@ export async function openKubernetesConnection(
     throw new DomainError("connection_type", 422, "This is not a Kubernetes connection");
   }
   return { config: storedConfig(kubernetesConfigSchema, connection.config), token };
+}
+
+/** A Vault connection, opened: the address, mounts and prefix it is limited to, and the AppRole's secret ID. */
+export async function openVaultConnection(
+  deps: { db: Db; keys?: KeyProvider; logger: Logger },
+  orgId: string,
+  connectionId: string,
+  requestId: unknown,
+): Promise<{ config: VaultConfig; token: string }> {
+  const { connection, token } = await openAnyConnection(deps, orgId, connectionId, requestId);
+  // The type is free-form: another kind's secret must not be sent to a Vault.
+  if (connection.type !== VAULT_APPROLE) {
+    throw new DomainError("connection_type", 422, "This is not a Vault connection");
+  }
+  return { config: storedConfig(vaultConfigSchema, connection.config), token };
 }
 
 /**

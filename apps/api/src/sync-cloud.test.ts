@@ -15,8 +15,15 @@ import {
   upsertUser,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
-import { type Fetch, MANAGED_LABEL, OWNER_TAG, PLAIN_ANNOTATION } from "@orch/sync";
-import { fakeAws, fakeKube } from "@orch/sync/testing";
+import {
+  type Fetch,
+  MANAGED_KEY,
+  MANAGED_LABEL,
+  OWNER_TAG,
+  PLAIN_ANNOTATION,
+  PLAIN_PREFIX,
+} from "@orch/sync";
+import { fakeAws, fakeKube, fakeVault } from "@orch/sync/testing";
 import { createApp } from "./app";
 import { callerPrincipal } from "./credentials";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
@@ -35,6 +42,10 @@ const BASE = {
 const KUBE_SERVER = "https://k8s.example.test:6443";
 const KUBE_TOKEN = "eyJhbGciOiJSUzI1NiJ9.kube-token-CANARY-0123456789";
 const NAMESPACE = "apps";
+const VAULT_ADDRESS = "https://vault.example.test:8200";
+const VAULT_ROLE_ID = "role-id-1234";
+const VAULT_SECRET_ID = "vault-secret-id-CANARY-0123456789";
+const VAULT_PREFIX = "app";
 
 /** What no plan, row, audit event or log line may hold: the credentials at every step of the way. */
 const CREDENTIALS = [
@@ -43,6 +54,8 @@ const CREDENTIALS = [
   "assumed-secret-",
   "assumed-token-",
   KUBE_TOKEN,
+  VAULT_SECRET_ID,
+  "hvs.fake-client-token-",
 ];
 
 const aws = fakeAws({ base: BASE, roleArn: ROLE, externalId: EXTERNAL_ID, region: REGION });
@@ -51,9 +64,20 @@ const kube = fakeKube({
   token: KUBE_TOKEN,
   namespaces: [NAMESPACE, "staging"],
 });
-/** One cloud for the platform to reach: the cluster is its own host, everything else is AWS. */
+const vault = fakeVault({
+  address: VAULT_ADDRESS,
+  roleId: VAULT_ROLE_ID,
+  secretId: VAULT_SECRET_ID,
+  kvMount: "kv",
+  prefix: VAULT_PREFIX,
+});
+/** One cloud for the platform to reach: the cluster and the Vault are their own hosts, everything else is AWS. */
 const reach: Fetch = (url, init) =>
-  url.startsWith(KUBE_SERVER) ? kube.fetch(url, init) : aws.fetch(url, init);
+  url.startsWith(KUBE_SERVER)
+    ? kube.fetch(url, init)
+    : url.startsWith(VAULT_ADDRESS)
+      ? vault.fetch(url, init)
+      : aws.fetch(url, init);
 const lines: string[] = [];
 const logger = createLogger({ level: "debug", write: (line) => lines.push(line) });
 const cloud = { fetch: reach, aws: () => BASE };
@@ -62,7 +86,16 @@ let t: TestDb;
 let o1: string;
 let o2: string;
 const conns = {} as Record<
-  "role" | "wrongId" | "gitlab" | "other" | "kube" | "kubeWrongToken" | "kubeOther",
+  | "role"
+  | "wrongId"
+  | "gitlab"
+  | "other"
+  | "kube"
+  | "kubeWrongToken"
+  | "kubeOther"
+  | "vault"
+  | "vaultWrongSecret"
+  | "vaultOther",
   string
 >;
 let worker: Worker;
@@ -110,6 +143,21 @@ beforeAll(async () => {
     "not-the-cluster-token-0123456789",
   );
   conns.kubeOther = await connect(o2, "kubernetes", "cluster", cluster, KUBE_TOKEN);
+  const store = {
+    address: VAULT_ADDRESS,
+    roleId: VAULT_ROLE_ID,
+    kvMount: "kv",
+    prefix: VAULT_PREFIX,
+  };
+  conns.vault = await connect(o1, "vault_approle", "vault", store, VAULT_SECRET_ID);
+  conns.vaultWrongSecret = await connect(
+    o1,
+    "vault_approle",
+    "vault-wrong",
+    store,
+    "not-the-vault-secret-id-0123",
+  );
+  conns.vaultOther = await connect(o2, "vault_approle", "vault", store, VAULT_SECRET_ID);
   let gitlabId = 900;
   for (const name of ["alice", "bob"] as const) {
     const user = await upsertUser(t.db, { gitlabId: ++gitlabId, username: name, name });
@@ -183,6 +231,9 @@ async function world(
   const prefix = `/orch/w${id}`;
   const secretName = `env-w${id}`;
   const cluster = over.type === "kubernetes-secret";
+  const store = over.type === "vault-kv";
+  /** Under the connection's prefix, a path of this world's own. */
+  const path = `w${id}`;
   const project = (await createProject(t.db, { organizationId: o1, name: `p${id}` })).id;
   const base = `/organizations/${o1}/projects/${project}`;
   const targets = `${base}/sync-targets`;
@@ -190,23 +241,26 @@ async function world(
     call("alice", "POST", targets, {
       name: "ssm",
       type: over.type ?? "aws-ssm",
-      connectionId: over.connection ?? (cluster ? conns.kube : conns.role),
+      connectionId: over.connection ?? (cluster ? conns.kube : store ? conns.vault : conns.role),
       config:
         over.config ??
         (cluster
           ? { namespace: NAMESPACE, name: secretName, protected: true }
-          : {
-              region: REGION,
-              prefix,
-              protected: true,
-              ...(over.layout && { layout: over.layout }),
-            }),
+          : store
+            ? { path, protected: true }
+            : {
+                region: REGION,
+                prefix,
+                protected: true,
+                ...(over.layout && { layout: over.layout }),
+              }),
       environmentMapping: {},
       ...(over.policy && { unmanagedPolicy: over.policy }),
       ...b,
     });
   const w = {
     prefix,
+    path,
     secretName,
     project,
     targets,
@@ -232,6 +286,11 @@ async function world(
     /** The Secret of a kubernetes-secret target, and a key of it as text. */
     held: () => kube.secrets.get(`${NAMESPACE}/${secretName}`),
     text: (key: string) => kube.value(NAMESPACE, secretName, key),
+    /** The data and the custom metadata of the secret of a scope, for a vault-kv target (`_` is every environment). */
+    vdata: (scope = "_") => vault.data(`${VAULT_PREFIX}/${path}/${scope}`),
+    vmeta: (scope = "_") => vault.custom(`${VAULT_PREFIX}/${path}/${scope}`),
+    vault: (scope: string, data: Record<string, unknown>, custom: Record<string, string> | null) =>
+      vault.seed(`${VAULT_PREFIX}/${path}/${scope}`, data, custom),
     patch: (target: string, b: object) => call("alice", "PATCH", `${targets}/${target}`, b),
   };
   return w;
@@ -660,6 +719,191 @@ describe("a kubernetes-secret target", () => {
     const res = await w.plan(row.id);
     expect([res.status, res.json.code]).toEqual([422, "connection_type"]);
     expect(kube.calls.length).toBe(before);
+  });
+});
+
+describe("a vault-kv target", () => {
+  const make = async (over: Parameters<typeof world>[0] = {}) => {
+    const w = await world({ type: "vault-kv", ...over });
+    const made = await w.make({ name: "vault" });
+    expect(made.status).toBe(201);
+    return { w, target: made.json.id as string };
+  };
+  const marker = (w: { path: string }) => `${VAULT_PREFIX}/${w.path}`;
+
+  test("is planned, then applied through a login of its own, into a secret marked as ours", async () => {
+    const { w, target } = await make();
+    const plainValue = sekrit("vault-plain");
+    const secretValue = sekrit("vault-secret");
+    await w.put("API_URL", "plain", plainValue);
+    await w.put("DB_PASSWORD", "secret", secretValue);
+
+    const before = vault.calls.length;
+    const plan = await w.plan(target);
+    expect(plan.status).toBe(201);
+    expect(brief(plan)).toEqual(["create API_URL *", "create DB_PASSWORD *"]);
+    // planning reads; it writes nothing
+    expect(
+      vault.calls.slice(before).filter((c) => c.method === "POST" && c.path.startsWith("kv/")),
+    ).toEqual([]);
+    expect(w.vdata()).toBeUndefined();
+
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.vdata()).toEqual({ API_URL: plainValue, DB_PASSWORD: secretValue });
+    expect(w.vmeta()).toEqual({ [MANAGED_KEY]: marker(w), [`${PLAIN_PREFIX}API_URL`]: "1" });
+    // the secret ID went to the login only, and no token outlived the call it was made for
+    const logins = vault.calls.filter((c) => c.path === "auth/approle/login");
+    expect(logins.length).toBeGreaterThan(0);
+    for (const c of vault.calls) {
+      const carried = JSON.stringify(c.body ?? "");
+      expect([c.path, carried.includes(VAULT_SECRET_ID)]).toEqual([
+        c.path,
+        c.path === "auth/approle/login",
+      ]);
+    }
+    expect(vault.live.size).toBe(0);
+    expect(vault.calls.some((c) => c.method === "DELETE")).toBe(false);
+
+    // applying twice changes nothing: the next plan has only no-ops, plain and secret alike
+    expect(brief(await w.plan(target))).toEqual(["noop API_URL *", "noop DB_PASSWORD *"]);
+  });
+
+  test("a variable of an environment lands in the secret of that scope", async () => {
+    const w = await world({ type: "vault-kv" });
+    const env = await createEnvironment(t.db, {
+      organizationId: o1,
+      projectId: w.project,
+      name: "production",
+      slug: "production",
+    });
+    const target = (
+      await w.make({ name: "vault", environmentMapping: { production: "production" } })
+    ).json.id as string;
+    await w.put("API_URL", "plain", "base");
+    const set = await call(
+      "alice",
+      "POST",
+      `/organizations/${o1}/projects/${w.project}/environments/${env.id}/variables`,
+      { key: "API_URL", kind: "plain", value: "production-only" },
+    );
+    expect(set.status).toBe(201);
+    const plan = await w.plan(target);
+    expect(brief(plan)).toEqual(["create API_URL *", "create API_URL production"]);
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.vdata()).toEqual({ API_URL: "base" });
+    expect(w.vdata("production")).toEqual({ API_URL: "production-only" });
+  });
+
+  test("a change is an update, and fields that someone added by hand stay", async () => {
+    const { w, target } = await make();
+    w.vault("_", { HAND: "by hand" }, { [MANAGED_KEY]: marker(w), team: "ops" });
+    await w.put("CHANGING", "plain", "first");
+    await w.finished(target, (await w.apply(target, (await w.plan(target)).json.id)).json.id);
+    expect(w.vdata()).toEqual({ HAND: "by hand", CHANGING: "first" });
+
+    const vars = await call("alice", "GET", `/organizations/${o1}/projects/${w.project}/variables`);
+    const variable = vars.json.items.find((v: { key: string }) => v.key === "CHANGING");
+    await call(
+      "alice",
+      "PATCH",
+      `/organizations/${o1}/projects/${w.project}/variables/${variable.id}`,
+      { value: "second" },
+    );
+    const second = await w.plan(target);
+    expect(brief(second)).toEqual(["update CHANGING *"]);
+    const run = await w.finished(target, (await w.apply(target, second.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.vdata()).toEqual({ HAND: "by hand", CHANGING: "second" });
+    expect(w.vmeta()).toEqual({
+      [MANAGED_KEY]: marker(w),
+      team: "ops",
+      [`${PLAIN_PREFIX}CHANGING`]: "1",
+    });
+  });
+
+  test("with the prune policy, a field that is no longer wanted goes in a new version, and the secret stays", async () => {
+    const { w, target } = await make({ policy: "prune" });
+    w.vault(
+      "_",
+      { OLD: "old", WANTED: "w" },
+      { [MANAGED_KEY]: marker(w), [`${PLAIN_PREFIX}WANTED`]: "1" },
+    );
+    await w.put("WANTED", "plain", "w");
+    const plan = await w.plan(target);
+    expect(brief(plan)).toEqual(["delete OLD *", "noop WANTED *"]);
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.vdata()).toEqual({ WANTED: "w" });
+    expect(vault.secrets.get(`${VAULT_PREFIX}/${w.path}/_`)?.versions).toHaveLength(2);
+    expect(
+      vault.secrets
+        .get(`${VAULT_PREFIX}/${w.path}/_`)
+        ?.versions.some((v) => v.deleted || v.destroyed),
+    ).toBe(false);
+    expect(vault.calls.some((c) => c.method === "DELETE" || /destroy|delete/.test(c.path))).toBe(
+      false,
+    );
+  });
+
+  test("does not take over a secret that is there but not ours", async () => {
+    const { w, target } = await make();
+    w.vault("_", { CLASH: "by hand" }, null);
+    await w.put("CLASH", "plain", "ours");
+    const plan = await w.plan(target);
+    expect(brief(plan)).toEqual(["create CLASH *"]);
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("failed");
+    expect(run.json.items[0].error).toContain(`${MANAGED_KEY}=${marker(w)}`);
+    expect(w.vdata()).toEqual({ CLASH: "by hand" });
+    expect(w.vmeta()).toBeNull();
+  });
+
+  test("a Vault that rejects the secret ID fails the plan in fixed words", async () => {
+    const { w, target } = await make({ connection: conns.vaultWrongSecret });
+    const res = await w.plan(target);
+    expect([res.status, res.json.code]).toEqual([502, "target_failed"]);
+    expect(res.json.detail).toContain("role ID or secret ID");
+    expect(res.text).not.toContain("not-the-vault-secret-id");
+    expect(vault.live.size).toBe(0);
+  });
+
+  test("needs a Vault connection of this organization and a valid config", async () => {
+    const w = await world({ type: "vault-kv" });
+    expect((await w.make({ connectionId: conns.gitlab })).json.code).toBe(
+      "connection_type_mismatch",
+    );
+    expect((await w.make({ connectionId: conns.kube })).json.code).toBe("connection_type_mismatch");
+    expect((await w.make({ connectionId: conns.vaultOther })).json.code).toBe("unknown_connection");
+    for (const config of [
+      { path: "../other" },
+      { path: "a/b/c/d/e" },
+      {},
+      { path: "ok", token: "no" },
+    ]) {
+      expect((await w.make({ config })).status).toBe(422);
+    }
+    const wrong = await world({ connection: conns.vault });
+    expect((await wrong.make()).json.code).toBe("connection_type_mismatch");
+  });
+
+  test("a connection that is not a Vault one never has its secret sent to a Vault", async () => {
+    const w = await world({ type: "vault-kv" });
+    // the route refuses this pairing; a row that got there some other way must not slip through
+    const row = await createSyncTarget(t.db, {
+      organizationId: o1,
+      projectId: w.project,
+      name: "sneaky",
+      type: "vault-kv",
+      connectionId: conns.role,
+      config: { path: w.path },
+      environmentMapping: {},
+    });
+    const before = vault.calls.length;
+    const res = await w.plan(row.id);
+    expect([res.status, res.json.code]).toEqual([422, "connection_type"]);
+    expect(vault.calls.length).toBe(before);
   });
 });
 

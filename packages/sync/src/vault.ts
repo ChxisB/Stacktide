@@ -34,35 +34,94 @@ export const vaultSecretIdSchema = z
   .string()
   .regex(/^[!-~]{8,256}$/, "must be an AppRole secret ID");
 
-/** What the platform needs under the prefix, as Vault names capabilities: KV v2 reads and writes the `data` path and lists the `metadata` path. `show` is the policy path that grants it. */
+/**
+ * What the platform needs under the prefix, as Vault names capabilities: KV v2 reads and writes the
+ * `data` path, writes the `metadata` path (where the ownership marker and the not-a-secret flags live)
+ * and lists it. Nothing deletes or destroys a version, so `delete` is not asked for. `show` is the
+ * policy path that grants it.
+ */
 const NEEDS = (c: VaultConfig) =>
   [
     {
       path: `${c.kvMount}/data/${c.prefix}/orch-check`,
       show: `${c.kvMount}/data/${c.prefix}/*`,
-      caps: ["create", "read", "update", "delete"],
+      caps: ["create", "read", "update"],
     },
     {
       path: `${c.kvMount}/metadata/${c.prefix}/`,
       show: `${c.kvMount}/metadata/${c.prefix}/*`,
-      caps: ["list"],
+      caps: ["create", "update", "list"],
     },
   ] as const;
 
-const WHY = {
+export const VAULT_WHY = {
   unauthorized:
     "rejected the AppRole login: the role ID or secret ID is wrong, expired or revoked, or the auth mount is not an AppRole method",
   forbidden: "refused the AppRole login: the role may be limited to other addresses or policies",
   not_found: "has no AppRole auth method at this mount: check the address and the auth mount",
 } as const;
 
-const json = (text: string): unknown => {
+export const vaultJson = (text: string): unknown => {
   try {
     return JSON.parse(text);
   } catch {
     return undefined;
   }
 };
+
+export interface VaultDeps {
+  fetch: Fetch;
+  timeoutMs?: number | undefined;
+}
+
+/** One request to the Vault at `address`; the token, when there is one, goes in the header Vault reads and nowhere else. */
+export const vaultRequest = (
+  config: Pick<VaultConfig, "address">,
+  d: VaultDeps,
+  method: string,
+  path: string,
+  body?: unknown,
+  token?: string,
+) =>
+  send(
+    d.fetch,
+    `${config.address}/v1/${path}`,
+    {
+      method,
+      headers: {
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+        ...(token ? { "x-vault-token": token } : {}),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    },
+    d.timeoutMs,
+  );
+
+/** Logs in with the AppRole and returns the client token. Any failure is a `CloudError` that says why in a word. */
+export async function vaultLogin(
+  config: VaultConfig,
+  secretId: string,
+  d: VaultDeps,
+): Promise<string> {
+  const login = await vaultRequest(config, d, "POST", `auth/${config.authMount}/login`, {
+    role_id: config.roleId,
+    secret_id: secretId,
+  });
+  // Vault answers a wrong role or secret ID with a 400
+  if (login.status !== 200)
+    throw new CloudError(login.status === 400 ? "unauthorized" : reasonOf(login.status));
+  const granted = (vaultJson(login.text) as { auth?: { client_token?: unknown } } | undefined)?.auth
+    ?.client_token;
+  if (typeof granted !== "string" || !granted) throw new CloudError("unexpected");
+  return granted;
+}
+
+/** Lets a token go. A failure is ignored: the token then lives until its TTL, which the role sets. */
+export const vaultRevoke = (config: VaultConfig, token: string, d: VaultDeps): Promise<void> =>
+  vaultRequest(config, d, "POST", "auth/token/revoke-self", {}, token).then(
+    () => undefined,
+    () => undefined,
+  );
 
 /**
  * The connection test: logs in with the AppRole, asks Vault what the resulting token may do on the two
@@ -72,40 +131,22 @@ const json = (text: string): unknown => {
 export async function checkVaultAppRole(
   config: VaultConfig,
   secretId: string,
-  d: { fetch: Fetch; timeoutMs?: number | undefined },
+  d: VaultDeps,
 ): Promise<Check> {
-  const call = (path: string, body: unknown, token?: string) =>
-    send(
-      d.fetch,
-      `${config.address}/v1/${path}`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(token ? { "x-vault-token": token } : {}),
-        },
-        body: JSON.stringify(body),
-      },
-      d.timeoutMs,
-    );
   let token: string | undefined;
   try {
-    const login = await call(`auth/${config.authMount}/login`, {
-      role_id: config.roleId,
-      secret_id: secretId,
-    });
-    // Vault answers a wrong role or secret ID with a 400
-    if (login.status !== 200)
-      throw new CloudError(login.status === 400 ? "unauthorized" : reasonOf(login.status));
-    const granted = (json(login.text) as { auth?: { client_token?: unknown } } | undefined)?.auth
-      ?.client_token;
-    if (typeof granted !== "string" || !granted) throw new CloudError("unexpected");
-    token = granted;
-
+    token = await vaultLogin(config, secretId, d);
     const needs = NEEDS(config);
-    const asked = await call("sys/capabilities-self", { paths: needs.map((n) => n.path) }, token);
+    const asked = await vaultRequest(
+      config,
+      d,
+      "POST",
+      "sys/capabilities-self",
+      { paths: needs.map((n) => n.path) },
+      token,
+    );
     if (asked.status !== 200) throw new CloudError(reasonOf(asked.status));
-    const answer = json(asked.text) as
+    const answer = vaultJson(asked.text) as
       | (Record<string, unknown> & { data?: Record<string, unknown> })
       | undefined;
     const lacking: string[] = [];
@@ -129,10 +170,10 @@ export async function checkVaultAppRole(
       summary: `The AppRole may read and write secrets under ${config.kvMount}/${config.prefix}`,
     };
   } catch (e) {
-    if (e instanceof CloudError) return failure("Vault", e.reason, WHY);
+    if (e instanceof CloudError) return failure("Vault", e.reason, VAULT_WHY);
     throw e;
   } finally {
     // the token was made for this check: do not leave it valid until it expires
-    if (token) await call("auth/token/revoke-self", {}, token).catch(() => undefined);
+    if (token) await vaultRevoke(config, token, d);
   }
 }

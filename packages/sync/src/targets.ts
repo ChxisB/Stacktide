@@ -4,6 +4,8 @@ import { AWS_SSM, parseAwsSsmConfig } from "./aws-ssm";
 import { GITLAB_VARIABLES, parseGitlabVariablesConfig } from "./gitlab-variables";
 import { KUBERNETES } from "./kubernetes";
 import { KUBERNETES_SECRET, parseKubernetesSecretConfig } from "./kubernetes-secret";
+import { VAULT_APPROLE } from "./vault";
+import { parseVaultKvConfig, VAULT_KV } from "./vault-kv";
 
 /**
  * The kinds of sync target the platform knows, and for each what its config looks like and which
@@ -15,6 +17,7 @@ export const TARGET_TYPES = {
   [AWS_SSM]: { connection: AWS_ASSUME_ROLE, validate: parseAwsSsmConfig },
   [AWS_SM]: { connection: AWS_ASSUME_ROLE, validate: parseAwsSmConfig },
   [KUBERNETES_SECRET]: { connection: KUBERNETES, validate: parseKubernetesSecretConfig },
+  [VAULT_KV]: { connection: VAULT_APPROLE, validate: parseVaultKvConfig },
 } as const;
 
 export type TargetType = keyof typeof TARGET_TYPES;

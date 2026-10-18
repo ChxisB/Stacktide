@@ -14,3 +14,4 @@ export { byKeyThenScope, refId } from "./ref";
 export * from "./targets";
 export * from "./types";
 export * from "./vault";
+export * from "./vault-kv";

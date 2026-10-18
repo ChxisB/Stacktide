@@ -30,12 +30,15 @@ import {
   type SyncAdapter,
   SyncError,
   type UnmanagedPolicy,
+  VAULT_KV,
+  vaultKvAdapter,
 } from "@orch/sync";
 import {
   type CloudDeps,
   openAwsSession,
   openGitlabConnection,
   openKubernetesConnection,
+  openVaultConnection,
 } from "./connections";
 import { guardrailRefusal } from "./guardrails";
 
@@ -222,6 +225,15 @@ export async function openTarget(
       return kubernetesSecretAdapter(config, token, {
         fetch: deps.cloud?.fetch ?? globalThis.fetch,
       });
+    }
+    case VAULT_KV: {
+      const { config, token } = await openVaultConnection(
+        deps,
+        organizationId,
+        connectionId,
+        requestId,
+      );
+      return vaultKvAdapter(config, token, { fetch: deps.cloud?.fetch ?? globalThis.fetch });
     }
   }
   throw new DomainError("target_type", 422, "This type of sync target cannot be used");

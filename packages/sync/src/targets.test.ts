@@ -5,14 +5,22 @@ import { SyncError } from "./errors";
 import { GITLAB_VARIABLES } from "./gitlab-variables";
 import { KUBERNETES_SECRET } from "./kubernetes-secret";
 import { isProtected, TARGET_TYPE_NAMES, TARGET_TYPES } from "./targets";
+import { VAULT_KV } from "./vault-kv";
 
 describe("target types", () => {
   test("lists the known types, each with the connection it needs", () => {
-    expect(TARGET_TYPE_NAMES).toEqual([GITLAB_VARIABLES, AWS_SSM, AWS_SM, KUBERNETES_SECRET]);
+    expect(TARGET_TYPE_NAMES).toEqual([
+      GITLAB_VARIABLES,
+      AWS_SSM,
+      AWS_SM,
+      KUBERNETES_SECRET,
+      VAULT_KV,
+    ]);
     expect(TARGET_TYPES[GITLAB_VARIABLES].connection).toBe("gitlab");
     expect(TARGET_TYPES[AWS_SSM].connection).toBe("aws_assume_role");
     expect(TARGET_TYPES[AWS_SM].connection).toBe("aws_assume_role");
     expect(TARGET_TYPES[KUBERNETES_SECRET].connection).toBe("kubernetes");
+    expect(TARGET_TYPES[VAULT_KV].connection).toBe("vault_approle");
   });
 
   test("a target is protected only when its config says so with a boolean true", () => {
@@ -20,6 +28,7 @@ describe("target types", () => {
     expect(isProtected({ region: "eu-west-1", prefix: "/a/b", protected: true })).toBe(true);
     expect(isProtected({ region: "eu-west-1", prefix: "/a/b", layout: "per-scope" })).toBe(false);
     expect(isProtected({ namespace: "apps", name: "env", protected: true })).toBe(true);
+    expect(isProtected({ path: "web", protected: true })).toBe(true);
     for (const config of [
       {},
       { protected: false },

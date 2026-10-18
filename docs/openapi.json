@@ -17795,7 +17795,8 @@
                       "gitlab-variables",
                       "aws-ssm",
                       "aws-sm",
-                      "kubernetes-secret"
+                      "kubernetes-secret",
+                      "vault-kv"
                     ]
                   },
                   "connectionId": {

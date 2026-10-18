@@ -17,7 +17,7 @@ Do: adapter writing `Opaque` Secrets in allowed namespaces, labelled as managed;
 Scope note (2026-10-18): the optional rollout-restart hook is NOT built. The adapter interface has no after-apply step, and a restart per changed item would restart a workload once per variable. Use a Secret watcher such as Reloader (docs/kubernetes-targets.md). Add an after-apply step to `SyncAdapter` if a cluster has none. A target is one Secret, so there are no scopes either.
 Done when: passes the conformance suite against `kind` or a fake API server; namespace allowlist enforced.
 
-### EXT-5 - Vault / OpenBao KV adapter  `[ ]` M - deps: EXT-1, SYNC-1
+### EXT-5 - Vault / OpenBao KV adapter  `[x]` M - deps: EXT-1, SYNC-1
 Do: KV v2 adapter with path mapping and version metadata.
 Done when: passes the conformance suite against a dev-mode server.
 

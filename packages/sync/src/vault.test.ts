@@ -51,8 +51,8 @@ function fakeVault(
     }
     if (path === "/v1/sys/capabilities-self") {
       const table = opts.caps ?? {
-        [DATA]: ["create", "read", "update", "delete"],
-        [META]: ["list"],
+        [DATA]: ["create", "read", "update"],
+        [META]: ["create", "update", "list"],
       };
       const paths = body.paths as string[];
       const data = Object.fromEntries(paths.map((p) => [p, table[p] ?? ["deny"]]));
@@ -94,7 +94,7 @@ describe("checkVaultAppRole", () => {
     expect(r).toMatchObject({ ok: false, reason: "forbidden" });
     expect(r).toMatchObject({
       message: expect.stringContaining(
-        "create, update, delete on kv/data/app/prod/*; list on kv/metadata/app/prod/*",
+        "create, update on kv/data/app/prod/*; create, update, list on kv/metadata/app/prod/*",
       ),
     });
     expect(v.revoked).toEqual([CLIENT_TOKEN]);
@@ -107,12 +107,12 @@ describe("checkVaultAppRole", () => {
     });
     // `deny` beats every other capability on the path
     const deny = fakeVault({
-      caps: { [DATA]: ["create", "read", "update", "delete", "deny"], [META]: ["list"] },
+      caps: { [DATA]: ["create", "read", "update", "deny"], [META]: ["create", "update", "list"] },
     });
     expect(await checkVaultAppRole(config, SECRET_ID, { fetch: deny.fetch })).toMatchObject({
       ok: false,
       reason: "forbidden",
-      message: expect.stringContaining("create, read, update, delete on kv/data/app/prod/*"),
+      message: expect.stringContaining("create, read, update on kv/data/app/prod/*"),
     });
   });
 
@@ -186,8 +186,8 @@ describe("checkVaultAppRole", () => {
   test("a different auth mount and KV mount are used as given", async () => {
     const v = fakeVault({
       caps: {
-        "secrets/data/team/orch-check": ["create", "read", "update", "delete"],
-        "secrets/metadata/team/": ["list"],
+        "secrets/data/team/orch-check": ["create", "read", "update"],
+        "secrets/metadata/team/": ["create", "update", "list"],
       },
     });
     const f: Fetch = (url, init) =>
