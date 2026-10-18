@@ -67,6 +67,62 @@ describe("mock server", () => {
   });
 });
 
+describe("a commit as a ref", () => {
+  test("the commit a branch is at reads like the branch; one it moved on from is unknown", async () => {
+    const { mock, api } = setup();
+    mock.addProject({ path: "g/p", files: { "a.txt": "one" } });
+    await api.repository.createBranch("g/p", "feature", "main");
+    const commit = (path: string) =>
+      api.repository.commitFiles("g/p", { branch: "feature", message: "m" }, [
+        { action: "create", path, content: path },
+      ]);
+    await commit("b.txt");
+    const head = (await api.repository.getBranch("g/p", "feature")).commitId;
+    const files = (ref: string) =>
+      collect(api.repository.tree("g/p", { ref, recursive: true })).then((e) =>
+        e.map((x) => x.path),
+      );
+    expect(await files(head)).toEqual(["a.txt", "b.txt"]);
+    expect((await api.repository.getFile("g/p", "b.txt", head)).content).toBe("b.txt");
+    expect((await api.repository.compare("g/p", "main", head)).files.map((f) => f.newPath)).toEqual(
+      ["b.txt"],
+    );
+
+    // the mock keeps no history, so a commit the branch moved on from is unknown, like any other
+    await commit("c.txt");
+    for (const ref of [head, "f".repeat(40)]) {
+      await expect(files(ref).catch((e) => e.kind)).resolves.toBe("not_found");
+      await expect(api.repository.compare("g/p", "main", ref).catch((e) => e.kind)).resolves.toBe(
+        "not_found",
+      );
+    }
+    mock.stop();
+  });
+});
+
+describe("merge request notes", () => {
+  test("a test can read a merge request's notes and delete one, after which updating it is a 404", async () => {
+    const { mock, api } = setup();
+    mock.addProject({ path: "g/p" });
+    await api.repository.createBranch("g/p", "feature", "main");
+    const mr = await api.mergeRequests.create("g/p", {
+      sourceBranch: "feature",
+      targetBranch: "main",
+      title: "t",
+    });
+    const note = await api.mergeRequests.createNote("g/p", mr.iid, "first");
+    await api.mergeRequests.updateNote("g/p", mr.iid, note.id, "second");
+    expect(mock.mrNotes("g/p", mr.iid)).toEqual([{ id: note.id, body: "second" }]);
+    mock.deleteMrNote("g/p", mr.iid, note.id);
+    expect(mock.mrNotes("g/p", mr.iid)).toEqual([]);
+    await expect(
+      api.mergeRequests.updateNote("g/p", mr.iid, note.id, "third").catch((e) => e.kind),
+    ).resolves.toBe("not_found");
+    expect(() => mock.mrNotes("g/p", 99)).toThrow("no merge request 99");
+    mock.stop();
+  });
+});
+
 describe("pipelines", () => {
   const CI = 'build:\n  stage: build\n  script:\n    - "true"\ntest:\n  script:\n    - "true"\n';
   const ready = (opts: Parameters<typeof setup>[0] = {}) => {
@@ -82,8 +138,8 @@ describe("pipelines", () => {
       { key: "CERT", value: "-----BEGIN-----", type: "file" },
     ]);
     expect(mock.pipelineVariables(p.id)).toEqual([
-      { key: "TOKEN", value: "super-secret-value" },
-      { key: "CERT", value: "-----BEGIN-----" },
+      { key: "TOKEN", value: "super-secret-value", type: "env_var" },
+      { key: "CERT", value: "-----BEGIN-----", type: "file" },
     ]);
     const shown = JSON.stringify([
       p,
@@ -153,6 +209,25 @@ describe("pipelines", () => {
     expect(() => mock.setJobStatus(p.id, "deploy", "running")).toThrow("no job deploy");
     expect(() => mock.jobIds(1)).toThrow("no pipeline 1");
     expect(() => mock.setPipelineStatus(1, "failed")).toThrow("no pipeline 1");
+    mock.stop();
+  });
+
+  test("a parent pipeline lists the child pipelines its trigger jobs started, whose jobs are their own", async () => {
+    const { mock, api } = ready();
+    const parent = await api.pipelines.trigger("g/p", "main");
+    expect(await collect(api.pipelines.bridges("g/p", parent.id))).toEqual([]);
+    const child = mock.addDownstream(parent.id, "orch-run", ["plan:a", "summary:a"]);
+    expect(await collect(api.pipelines.bridges("g/p", parent.id))).toEqual([
+      { name: "orch-run", status: "pending", downstreamPipelineId: child },
+    ]);
+    const names = async (id: number) =>
+      (await collect(api.pipelines.jobs("g/p", id))).map((j) => j.name);
+    expect(await names(child)).toEqual(["plan:a", "summary:a"]);
+    expect(await names(parent.id)).toEqual(["build", "test"]);
+    mock.setPipelineStatus(child, "running");
+    expect((await collect(api.pipelines.bridges("g/p", parent.id)))[0]?.status).toBe("running");
+    expect(mock.pipelineVariables(child)).toEqual([]);
+    expect(() => mock.addDownstream(1, "x", [])).toThrow("no pipeline 1");
     mock.stop();
   });
 

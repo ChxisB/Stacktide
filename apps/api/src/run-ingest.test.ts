@@ -10,6 +10,7 @@ import {
   getRun,
   moveRunStack,
   type RunWithStacks,
+  storePlanSummary,
   WEBHOOK_QUEUE,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
@@ -88,7 +89,12 @@ let n = 0;
  * A run of `stacks` on a project of its own, and the GitLab pipeline that plans (or applies) it:
  * what a pipeline event reports changes, and the run's stacks change with it.
  */
-async function world(stacks = ["net", "app"], action: "plan" | "apply" = "plan", ci?: string) {
+async function world(
+  stacks = ["net", "app"],
+  action: "plan" | "apply" = "plan",
+  ci?: string,
+  opts: { mr?: boolean } = {},
+) {
   const id = ++n;
   const gl = mock.addProject({
     path: `ri/r${id}`,
@@ -99,12 +105,22 @@ async function world(stacks = ["net", "app"], action: "plan" | "apply" = "plan",
     name: `r${id}`,
     gitlabProjectId: gl.id,
   });
+  let mr: { iid: number } | undefined;
+  if (opts.mr) {
+    await client().repository.createBranch(gl.id, "feature", "main");
+    mr = await client().mergeRequests.create(gl.id, {
+      sourceBranch: "feature",
+      targetBranch: "main",
+      title: "change",
+    });
+  }
   const run = await createRun(t.db, {
     organizationId: o1,
     projectId: project.id,
     ref: "main",
     sha: SHA,
     stacks,
+    ...(mr ? { mergeRequestIid: mr.iid } : {}),
   });
   const pipelineId = (await client().pipelines.trigger(gl.id, "main")).id;
   await attachRunPipeline(t.db, {
@@ -134,7 +150,39 @@ async function world(stacks = ["net", "app"], action: "plan" | "apply" = "plan",
   const deliver = (over: Record<string, unknown> = {}) => handler(job(event(over)));
   const set = (stack: string, status: string, kind: "plan" | "apply" | "summary" = action) =>
     mock.setJobStatus(pipelineId, `${kind}:${stack}`, status);
-  return { gl, project, run, pipelineId, event, read, states, deliver, set };
+  const notes = () => (mr ? mock.mrNotes(`ri/r${id}`, mr.iid) : []);
+  return { gl, project, run, pipelineId, event, read, states, deliver, set, mr, notes };
+}
+
+const GENERATE = "generate:\n  script: [echo]";
+
+/**
+ * A run whose pipeline has no stack jobs of its own: the project's CI starts the generated pipeline
+ * (docs/iac.md), a child with the jobs. `only` limits the jobs the child has.
+ */
+async function childWorld(stacks = ["net", "app"], only = stacks, opts: { mr?: boolean } = {}) {
+  const w = await world(stacks, "plan", GENERATE, opts);
+  const child = mock.addDownstream(
+    w.pipelineId,
+    "orch",
+    only.flatMap((s) => [`plan:${s}`, `summary:${s}`]),
+  );
+  /** What GitLab sends for an event of the child pipeline. */
+  const childEvent = (over: Record<string, unknown> = {}) =>
+    w.event({
+      pipelineId: child,
+      sourcePipelineId: w.pipelineId,
+      sourceProjectId: w.gl.id,
+      ...over,
+    });
+  return {
+    ...w,
+    child,
+    childEvent,
+    deliverChild: (over: Record<string, unknown> = {}) => handler(job(childEvent(over))),
+    setChild: (stack: string, status: string, kind: "plan" | "summary" = "plan") =>
+      mock.setJobStatus(child, `${kind}:${stack}`, status),
+  };
 }
 
 describe("a plan pipeline's events", () => {
@@ -260,6 +308,182 @@ describe("a plan pipeline's events", () => {
     w.set("net", "success");
     await w.deliver();
     expect(await w.states()).toEqual({ net: "planned", web: "queued" });
+  });
+});
+
+describe("a plan pipeline that starts the generated pipeline", () => {
+  test("the child's events move each stack along the child's jobs and note their ids", async () => {
+    const w = await childWorld();
+    await w.deliverChild();
+    expect(await w.states()).toEqual({ app: "queued", net: "queued" });
+    const ids = mock.jobIds(w.child);
+    expect((await w.read()).stacks.map((s) => [s.stack, s.planJobId, s.summaryJobId])).toEqual([
+      ["app", ids["plan:app"] as number, ids["summary:app"] as number],
+      ["net", ids["plan:net"] as number, ids["summary:net"] as number],
+    ]);
+    w.setChild("net", "success");
+    w.setChild("app", "running");
+    await w.deliverChild();
+    expect(await w.states()).toEqual({ app: "planning", net: "planned" });
+    w.setChild("app", "failed");
+    await w.deliverChild();
+    const app = (await w.read()).stacks.find((s) => s.stack === "app");
+    expect([app?.status, app?.error]).toEqual(["failed", "the plan failed"]);
+  });
+
+  test("the parent's own events read the child's jobs too, and agree", async () => {
+    const w = await childWorld();
+    w.setChild("net", "success");
+    w.setChild("app", "running");
+    await w.deliver();
+    expect(await w.states()).toEqual({ app: "planning", net: "planned" });
+    await w.deliverChild();
+    expect(await w.states()).toEqual({ app: "planning", net: "planned" });
+  });
+
+  test("a finished pipeline whose child has no job for a stack stops that stack", async () => {
+    const w = await childWorld(["net", "web"], ["net"]);
+    mock.setPipelineStatus(w.pipelineId, "running");
+    await w.deliver();
+    expect(await w.states()).toEqual({ net: "queued", web: "queued" });
+    mock.setPipelineStatus(w.pipelineId, "failed");
+    await w.deliverChild();
+    const web = (await w.read()).stacks.find((s) => s.stack === "web");
+    expect([web?.status, web?.error]).toEqual(["failed", "no job ran for this stack"]);
+  });
+
+  test("the child's event names its parent only as a hint: another project's, another run's and nonsense move nothing", async () => {
+    const a = await childWorld(["net"]);
+    const b = await childWorld(["net"]);
+    a.setChild("net", "success");
+    b.setChild("net", "success");
+    asked.length = 0;
+    for (const hint of [
+      { sourceProjectId: a.gl.id + 999 },
+      { sourcePipelineId: a.pipelineId + 9999 },
+      // b's event naming a's pipeline: looked up under b's project, where it is no run's
+      { sourcePipelineId: a.pipelineId },
+      { sourcePipelineId: "1", sourceProjectId: "x" },
+      { sourcePipelineId: -1 },
+      { sourcePipelineId: undefined },
+    ]) {
+      await handler(job(b.childEvent(hint)));
+    }
+    expect(asked).toEqual([]);
+    expect(await a.states()).toEqual({ net: "queued" });
+    expect(await b.states()).toEqual({ net: "queued" });
+  });
+
+  test("a child that GitLab does not show adds no jobs and does not stop the others being read", async () => {
+    const w = await world(["net"]);
+    const child = mock.addDownstream(w.pipelineId, "elsewhere", ["plan:other"]);
+    mock.inject({ method: "GET", path: new RegExp(`/pipelines/${child}/jobs`), status: 404 });
+    w.set("net", "success");
+    await w.deliver();
+    expect(await w.states()).toEqual({ net: "planned" });
+  });
+
+  test("a child that fails to answer fails the job so the queue retries it", async () => {
+    const w = await childWorld(["net"]);
+    w.setChild("net", "success");
+    mock.inject({
+      method: "GET",
+      path: new RegExp(`/pipelines/${w.child}/jobs`),
+      status: 500,
+      times: 1,
+    });
+    await expect(w.deliverChild()).rejects.toThrow();
+    expect(await w.states()).toEqual({ net: "queued" });
+    await w.deliverChild();
+    expect(await w.states()).toEqual({ net: "planned" });
+  });
+
+  test("a pipeline that starts more children than a run makes is dropped, not half read", async () => {
+    const w = await world(["net"], "plan", GENERATE);
+    for (let i = 0; i < 21; i++) mock.addDownstream(w.pipelineId, `c${i}`, ["plan:net"]);
+    mock.setJobStatus(
+      mock.addDownstream(w.pipelineId, "last", ["plan:net"]),
+      "plan:net",
+      "success",
+    );
+    lines.length = 0;
+    await w.deliver();
+    expect(await w.states()).toEqual({ net: "queued" });
+    expect(lines.some((l) => l.includes("too many child pipelines"))).toBe(true);
+  });
+});
+
+describe("the merge request note", () => {
+  test("is written after an event, then updated in place as the stacks move", async () => {
+    const w = await childWorld(["net", "app"], ["net", "app"], { mr: true });
+    expect(w.notes()).toEqual([]);
+    await w.deliverChild();
+    expect(w.notes()).toHaveLength(1);
+    expect(w.notes()[0]?.body).toContain("| `net` | queued |");
+    const first = w.notes()[0]?.id;
+
+    w.setChild("net", "success");
+    await w.deliverChild();
+    const ids = mock.jobIds(w.child);
+    expect(w.notes()).toHaveLength(1);
+    expect(w.notes()[0]?.id).toBe(first);
+    const body = w.notes()[0]?.body ?? "";
+    expect(body).toContain("| `net` | planned |");
+    expect(body).toContain(`/-/jobs/${ids["plan:net"]})`);
+    expect(body).toContain("| `app` | queued |");
+  });
+
+  test("shows the counts of a summary that was posted before the event", async () => {
+    const w = await childWorld(["net"], ["net"], { mr: true });
+    w.setChild("net", "success");
+    await w.deliverChild();
+    await storePlanSummary(t.db, o1, w.project.id, w.run.id, "net", {
+      add: 3,
+      change: 2,
+      destroy: 1,
+      resources: [{ address: "aws_s3_bucket.secret_looking", actions: ["create"] }],
+    });
+    await w.deliverChild();
+    const body = w.notes()[0]?.body ?? "";
+    expect(body).toContain("| `net` | planned | 3 | 2 | 1 |");
+    expect(body).not.toContain("aws_s3_bucket");
+  });
+
+  test("is not written for a run that no merge request started", async () => {
+    const w = await childWorld(["net"]);
+    w.setChild("net", "success");
+    mock.requests.splice(0);
+    await w.deliverChild();
+    expect(mock.requests.some((r) => r.path.includes("/notes"))).toBe(false);
+  });
+
+  test("is not written for an event of a run that a newer commit replaced", async () => {
+    const w = await childWorld(["net"], ["net"], { mr: true });
+    await createRun(t.db, {
+      organizationId: o1,
+      projectId: w.project.id,
+      ref: "main",
+      sha: "c".repeat(40),
+      stacks: ["net"],
+      mergeRequestIid: (w.mr as { iid: number }).iid,
+    });
+    w.setChild("net", "success");
+    await w.deliverChild();
+    expect(await w.states()).toEqual({ net: "planned" });
+    expect(w.notes()).toEqual([]);
+  });
+
+  test("a note that cannot be written does not fail the event, and the next one catches up", async () => {
+    const w = await childWorld(["net"], ["net"], { mr: true });
+    w.setChild("net", "success");
+    mock.inject({ method: "POST", path: /\/notes$/, status: 500, times: 1 });
+    lines.length = 0;
+    await w.deliverChild();
+    expect(await w.states()).toEqual({ net: "planned" });
+    expect(w.notes()).toEqual([]);
+    expect(lines.some((l) => l.includes("could not update the merge request note"))).toBe(true);
+    await w.deliverChild();
+    expect(w.notes()[0]?.body).toContain("| `net` | planned |");
   });
 });
 

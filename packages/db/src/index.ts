@@ -12,6 +12,7 @@ export * from "./ci";
 export * from "./connections";
 export * from "./imports";
 export * from "./jobs";
+export * from "./merge-request-notes";
 export * from "./pg-error";
 export * from "./pipeline-configs";
 export * from "./pipeline-runs";

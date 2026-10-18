@@ -9,13 +9,16 @@ import {
   getPlanResources,
   getRun,
   IllegalTransition,
+  latestRunOfMergeRequest,
   listRuns,
   moveRunStack,
   type NewRun,
   type PlanSummary,
+  planPipelinesOfRun,
   recordStackJobs,
   runOfPipeline,
   storePlanSummary,
+  supersedeRuns,
 } from "./runs";
 import { runPipelines, runStacks, runs } from "./schema";
 import { createTestDb, type TestDb } from "./testing";
@@ -619,5 +622,130 @@ describe("plan summaries", () => {
       actions: ["create", "create", "create", "create"],
     }));
     expect(await refusedBy(write({ ...whole, planResources: worst }))).toBeUndefined();
+  });
+});
+
+describe("merge request runs", () => {
+  const OLD = "b".repeat(40);
+  const NEW = "c".repeat(40);
+  const states = async (w: Awaited<ReturnType<typeof world>>, id: string) =>
+    Object.fromEntries(
+      (await getRun(t.db, w.org.id, w.project.id, id))?.stacks.map((s) => [
+        s.stack,
+        [s.status, s.error],
+      ]) ?? [],
+    );
+  const plan = (w: Awaited<ReturnType<typeof world>>, runId: string, gitlabPipelineId: number) =>
+    attachRunPipeline(t.db, {
+      organizationId: w.org.id,
+      projectId: w.project.id,
+      runId,
+      gitlabPipelineId,
+      action: "plan",
+    });
+
+  test("the latest run of a merge request is the newest one of that merge request, and only of that project", async () => {
+    const w = await world();
+    const other = await world();
+    expect(await latestRunOfMergeRequest(t.db, w.org.id, w.project.id, 7)).toBeUndefined();
+    await createRun(t.db, input(w, ["a"], { mergeRequestIid: 7, sha: OLD }));
+    await createRun(t.db, input(w, ["a"], { mergeRequestIid: 8, sha: OLD }));
+    const newest = await createRun(t.db, input(w, ["a", "b"], { mergeRequestIid: 7, sha: NEW }));
+    await createRun(t.db, input(w, ["a"], { sha: NEW }));
+    await createRun(t.db, input(other, ["a"], { mergeRequestIid: 7, sha: OLD }));
+    const found = await latestRunOfMergeRequest(t.db, w.org.id, w.project.id, 7);
+    expect(found?.id).toBe(newest.id);
+    expect(found?.stacks.map((s) => s.stack)).toEqual(["a", "b"]);
+    // another organization's id for this project finds nothing
+    expect(await latestRunOfMergeRequest(t.db, other.org.id, w.project.id, 7)).toBeUndefined();
+  });
+
+  test("a newer commit cancels what has not planned and discards what has, and says why", async () => {
+    const w = await world();
+    const stale = await createRun(
+      t.db,
+      input(w, ["queued", "planning", "planned", "failed", "applying"], {
+        mergeRequestIid: 7,
+        sha: OLD,
+      }),
+    );
+    const move = (stack: string, ...to: RunState[]) =>
+      to.reduce(async (from, next) => {
+        const at = await from;
+        await moveRunStack(t.db, w.org.id, w.project.id, stale.id, stack, at, next);
+        return next;
+      }, Promise.resolve<RunState>("queued"));
+    await move("planning", "planning");
+    await move("planned", "planning", "planned");
+    await move("failed", "planning", "failed");
+    await move("applying", "planning", "planned", "applying");
+    await plan(w, stale.id, 501);
+    await plan(w, stale.id, 502);
+    const current = await createRun(t.db, input(w, ["queued"], { mergeRequestIid: 7, sha: NEW }));
+    await plan(w, current.id, 503);
+
+    expect(await supersedeRuns(t.db, w.org.id, w.project.id, 7, NEW)).toEqual({
+      runs: [stale.id],
+      pipelines: [501, 502],
+    });
+    const why = "superseded by a newer commit";
+    expect(await states(w, stale.id)).toEqual({
+      queued: ["canceled", why],
+      planning: ["canceled", why],
+      planned: ["discarded", why],
+      failed: ["failed", null],
+      // an apply that has begun is not cut off
+      applying: ["applying", null],
+    });
+    expect(await states(w, current.id)).toEqual({ queued: ["queued", null] });
+    // nothing left to do the second time, and no pipeline to stop
+    expect(await supersedeRuns(t.db, w.org.id, w.project.id, 7, NEW)).toEqual({
+      runs: [],
+      pipelines: [],
+    });
+  });
+
+  test("it touches only runs of that merge request, of that project, at another commit", async () => {
+    const w = await world();
+    const other = await world();
+    const mine = await createRun(t.db, input(w, ["a"], { mergeRequestIid: 7, sha: OLD }));
+    const sameCommit = await createRun(t.db, input(w, ["a"], { mergeRequestIid: 7, sha: NEW }));
+    const otherMr = await createRun(t.db, input(w, ["a"], { mergeRequestIid: 8, sha: OLD }));
+    const noMr = await createRun(t.db, input(w, ["a"], { sha: OLD }));
+    const elsewhere = await createRun(t.db, input(other, ["a"], { mergeRequestIid: 7, sha: OLD }));
+    for (const [i, r] of [mine, sameCommit, otherMr, noMr].entries()) await plan(w, r.id, 610 + i);
+    await plan(other, elsewhere.id, 600);
+
+    await supersedeRuns(t.db, w.org.id, w.project.id, 7, NEW);
+    expect(await states(w, mine.id)).toEqual({ a: ["canceled", "superseded by a newer commit"] });
+    for (const r of [sameCommit, otherMr, noMr])
+      expect(await states(w, r.id)).toEqual({ a: ["queued", null] });
+    expect(await states(other, elsewhere.id)).toEqual({ a: ["queued", null] });
+    // an organization that is not the project's moves nothing
+    expect(await supersedeRuns(t.db, other.org.id, w.project.id, 7, NEW)).toEqual({
+      runs: [],
+      pipelines: [],
+    });
+  });
+
+  test("an apply pipeline of a stale run is not for stopping here", async () => {
+    const w = await world();
+    const stale = await createRun(t.db, input(w, ["a"], { mergeRequestIid: 7, sha: OLD }));
+    await attachRunPipeline(t.db, {
+      organizationId: w.org.id,
+      projectId: w.project.id,
+      runId: stale.id,
+      gitlabPipelineId: 700,
+      action: "apply",
+    });
+    // the run is stale and its stacks are canceled, but there is no plan pipeline to stop
+    expect(await supersedeRuns(t.db, w.org.id, w.project.id, 7, NEW)).toEqual({
+      runs: [stale.id],
+      pipelines: [],
+    });
+    expect(await planPipelinesOfRun(t.db, w.org.id, w.project.id, stale.id)).toEqual([]);
+    await plan(w, stale.id, 701);
+    expect(await planPipelinesOfRun(t.db, w.org.id, w.project.id, stale.id)).toEqual([701]);
+    expect(await planPipelinesOfRun(t.db, w.org.id, w.project.id, crypto.randomUUID())).toEqual([]);
   });
 });

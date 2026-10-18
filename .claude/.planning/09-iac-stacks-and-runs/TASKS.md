@@ -24,7 +24,7 @@ Done when: tests cover every legal transition and reject every illegal one.
 Do: pipeline/job webhooks move run states; `POST /runs/:id/plan-summary` accepts add/change/destroy counts and a resource list from the job (ci principal must match project, ref and stack).
 Done when: tests cover out-of-order and duplicate events, a mismatched ci principal (403) and size limits.
 
-### IAC-7 - MR integration  `[ ]` M - deps: IAC-4, IAC-6, GL-2
+### IAC-7 - MR integration  `[x]` M - deps: IAC-4, IAC-6, GL-2
 Do: on MR open/update create a plan run, trigger the generated pipeline, and create-or-update **one** MR note with a per-stack table (status, counts, job links).
 Done when: tests show the note is updated not duplicated, stale pushes cancel superseded runs, and no plan contents beyond counts and resource addresses are posted.
 

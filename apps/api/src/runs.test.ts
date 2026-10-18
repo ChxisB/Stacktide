@@ -156,6 +156,24 @@ describe("creating a run", () => {
     });
   });
 
+  test("a run of a hundred stacks with the longest names is made, and its audit event lists the first few", async () => {
+    // an audit event holds 4096 bytes of metadata; a hundred 63-character names are more than that
+    const project = (await createProject(t.db, { organizationId: ids.o1, name: "wide" })).id;
+    const names = Array.from(
+      { length: 100 },
+      (_, i) => `${"s".repeat(60)}${String(i).padStart(3, "0")}`,
+    );
+    await syncStacks(t.db, ids.o1, project, names.map(stack), { prune: false });
+    const res = await call("alice", "POST", runsPath(ids.o1, project), valid({ stacks: names }));
+    expect(res.status).toBe(201);
+    expect(res.json.stacks).toHaveLength(100);
+    const [event] = await t.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "run.create"), eq(auditEvents.resourceId, res.json.id)));
+    expect(event?.metadata).toMatchObject({ stackCount: 100, stacks: names.slice(0, 20) });
+  });
+
   test("a merge request is optional", async () => {
     const res = await call("alice", "POST", runsPath(), valid());
     expect(res.status).toBe(201);

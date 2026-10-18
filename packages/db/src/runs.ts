@@ -1,5 +1,5 @@
 import { canTransition, isFinishedRun, type RunAction, type RunState } from "@orch/core";
-import { and, desc, eq, getTableColumns, inArray, lt } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, lt, ne } from "drizzle-orm";
 import type { Executor } from "./repo";
 import { runPipelines, runStacks, runs } from "./schema";
 
@@ -15,6 +15,16 @@ export type NewRun = Pick<
   /** Names of the stacks to run. The caller has checked that they exist. */
   stacks: readonly string[];
 };
+
+// shortcut: a run holds at most 100 stacks (what the run route accepts and the merge request planner
+// plans); upgrade when a repository really has more than that to plan at once.
+export const MAX_RUN_STACKS = 100;
+
+/** What an audit event says of a run's stacks: a hundred long names would not fit its 4096 bytes. */
+export const auditedStacks = (names: readonly string[]) => ({
+  stackCount: names.length,
+  stacks: names.slice(0, 20),
+});
 
 /** A move the lifecycle of `@orch/core` does not have: a bug in the caller, not a late event. */
 export class IllegalTransition extends Error {
@@ -260,4 +270,98 @@ export async function getPlanResources(
     .from(runStacks)
     .where(stackOf(organizationId, projectId, runId, stack));
   return (row?.resources ?? []) as PlanSummary["resources"];
+}
+
+/** The newest run a merge request has had, with its stacks. */
+export async function latestRunOfMergeRequest(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  mergeRequestIid: number,
+): Promise<RunWithStacks | undefined> {
+  const rows = await db
+    .select()
+    .from(runs)
+    .where(and(inProject(organizationId, projectId), eq(runs.mergeRequestIid, mergeRequestIid)))
+    .orderBy(desc(runs.id))
+    .limit(1);
+  return (await withStacks(db, rows))[0];
+}
+
+const SUPERSEDED = "superseded by a newer commit";
+
+/**
+ * A new commit on a merge request makes its earlier runs stale: their stacks that have not finished
+ * planning are `canceled` and those with a plan are `discarded`, so that no stale plan is applied
+ * (a stack whose apply has begun is not touched). Returns the runs it changed, for the caller to
+ * record, and GitLab's ids of their plan pipelines, for the caller to stop; a second call finds
+ * nothing left to do.
+ */
+export async function supersedeRuns(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  mergeRequestIid: number,
+  currentSha: string,
+): Promise<{ runs: string[]; pipelines: number[] }> {
+  return db.transaction(async (tx) => {
+    const stale = tx
+      .select({ id: runs.id })
+      .from(runs)
+      .where(
+        and(
+          inProject(organizationId, projectId),
+          eq(runs.mergeRequestIid, mergeRequestIid),
+          ne(runs.sha, currentSha),
+        ),
+      );
+    const touched = new Set<string>();
+    for (const [from, to] of [
+      [["queued", "planning"], "canceled"],
+      [["planned"], "discarded"],
+    ] as const) {
+      const moved = await tx
+        .update(runStacks)
+        .set({ status: to, error: SUPERSEDED })
+        .where(
+          and(
+            eq(runStacks.projectId, projectId),
+            eq(runStacks.organizationId, organizationId),
+            inArray(runStacks.runId, stale),
+            inArray(runStacks.status, from),
+          ),
+        )
+        .returning({ runId: runStacks.runId });
+      for (const m of moved) touched.add(m.runId);
+    }
+    if (touched.size === 0) return { runs: [], pipelines: [] };
+    const rows = await tx
+      .select({ id: runPipelines.gitlabPipelineId })
+      .from(runPipelines)
+      .where(and(inArray(runPipelines.runId, [...touched]), eq(runPipelines.action, "plan")))
+      .orderBy(runPipelines.gitlabPipelineId);
+    return { runs: [...touched].sort(), pipelines: rows.map((r) => r.id) };
+  });
+}
+
+/** GitLab's ids of the pipelines that plan a run, oldest first. */
+export async function planPipelinesOfRun(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  runId: string,
+): Promise<number[]> {
+  const rows = await db
+    .select({ id: runPipelines.gitlabPipelineId })
+    .from(runPipelines)
+    .where(
+      and(
+        eq(runPipelines.organizationId, organizationId),
+        eq(runPipelines.projectId, projectId),
+        eq(runPipelines.runId, runId),
+        eq(runPipelines.action, "plan"),
+      ),
+    )
+    .orderBy(runPipelines.gitlabPipelineId);
+  return rows.map((r) => r.id);
 }

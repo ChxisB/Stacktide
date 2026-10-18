@@ -70,6 +70,20 @@ const job = z
   }));
 export type Job = z.output<typeof job>;
 
+// A trigger job of a parent pipeline: `downstream_pipeline` is the child pipeline it started, null while there is none.
+const bridge = z
+  .object({
+    name: z.string(),
+    status,
+    downstream_pipeline: z.object({ id: z.number() }).nullish(),
+  })
+  .transform((b) => ({
+    name: b.name,
+    status: b.status,
+    downstreamPipelineId: b.downstream_pipeline?.id ?? null,
+  }));
+export type Bridge = z.output<typeof bridge>;
+
 const lint = z
   .object({
     valid: z.boolean(),
@@ -118,6 +132,12 @@ export function pipelinesApi(client: GitlabClient) {
       async *jobs(project: ProjectRef, id: number) {
         for await (const raw of client.paginate(`${pipe(project, id)}/jobs`)) {
           yield decode(job, raw, "job");
+        }
+      },
+      /** The trigger jobs of a pipeline and the child pipelines they started: a child's jobs are not in the parent's list. */
+      async *bridges(project: ProjectRef, id: number) {
+        for await (const raw of client.paginate(`${pipe(project, id)}/bridges`)) {
+          yield decode(bridge, raw, "bridge");
         }
       },
       async retry(project: ProjectRef, id: number) {

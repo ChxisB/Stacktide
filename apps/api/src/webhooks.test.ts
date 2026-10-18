@@ -371,6 +371,36 @@ describe("events", () => {
     });
   }
 
+  test("a child pipeline's event carries the ids of the pipeline that started it, and nothing else of it", async () => {
+    const body = {
+      project: { id: 5 },
+      object_attributes: { id: 32, status: "running", ref: "main", sha: "d".repeat(40) },
+      source_pipeline: {
+        project: { id: 5, web_url: CANARY, path_with_namespace: CANARY },
+        job_id: 9,
+        pipeline_id: 31,
+      },
+    };
+    expect((await hook({ event: "Pipeline Hook", body, uuid: "u-child" })).json).toEqual({
+      status: "queued",
+    });
+    const job = (await jobsFor(c1)).find((j) => j.payload.deliveryId === "u-child");
+    expect(job?.payload).toEqual({
+      connectionId: c1,
+      organizationId: o1,
+      event: "pipeline",
+      deliveryId: "u-child",
+      projectId: 5,
+      pipelineId: 32,
+      status: "running",
+      ref: "main",
+      sha: "d".repeat(40),
+      sourcePipelineId: 31,
+      sourceProjectId: 5,
+    });
+    expect(JSON.stringify(job)).not.toContain(CANARY);
+  });
+
   test("an event we do not handle, or none, is accepted and dropped without a job or a row", async () => {
     const before = [(await allJobs()).length, (await deliveries(c1)).length];
     const events = [

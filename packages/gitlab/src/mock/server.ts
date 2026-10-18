@@ -69,8 +69,10 @@ interface Pipe {
   sha: string;
   status: string;
   jobs: MockJob[];
+  /** Trigger jobs: the child pipelines this one started (`addDownstream`). */
+  bridges: { name: string; downstream: number }[];
   /** Kept for tests; GitLab never returns trigger variables, and neither does the mock. */
-  variables: { key: string; value: string }[];
+  variables: { key: string; value: string; type: "env_var" | "file" }[];
 }
 interface MockVar {
   key: string;
@@ -612,8 +614,11 @@ export function createMockGitlab(opts: MockOptions = {}) {
         if (hit) return hit;
       }
 
-      const branchOf = (name: string | undefined) =>
-        proj.branches.get(name ?? proj.defaultBranch ?? "");
+      // A ref is a branch name or the commit a branch is at now (the mock keeps no older commits).
+      const branchOf = (name: string | undefined) => {
+        const ref = name ?? proj.defaultBranch ?? "";
+        return proj.branches.get(ref) ?? [...proj.branches.values()].find((b) => b.head === ref);
+      };
 
       if (req.method === "GET" && sub === "/repository/tree") {
         const b = branchOf(q("ref"));
@@ -682,7 +687,12 @@ export function createMockGitlab(opts: MockOptions = {}) {
           sha: b.head,
           status: derive(jobs),
           jobs,
-          variables: vars.map((v) => ({ key: v.key, value: v.value })),
+          bridges: [],
+          variables: vars.map((v) => ({
+            key: v.key,
+            value: v.value,
+            type: v.variable_type === "file" ? "file" : "env_var",
+          })),
         };
         proj.pipelines.push(p);
         return json(pipeJson(p), 201);
@@ -699,7 +709,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
         });
       }
 
-      const pm = /^\/pipelines\/(\d+)(\/jobs|\/retry|\/cancel)?$/.exec(sub);
+      const pm = /^\/pipelines\/(\d+)(\/jobs|\/bridges|\/retry|\/cancel)?$/.exec(sub);
       if (pm) {
         const p = proj.pipelines.find((x) => x.id === Number(pm[1]));
         if (!p) return fail(404, "404 Pipeline Not Found");
@@ -707,6 +717,15 @@ export function createMockGitlab(opts: MockOptions = {}) {
         if (pm[2] === "/jobs" && req.method === "GET") {
           return page(
             p.jobs.map((j) => ({ ...j, web_url: `${origin}/${proj.path}/-/jobs/${j.id}` })),
+          );
+        }
+        if (pm[2] === "/bridges" && req.method === "GET") {
+          return page(
+            p.bridges.map((b) => ({
+              name: b.name,
+              status: proj.pipelines.find((x) => x.id === b.downstream)?.status ?? "pending",
+              downstream_pipeline: { id: b.downstream },
+            })),
           );
         }
         if (pm[2] === "/retry" && req.method === "POST") {
@@ -732,7 +751,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
       if (req.method === "GET" && f) {
         const path = decodeURIComponent(f[1] ?? "");
         const ref = q("ref") ?? proj.defaultBranch ?? "";
-        const b = proj.branches.get(ref);
+        const b = branchOf(ref);
         const content = b?.files.get(path);
         if (!b || content === undefined) return fail(404, "404 File Not Found");
         return json({
@@ -749,8 +768,8 @@ export function createMockGitlab(opts: MockOptions = {}) {
       }
 
       if (req.method === "GET" && sub === "/repository/compare") {
-        const from = proj.branches.get(q("from") ?? "");
-        const to = proj.branches.get(q("to") ?? "");
+        const from = branchOf(q("from") ?? "");
+        const to = branchOf(q("to") ?? "");
         if (!from || !to) return fail(404, "404 Ref Not Found");
         const diffs: unknown[] = [];
         for (const path of [...new Set([...from.files.keys(), ...to.files.keys()])].sort()) {
@@ -1052,6 +1071,43 @@ export function createMockGitlab(opts: MockOptions = {}) {
       const p = projects.flatMap((x) => x.pipelines).find((x) => x.id === pipelineId);
       if (!p) throw new Error(`no pipeline ${pipelineId}`);
       return Object.fromEntries(p.jobs.map((j) => [j.name, j.id]));
+    },
+    /** A child pipeline of `parentId` (what a trigger job `bridge` starts) with one pending job per name, on the parent's ref and commit; returns its id. */
+    addDownstream(parentId: number, bridge: string, jobs: string[]) {
+      const owner = projects.find((x) => x.pipelines.some((p) => p.id === parentId));
+      const parent = owner?.pipelines.find((p) => p.id === parentId);
+      if (!owner || !parent) throw new Error(`no pipeline ${parentId}`);
+      const child: Pipe = {
+        id: ++seq,
+        iid: owner.pipelines.length + 1,
+        ref: parent.ref,
+        sha: parent.sha,
+        status: "pending",
+        jobs: jobs.map((name) => ({
+          id: ++seq,
+          name,
+          stage: "test",
+          status: "pending",
+          allow_failure: false,
+        })),
+        bridges: [],
+        variables: [],
+      };
+      owner.pipelines.push(child);
+      parent.bridges.push({ name: bridge, downstream: child.id });
+      return child.id;
+    },
+    /** The notes (not system ones) on a merge request, oldest first. */
+    mrNotes(path: string, iid: number) {
+      const mr = projects.find((p) => p.path === path)?.mrs.find((m) => m.iid === iid);
+      if (!mr) throw new Error(`no merge request ${iid} in ${path}`);
+      return mr.notes.filter((n) => !n.system).map((n) => ({ id: n.id, body: n.body }));
+    },
+    /** Deletes a note, as a person can: later updates of it get a 404. */
+    deleteMrNote(path: string, iid: number, noteId: number) {
+      const mr = projects.find((p) => p.path === path)?.mrs.find((m) => m.iid === iid);
+      if (!mr) throw new Error(`no merge request ${iid} in ${path}`);
+      mr.notes = mr.notes.filter((n) => n.id !== noteId);
     },
     /** Sets the status of the pipeline itself, as GitLab derives it from the jobs. */
     setPipelineStatus(pipelineId: number, status: string) {

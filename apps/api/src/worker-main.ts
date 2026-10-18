@@ -10,6 +10,7 @@ import {
   WEBHOOK_QUEUE,
 } from "@orch/db";
 import { z } from "zod";
+import { mrPlanHandler } from "./mr-plan";
 import { pipelineEventHandler, workerGitlab } from "./pipeline-runs";
 import { runEventHandler } from "./run-ingest";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
@@ -24,6 +25,16 @@ const config = loadConfig(
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
     WORKER_POLL_MS: z.coerce.number().int().min(10).max(60_000).default(1_000),
     ORCH_MASTER_KEYS: z.string().min(1).optional(),
+    /**
+     * Merge request plans (IAC-7) need these three: where CI jobs reach the API, the `aud` of the token
+     * they ask for (the API's own setting) and an image with `orch`, `curl` and `jq`. The pipeline
+     * generator checks their form; what it refuses is shown on the merge request.
+     */
+    ORCH_API_URL: z.string().min(1).optional(),
+    ORCH_CI_AUDIENCE: z.string().min(1).optional(),
+    ORCH_HELPER_IMAGE: z.string().min(1).optional(),
+    /** Terragrunt has no default image: the repository (no tag) the stack's version is a tag of. */
+    ORCH_TERRAGRUNT_IMAGE: z.string().min(1).optional(),
     /** How often every sync target is checked for drift (SYNC-8); 0 switches the checks off. */
     DRIFT_CHECK_SECONDS: z.coerce
       .number()
@@ -55,9 +66,29 @@ if (keys) {
   handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger });
   handlers[DRIFT_TICK_QUEUE] = driftTickHandler({ db });
   handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger });
-  // one queue, two consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it belongs to (IAC-6)
+  // one queue, three consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
+  // belongs to (IAC-6); a merge request event plans the merge request (IAC-7)
   const gitlab = { db, gitlab: workerGitlab({ db, keys, logger }) };
-  handlers[WEBHOOK_QUEUE] = chain(pipelineEventHandler(gitlab), runEventHandler(gitlab));
+  const plans = [
+    ["ORCH_API_URL", config.ORCH_API_URL],
+    ["ORCH_CI_AUDIENCE", config.ORCH_CI_AUDIENCE],
+    ["ORCH_HELPER_IMAGE", config.ORCH_HELPER_IMAGE],
+  ] as const;
+  const missing = plans.filter(([, value]) => value === undefined).map(([name]) => name);
+  const {
+    ORCH_API_URL: apiUrl,
+    ORCH_CI_AUDIENCE: audience,
+    ORCH_HELPER_IMAGE: helperImage,
+  } = config;
+  const consumers = [pipelineEventHandler(gitlab), runEventHandler(gitlab)];
+  if (apiUrl !== undefined && audience !== undefined && helperImage !== undefined) {
+    const images = config.ORCH_TERRAGRUNT_IMAGE ? { terragrunt: config.ORCH_TERRAGRUNT_IMAGE } : {};
+    // a trailing slash is the usual way to write an address; the generator wants none
+    const mr = { apiUrl: apiUrl.replace(/\/+$/, ""), audience, helperImage, images };
+    consumers.push(mrPlanHandler({ ...gitlab, config: mr }));
+    logger.info("merge request plans are on");
+  } else logger.warn("merge requests will not be planned until these are set", { missing });
+  handlers[WEBHOOK_QUEUE] = chain(...consumers);
   // the schedule lives in the database, so every worker states it; the same timing keeps its place
   // shortcut: workers started with different values take turns setting it; give it one owner when that matters.
   await upsertSchedule(db, {

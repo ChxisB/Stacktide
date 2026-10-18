@@ -117,9 +117,9 @@ export async function retryPipeline(deps: RunDeps, at: RunAt, pipelineId: number
 }
 
 /** Why an event cannot be handled now or later, when it cannot: the job is dropped, not retried. */
-export const hopeless = (e: unknown) => {
+export const hopeless = (e: unknown, what = "the pipeline") => {
   if (e instanceof GitlabError) {
-    if (e.kind === "not_found") return "GitLab no longer has the pipeline";
+    if (e.kind === "not_found") return `GitLab no longer has ${what}`;
     if (e.kind === "unauthorized" || e.kind === "forbidden") return "GitLab refuses the token";
   }
   // the connection was deleted or is not a GitLab one: nothing a retry could change

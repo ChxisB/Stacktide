@@ -42,6 +42,9 @@ const PICKS: Record<EventName, ReadonlyArray<readonly [string, readonly string[]
     ["status", ["object_attributes", "status"]],
     ["ref", ["object_attributes", "ref"]],
     ["sha", ["object_attributes", "sha"]],
+    // set for a child pipeline: the pipeline that started it (IAC-7 reads the run's jobs from there)
+    ["sourcePipelineId", ["source_pipeline", "pipeline_id"]],
+    ["sourceProjectId", ["source_pipeline", "project", "id"]],
   ],
   job: [
     ["jobId", ["build_id"]],

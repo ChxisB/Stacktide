@@ -55,6 +55,31 @@ describe("worker entrypoint", () => {
     expect(without).toContain("ORCH_MASTER_KEYS is not set");
   });
 
+  test("plans merge requests only with the API address, the token audience and the helper image, and says which is missing", async () => {
+    const keys = `k1:${Buffer.alloc(32, 7).toString("base64")}`;
+    const run = async (env: Record<string, string>) => {
+      const child = start({ DATABASE_URL: t.url, ORCH_MASTER_KEYS: keys, ...env });
+      await Bun.sleep(500);
+      child.proc.kill("SIGTERM");
+      await child.proc.exited;
+      return await child.out;
+    };
+    const all = {
+      ORCH_API_URL: "https://orch.example.com/",
+      ORCH_CI_AUDIENCE: "orch.example.com",
+      ORCH_HELPER_IMAGE: "ghcr.io/example/orch-helper:1",
+    };
+    const on = await run(all);
+    expect(on).toContain("merge request plans are on");
+    expect(on).not.toContain("will not be planned");
+    for (const missing of Object.keys(all)) {
+      const out = await run(Object.fromEntries(Object.entries(all).filter(([k]) => k !== missing)));
+      expect(out).toContain(`"missing":["${missing}"]`);
+      expect(out).not.toContain("merge request plans are on");
+    }
+    expect(await run({})).toContain("merge requests will not be planned");
+  });
+
   test("the drift schedule is stated with keys, off at 0, and a value in between is refused", async () => {
     const keys = `k1:${Buffer.alloc(32, 7).toString("base64")}`;
     const run = async (extra: Record<string, string>) => {

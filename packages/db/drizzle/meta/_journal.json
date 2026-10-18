@@ -176,6 +176,13 @@
       "when": 1792278377665,
       "tag": "0024_run_ingest",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792280238085,
+      "tag": "0025_merge_request_notes",
+      "breakpoints": true
     }
   ]
 }

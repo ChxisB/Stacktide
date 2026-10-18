@@ -1,10 +1,12 @@
 import { DomainError, type Logger, RUN_STATES } from "@orch/core";
 import {
+  auditedStacks,
   createRun,
   getProject,
   getRun,
   listRuns,
   listStacks,
+  MAX_RUN_STACKS,
   type RunWithStacks,
   storePlanSummary,
 } from "@orch/db";
@@ -28,8 +30,6 @@ import {
 
 const params = z.object({ orgId: z.uuid(), projectId: z.uuid() });
 
-// shortcut: one request names at most 100 stacks; upgrade when a repository really has more than that to plan at once.
-const MAX_STACKS = 100;
 // the `runs.merge_request_iid` column is a 32-bit integer
 const MAX_IID = 2 ** 31 - 1;
 
@@ -93,7 +93,7 @@ const body = z.strictObject({
   stacks: z
     .array(z.string().min(1).max(63))
     .min(1)
-    .max(MAX_STACKS)
+    .max(MAX_RUN_STACKS)
     .refine((names) => new Set(names).size === names.length, "a stack is named twice"),
 });
 
@@ -172,7 +172,8 @@ export const runRoutes = ({ db, principal, logger }: RouteDeps & { logger: Logge
               ref: run.ref,
               sha: run.sha,
               mergeRequestIid: run.mergeRequestIid,
-              stacks: body.stacks,
+              // the run lists them all
+              ...auditedStacks(body.stacks),
             },
           });
           return run;
