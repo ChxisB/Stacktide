@@ -1,5 +1,5 @@
 # 09 IaC Stacks and Runs - Spec
-Prefix: IAC · Milestone: M3 · Status: todo
+Prefix: IAC · Milestone: M3 · Status: done
 
 ## Goal
 Terraform/OpenTofu orchestration on top of GitLab CI: discover stacks, plan on every MR for the stacks that changed, apply the saved plan on merge or by command - with the platform never touching cloud credentials.

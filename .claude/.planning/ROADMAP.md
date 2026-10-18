@@ -35,7 +35,7 @@ Status: `todo` / `building` / `done`. The factory updates this table.
 | 06 | [pipeline-catalog](06-pipeline-catalog/) | PIPE | M2 | 03, 04 | done |
 | 07 | [cli](07-cli/) | CLI | M2 | 02, 04 | building (CLI-7 awaits a real tag pipeline) |
 | 08 | [web-ui](08-web-ui/) | UI | M2 | 04, 05, 06 | building (UI-9 awaits Playwright and a real pipeline) |
-| 09 | [iac-stacks-and-runs](09-iac-stacks-and-runs/) | IAC | M3 | 02, 03, 04, 07 | todo |
+| 09 | [iac-stacks-and-runs](09-iac-stacks-and-runs/) | IAC | M3 | 02, 03, 04, 07 | done (first real plan/apply is a human gate) |
 | 10 | [drift-and-policy](10-drift-and-policy/) | POL | M4 | 09 | todo |
 | 11 | [governance](11-governance/) | GOV | M4 | 01, 04, 05 | todo |
 | 12 | [extra-sync-targets](12-extra-sync-targets/) | EXT | M5 | 05 | todo |
