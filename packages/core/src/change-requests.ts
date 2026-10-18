@@ -10,9 +10,26 @@ export const CHANGE_REQUEST_STATUSES = [
 ] as const;
 export type ChangeRequestStatus = (typeof CHANGE_REQUEST_STATUSES)[number];
 
-/** What a change request carries. Only variable edits so far (GOV-2). */
-export const CHANGE_REQUEST_KINDS = ["variables"] as const;
+/**
+ * What a change request carries: edits to the variables of an environment (GOV-2), or leave to
+ * apply a plan to a target or stacks that a protected environment guards (GOV-3).
+ */
+export const CHANGE_REQUEST_KINDS = ["variables", "sync_apply", "iac_apply"] as const;
 export type ChangeRequestKind = (typeof CHANGE_REQUEST_KINDS)[number];
+
+/** The kinds that approve an apply: nothing is sealed or applied by approving, the apply uses the approval up. */
+export const APPLY_KINDS = ["sync_apply", "iac_apply"] as const;
+export type ApplyKind = (typeof APPLY_KINDS)[number];
+
+/**
+ * What an apply approval is for: the run (a sync plan or an IaC run) and, for sync, its target; for
+ * IaC the stacks, each at the plan job it was approved at, so a plan made again needs a new approval.
+ */
+export interface ApplySubject {
+  runId: string;
+  targetId?: string;
+  stacks?: Record<string, number>;
+}
 
 /** How long a request waits for a decision before the expiry job closes it. */
 export const CHANGE_REQUEST_TTL_DAYS = 7;
@@ -22,7 +39,8 @@ export const CHANGE_REQUEST_MAX_OPEN = 50;
 
 /** One line of what a request would do: key names and actions, never a value. */
 export interface DiffEntry {
-  action: "set" | "rename" | "delete";
+  /** `apply`: the key is the sync target or the stack that would be applied. */
+  action: "set" | "rename" | "delete" | "apply";
   key: string;
   /** The kind a `set` was asked to make (it may be left to the existing variable). */
   kind?: string;

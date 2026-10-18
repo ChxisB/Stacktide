@@ -1,8 +1,15 @@
-import { type BulkOp, type ChangeRequestStatus, type DiffEntry, diffOf } from "@orch/core";
+import {
+  type ApplyKind,
+  type ApplySubject,
+  type BulkOp,
+  type ChangeRequestStatus,
+  type DiffEntry,
+  diffOf,
+} from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import { and, desc, eq, getTableColumns, inArray, lt, sql } from "drizzle-orm";
 import { type Executor, lockEnvironment, type Page } from "./repo";
-import { changeRequests } from "./schema";
+import { changeRequests, environments } from "./schema";
 import { type Bulked, bulkLevel, bulkPlan, openPending, sealPending } from "./variables";
 
 export const CHANGE_REQUEST_EXPIRE_QUEUE = "change_request.expire";
@@ -67,6 +74,42 @@ export async function createChangeRequest(
   return row as ChangeRequest;
 }
 
+/**
+ * Stores a request for leave to apply a plan (GOV-3), open until `expiresAt`. Nothing is sealed:
+ * `subject` names the run (and its target, or its stacks at their plan jobs) and `diff` what the
+ * approver is shown. The caller has checked that they exist and are planned.
+ */
+export async function createApplyRequest(
+  db: Executor,
+  input: At & {
+    kind: ApplyKind;
+    subject: ApplySubject;
+    diff: DiffEntry[];
+    author: Person;
+    expiresAt: Date;
+  },
+): Promise<ChangeRequest> {
+  const { runId, ...rest } = input.subject;
+  const [row] = await db
+    .insert(changeRequests)
+    .values({
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      environmentId: input.environmentId,
+      kind: input.kind,
+      diff: input.diff,
+      subjectId: runId,
+      subject: rest,
+      authorKind: input.author.kind,
+      authorId: input.author.id,
+      authorRef: input.author.ref,
+      expiresAt: input.expiresAt,
+    })
+    .returning(visible);
+  if (!row) throw new Error("insert returned no row");
+  return row as ChangeRequest;
+}
+
 export async function getChangeRequest(
   db: Executor,
   at: At,
@@ -105,7 +148,9 @@ export type Approval =
   | { result: "expired" }
   | { result: "self" }
   | { result: "conflict"; keys: string[] }
-  | { result: "applied"; request: ChangeRequest; changes: Bulked[] };
+  | { result: "applied"; request: ChangeRequest; changes: Bulked[] }
+  /** A request to apply a plan: decided, and used up when the apply starts (`consumeApproval`). */
+  | { result: "approved"; request: ChangeRequest };
 
 /**
  * Approves and applies a request in the caller's transaction (the caller audits in it too; any
@@ -119,11 +164,16 @@ export type Approval =
  */
 export async function approveChangeRequest(
   tx: Executor,
-  keys: KeyProvider,
+  keys: KeyProvider | undefined,
   at: At,
   id: string,
   approver: Person,
 ): Promise<Approval> {
+  const [head] = await tx
+    .select({ kind: changeRequests.kind })
+    .from(changeRequests)
+    .where(requestIs(at, id));
+  if (head && head.kind !== "variables") return approveApply(tx, at, id, approver);
   // Plan and apply see the same variables: nothing else writes this environment's until we end.
   if (!(await lockEnvironment(tx, at.organizationId, at.projectId, at.environmentId, "update"))) {
     return { result: "not_found" };
@@ -142,6 +192,7 @@ export async function approveChangeRequest(
   if (row.lapsed) return { result: "expired" };
   if (row.authorRef === approver.ref) return { result: "self" };
 
+  if (!keys) throw new Error("approving edits needs the keys that sealed them");
   const ops = await openPending(tx, keys, { ...at, id }, row.opsEnc);
   const scope = {
     organizationId: at.organizationId,
@@ -179,7 +230,125 @@ export async function approveChangeRequest(
   return { result: "applied", request: applied as ChangeRequest, changes };
 }
 
-/** Closes an open request without applying it and drops its sealed edits. Undefined: not there. `closed`: not open. */
+/** Approving a request to apply decides it and changes nothing else; the apply uses the approval up. */
+async function approveApply(tx: Executor, at: At, id: string, approver: Person): Promise<Approval> {
+  const [row] = await tx
+    .select({
+      status: changeRequests.status,
+      authorRef: changeRequests.authorRef,
+      lapsed: sql<boolean>`${changeRequests.expiresAt} <= now()`,
+    })
+    .from(changeRequests)
+    .where(requestIs(at, id))
+    .for("update");
+  if (!row) return { result: "not_found" };
+  if (row.status !== "open") return { result: "closed", status: row.status as ChangeRequestStatus };
+  if (row.lapsed) return { result: "expired" };
+  if (row.authorRef === approver.ref) return { result: "self" };
+  const [request] = await tx
+    .update(changeRequests)
+    .set({
+      status: "approved",
+      decidedByKind: approver.kind,
+      decidedById: approver.id,
+      decidedByRef: approver.ref,
+      decidedAt: sql`now()`,
+    })
+    .where(requestIs(at, id))
+    .returning(visible);
+  if (!request) throw new Error("change request vanished while locked");
+  return { result: "approved", request: request as ChangeRequest };
+}
+
+/** What an apply needs an approval for. For IaC the stacks it would apply, each at its plan job. */
+export interface ApprovalWanted {
+  kind: ApplyKind;
+  runId: string;
+  targetId?: string;
+  stacks?: Record<string, number>;
+}
+
+const covers = (subject: ChangeRequest["subject"], want: ApprovalWanted) =>
+  subject !== null &&
+  (want.targetId === undefined || subject.targetId === want.targetId) &&
+  Object.entries(want.stacks ?? {}).every(([name, job]) => subject.stacks?.[name] === job);
+
+/**
+ * Uses up an approval, in the caller's transaction (the apply it lets through commits or fails with
+ * it): the request to apply this run that is approved, not past its time and covers what is wanted
+ * becomes applied, and is returned: of those that do, the one that names the fewest stacks (then
+ * the oldest), so a broad approval is kept for the apply that needs it. Undefined when there is
+ * none. Two applies at once find one approval for one of them: the row is locked, and the other
+ * sees it taken. An approval for more stacks than are applied is used up whole.
+ */
+export async function consumeApproval(
+  tx: Executor,
+  at: { organizationId: string; projectId: string },
+  want: ApprovalWanted,
+): Promise<ChangeRequest | undefined> {
+  const candidates = await tx
+    .select(visible)
+    .from(changeRequests)
+    .where(
+      and(
+        eq(changeRequests.organizationId, at.organizationId),
+        eq(changeRequests.projectId, at.projectId),
+        eq(changeRequests.kind, want.kind),
+        eq(changeRequests.status, "approved"),
+        eq(changeRequests.subjectId, want.runId),
+        sql`${changeRequests.expiresAt} > now()`,
+      ),
+    )
+    .orderBy(changeRequests.id)
+    .limit(APPROVALS_LOOKED_AT)
+    .for("update");
+  const width = (c: ChangeRequest) => Object.keys(c.subject?.stacks ?? {}).length;
+  const found = (candidates as ChangeRequest[])
+    .filter((c) => covers(c.subject, want))
+    .reduce<ChangeRequest | undefined>(
+      (best, c) => (!best || width(c) < width(best) ? c : best),
+      undefined,
+    );
+  if (!found) return undefined;
+  const [used] = await tx
+    .update(changeRequests)
+    .set({ status: "applied", appliedAt: sql`now()` })
+    .where(eq(changeRequests.id, found.id))
+    .returning(visible);
+  if (!used) throw new Error("change request vanished while locked");
+  return used as ChangeRequest;
+}
+
+// shortcut: only the oldest 20 approvals of a run are looked at; a run with more than that approved and unused wants some rejected
+const APPROVALS_LOOKED_AT = 20;
+
+/** The slugs among `slugs` that are environments of the project and protected. */
+export async function protectedEnvironments(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  slugs: readonly string[],
+): Promise<string[]> {
+  if (slugs.length === 0) return [];
+  const rows = await db
+    .select({ slug: environments.slug })
+    .from(environments)
+    .where(
+      and(
+        eq(environments.organizationId, organizationId),
+        eq(environments.projectId, projectId),
+        eq(environments.protected, true),
+        inArray(environments.slug, [...slugs]),
+      ),
+    )
+    .orderBy(environments.slug);
+  return rows.map((r) => r.slug);
+}
+
+/**
+ * Closes an open request without applying it and drops its sealed edits. An approval to apply that
+ * no apply has used yet is closed the same way (revoked). Undefined: not there. `closed`: not open.
+ */
 export async function rejectChangeRequest(
   tx: Executor,
   at: At,
@@ -196,7 +365,9 @@ export async function rejectChangeRequest(
     .where(requestIs(at, id))
     .for("update");
   if (!row) return undefined;
-  if (row.status !== "open") return { result: "closed", status: row.status as ChangeRequestStatus };
+  if (row.status !== "open" && row.status !== "approved") {
+    return { result: "closed", status: row.status as ChangeRequestStatus };
+  }
   const [request] = await tx
     .update(changeRequests)
     .set({

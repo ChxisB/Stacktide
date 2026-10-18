@@ -4,6 +4,7 @@ import {
   type AuditEvent,
   audit,
   claimSyncRun,
+  consumeApproval,
   type Db,
   describeError,
   enqueue,
@@ -19,6 +20,7 @@ import {
 } from "@orch/db";
 import { type ItemInput, type PlanAction, type Remote, refId, SyncError } from "@orch/sync";
 import { z } from "zod";
+import { approvalRequired, protectedMappings } from "./apply-approval";
 import { desiredSnapshot, openTarget } from "./sync-plan";
 import type { JobContext, JobHandler } from "./worker";
 
@@ -36,7 +38,9 @@ const payloadSchema = z.object({
  * Hands a planned run to the `sync.apply` job and marks it applying, in the caller's transaction:
  * the one place that decides a plan may be applied (the database's clock decides expiry and the
  * one-at-a-time rule; a second apply on the target is a unique violation of
- * `sync_runs_one_applying`). `record` writes the audit rows as whoever asked.
+ * `sync_runs_one_applying`). `record` writes the audit rows as whoever asked. A target mapped to a
+ * protected environment (GOV-3) also needs an approved change request for this plan, which is used
+ * up here, in the same transaction: an apply that does not start keeps the approval.
  */
 export async function startApply(
   tx: Tx,
@@ -45,6 +49,16 @@ export async function startApply(
   record: (tx: Tx, event: AuditEvent) => Promise<unknown>,
 ): Promise<SyncRun> {
   const { organizationId, projectId } = run;
+  const guarded = await protectedMappings(tx, target);
+  const approval =
+    guarded.length === 0
+      ? undefined
+      : await consumeApproval(
+          tx,
+          { organizationId, projectId },
+          { kind: "sync_apply", runId: run.id, targetId: target.id },
+        );
+  if (guarded.length > 0 && !approval) throw approvalRequired(`Target ${target.name}`, guarded);
   // an apply that cannot finish must not block the target for good
   for (const id of await failStuckApplies(tx, organizationId, projectId, target.id)) {
     await record(tx, {
@@ -74,7 +88,12 @@ export async function startApply(
     resourceId: run.id,
     organizationId,
     projectId,
-    metadata: { targetId: target.id, name: target.name, counts: run.counts },
+    metadata: {
+      targetId: target.id,
+      name: target.name,
+      counts: run.counts,
+      ...(approval && { changeRequestId: approval.id }),
+    },
   });
   return claimed;
 }

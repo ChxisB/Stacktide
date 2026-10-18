@@ -641,7 +641,8 @@ describe("through the queue", () => {
     await w.tell();
     const f = fakeFetch(() => new Response("nope", { status: 500 }));
     const h = handler(f);
-    let now = new Date(NOW);
+    // queued at the real clock, so its first attempt is due when it says, not at a fixed date (+1: the column keeps microseconds)
+    let now = new Date(((await w.queued())[0]?.runAt ?? NOW).getTime() + 1);
     const waits: number[] = [];
     for (let attempt = 1; attempt <= 4; attempt++) {
       const [job] = await claim(t.db, { queues: [NOTIFY_QUEUE], workerId: "w", now });

@@ -3,10 +3,14 @@ import { createLogger, DomainError, type Subject } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
   type AuditEvent,
+  approveChangeRequest,
   attachRunPipeline,
   audit,
   auditEvents,
+  changeRequests,
+  createApplyRequest,
   createConnection,
+  createEnvironment,
   createOrganization,
   createPolicySet,
   createProject,
@@ -16,9 +20,11 @@ import {
   getRun,
   listPolicySets,
   moveRunStack,
+  type Person,
   recordPipelineRun,
   recordStackJobs,
   runPipelines,
+  setEnvironmentProtection,
   storePolicyVerdict,
   type Tx,
   upsertUser,
@@ -64,15 +70,20 @@ const GHOST = "ghost";
 const repo = (
   applyOn: Partial<Record<Name, string>> = {},
   tags: Partial<Record<Name, string[]>> = {},
+  environment: Partial<Record<Name, string>> = {},
 ) => ({
   ".gitlab-ci.yml": '"apply:net":\n  script: [echo]\n"apply:app":\n  script: [echo]\n',
   "stacks/net/stack.yml": `name: net\ntool: terraform\nversion: 1.9.0\n${
     applyOn.net ? `apply_on: ${applyOn.net}\n` : ""
-  }${tags.net ? `tags: [${tags.net.join(", ")}]\n` : ""}`,
+  }${tags.net ? `tags: [${tags.net.join(", ")}]\n` : ""}${
+    environment.net ? `environment: ${environment.net}\n` : ""
+  }`,
   "stacks/net/main.tf": BACKEND,
   "stacks/app/stack.yml": `name: app\ntool: terraform\nversion: 1.9.0\ndepends_on: [net]\n${
     applyOn.app ? `apply_on: ${applyOn.app}\n` : ""
-  }${tags.app ? `tags: [${tags.app.join(", ")}]\n` : ""}`,
+  }${tags.app ? `tags: [${tags.app.join(", ")}]\n` : ""}${
+    environment.app ? `environment: ${environment.app}\n` : ""
+  }`,
   "stacks/app/main.tf": BACKEND,
 });
 
@@ -80,6 +91,8 @@ interface Opts {
   applyOn?: Partial<Record<Name, string>>;
   /** The `tags` of each stack's `stack.yml`; policy sets attach to them. */
   tags?: Partial<Record<Name, string[]>>;
+  /** The `environment` of each stack's `stack.yml`: the platform environment whose variables it plans with. */
+  environment?: Partial<Record<Name, string>>;
   /** Where each stack of the run is; planned when left out. */
   states?: Partial<Record<Name, "queued" | "planning" | "planned" | "failed">>;
   /** Stacks whose plan job was never recorded. */
@@ -104,7 +117,7 @@ let edits = 0;
 async function world(o: Opts = {}) {
   const id = ++n;
   const path = `ap/p${id}`;
-  const gl = mock.addProject({ path, files: repo(o.applyOn, o.tags) });
+  const gl = mock.addProject({ path, files: repo(o.applyOn, o.tags, o.environment) });
   const api = client();
   await api.repository.createBranch(gl.id, "feature", "main");
   if (o.target) await api.repository.createBranch(gl.id, o.target, "main");
@@ -243,6 +256,43 @@ async function refused(p: Promise<unknown>) {
   throw new Error("the apply was not refused");
 }
 const PLANNED = { app: "planned", net: "planned" };
+
+const asker: Person = { kind: "user", id: "bob", ref: "user:bob" };
+const approver: Person = { kind: "user", id: "alice", ref: "user:alice" };
+/** A protected environment in the world's project. */
+async function guard(w: World, slug = "prod") {
+  const env = await createEnvironment(t.db, {
+    organizationId: o1,
+    projectId: w.project.id,
+    name: slug,
+    slug,
+  });
+  expect(await setEnvironmentProtection(t.db, o1, w.project.id, env.id, true)).toBeDefined();
+  return env;
+}
+/** A request to apply `stacks` (at the plan jobs given, or the real ones), approved by someone else unless left open. */
+async function approval(
+  w: World,
+  env: { id: string },
+  over: { runId?: string; stacks?: Record<string, number>; open?: boolean } = {},
+) {
+  const at = { organizationId: o1, projectId: w.project.id, environmentId: env.id };
+  const stacks = over.stacks ?? { app: PLAN_JOB.app, net: PLAN_JOB.net };
+  const made = await createApplyRequest(t.db, {
+    ...at,
+    kind: "iac_apply",
+    subject: { runId: over.runId ?? w.id, stacks },
+    diff: Object.keys(stacks).map((key) => ({ action: "apply" as const, key })),
+    author: asker,
+    expiresAt: new Date(Date.now() + 86_400_000),
+  });
+  if (!over.open) {
+    expect((await approveChangeRequest(t.db, keys, at, made.id, approver)).result).toBe("approved");
+  }
+  return made.id;
+}
+const statusOf = async (id: string) =>
+  (await t.db.select().from(changeRequests).where(eq(changeRequests.id, id)))[0]?.status;
 
 beforeAll(async () => {
   t = await createTestDb();
@@ -661,6 +711,131 @@ describe("applying a run", () => {
   });
 });
 
+describe("applying where an environment is protected (GOV-3)", () => {
+  const net = { net: PLAN_JOB.net };
+  const applyEvent = async (w: World) =>
+    (
+      await t.db
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.action, "run.apply"), eq(auditEvents.resourceId, w.id)))
+    )[0];
+
+  test("a stack that names a protected environment is applied only with an approved request, which the apply uses up", async () => {
+    const w = await world({ environment: { net: "prod" } });
+    const env = await guard(w);
+    const e = await refused(apply(w));
+    expect(e).toMatchObject({ status: 409, code: "approval_required" });
+    expect(e.message).toContain("net");
+    expect(e.message).toContain("prod");
+    expect(await w.states()).toEqual(PLANNED);
+    expect(w.triggered()).toBe(0);
+    expect(await applyEvent(w)).toBeUndefined();
+
+    // asked for is not approved
+    const asked = await approval(w, env, { stacks: net, open: true });
+    expect((await refused(apply(w))).code).toBe("approval_required");
+    expect(await statusOf(asked)).toBe("open");
+
+    const id = await approval(w, env, { stacks: net });
+    expect(await apply(w)).toEqual(["app", "net"]);
+    expect(await statusOf(id)).toBe("applied");
+    expect(await statusOf(asked)).toBe("open");
+    expect((await applyEvent(w))?.metadata).toMatchObject({ changeRequestId: id });
+  });
+
+  test("an approval is for its own run and the plan it saw: another run, or a plan made again, needs another", async () => {
+    const w = await world({ environment: { net: "prod" } });
+    const env = await guard(w);
+    const other = await approval(w, env, { stacks: net, runId: crypto.randomUUID() });
+    const older = await approval(w, env, { stacks: { net: PLAN_JOB.net - 1 } });
+    expect((await refused(apply(w))).code).toBe("approval_required");
+    expect(await w.states()).toEqual(PLANNED);
+    expect(await statusOf(other)).toBe("approved");
+    expect(await statusOf(older)).toBe("approved");
+
+    const right = await approval(w, env, { stacks: net });
+    expect(await apply(w)).toEqual(["app", "net"]);
+    expect(await statusOf(right)).toBe("applied");
+    expect(await statusOf(other)).toBe("approved");
+    expect(await statusOf(older)).toBe("approved");
+  });
+
+  test("an approval that leaves out a guarded stack of the apply does not serve it; the stacks it names may go alone", async () => {
+    const w = await world({ environment: { net: "prod", app: "prod" } });
+    const env = await guard(w);
+    const id = await approval(w, env, { stacks: net });
+    const e = await refused(apply(w));
+    expect(e.code).toBe("approval_required");
+    expect(e.message).toContain("app");
+    expect(await statusOf(id)).toBe("approved");
+    expect(await apply(w, { stacks: ["net"] })).toEqual(["net"]);
+    expect(await statusOf(id)).toBe("applied");
+  });
+
+  test("an approval is one apply, whole: a part of the stacks it names uses it up", async () => {
+    const w = await world({ environment: { net: "prod", app: "prod" } });
+    const env = await guard(w);
+    const id = await approval(w, env);
+    expect(await apply(w, { stacks: ["net"] })).toEqual(["net"]);
+    expect(await statusOf(id)).toBe("applied");
+    expect((await applyEvent(w))?.metadata).toMatchObject({ changeRequestId: id, stacks: ["net"] });
+  });
+
+  test("what names no environment, one that is not protected or one the project lacks is applied as before", async () => {
+    const plain = await world();
+    await guard(plain);
+    expect(await apply(plain)).toEqual(["app", "net"]);
+    expect((await applyEvent(plain))?.metadata).not.toHaveProperty("changeRequestId");
+
+    const open = await world({ environment: { net: "dev", app: "nowhere" } });
+    await createEnvironment(t.db, {
+      organizationId: o1,
+      projectId: open.project.id,
+      name: "Dev",
+      slug: "dev",
+    });
+    expect(await apply(open)).toEqual(["app", "net"]);
+
+    // only the stacks being applied count
+    const part = await world({ environment: { app: "prod" } });
+    await guard(part);
+    expect(await apply(part, { stacks: ["net"] })).toEqual(["net"]);
+  });
+
+  test("another project's protected environment of the same slug does not hold it", async () => {
+    await guard(await world());
+    const w = await world({ environment: { net: "prod" } });
+    expect(await apply(w)).toEqual(["app", "net"]);
+  });
+
+  test("a pipeline GitLab will not start does not spend the approval", async () => {
+    const w = await world({ environment: { net: "prod" } });
+    const env = await guard(w);
+    const id = await approval(w, env, { stacks: net });
+    mock.inject({
+      method: "POST",
+      path: new RegExp(`/projects/${w.gl.id}/pipeline$`),
+      status: 400,
+    });
+    expect((await refused(apply(w))).code).toBe("gitlab_refused");
+    expect(await statusOf(id)).toBe("approved");
+    expect(await w.states()).toEqual(PLANNED);
+    expect(await apply(w)).toEqual(["app", "net"]);
+    expect(await statusOf(id)).toBe("applied");
+  });
+
+  test("two applies of one run with one approval: one goes", async () => {
+    const w = await world({ environment: { net: "prod" } });
+    const env = await guard(w);
+    const id = await approval(w, env, { stacks: net });
+    const both = await Promise.allSettled([apply(w), apply(w)]);
+    expect(both.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(w.triggered()).toBe(1);
+    expect(await statusOf(id)).toBe("applied");
+  });
+});
+
 describe("applying on merge", () => {
   test("applies the stacks that opted in and leaves the others planned", async () => {
     const w = await world({ applyOn: { net: "merge" } });
@@ -798,6 +973,23 @@ describe("the merge event handler", () => {
     expect(note?.body).toContain("net");
     expect(await w.states()).toEqual({ app: "planned", net: "planning" });
     expect(w.triggered()).toBe(0);
+  });
+
+  test("a stack of a protected environment that opted in waits for an approval, and the merge request says so", async () => {
+    const w = await world({ applyOn: { net: "merge" }, environment: { net: "prod" } });
+    const env = await guard(w);
+    w.merge();
+    await handler(job(w));
+    const [note] = w.notes();
+    expect(note?.body).toContain("Not applied on merge");
+    expect(note?.body).toContain("prod");
+    expect(await w.states()).toEqual(PLANNED);
+    expect(w.triggered()).toBe(0);
+
+    const id = await approval(w, env, { stacks: { net: PLAN_JOB.net } });
+    await handler(job(w));
+    expect(await w.states()).toEqual({ app: "planned", net: "applying" });
+    expect(await statusOf(id)).toBe("applied");
   });
 
   test("drops an event whose merge request is gone, and fails the job on any other trouble", async () => {
@@ -997,6 +1189,151 @@ describe("the apply route", () => {
     expect([down.status, down.json.code]).toEqual([502, "gitlab_failed"]);
     expect(down.text).not.toContain("injected");
     expect(await w.states()).toEqual(PLANNED);
+  });
+
+  describe("a protected environment (GOV-3)", () => {
+    const crs = (w: World, envId: string) =>
+      `/organizations/${o1}/projects/${w.project.id}/environments/${envId}/change-requests`;
+    async function crCall(who: Who, method: string, path: string, body?: unknown, a = app) {
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (who) headers.cookie = people[who].cookie;
+      const res = await a.handle(
+        new Request(`http://localhost${path}`, {
+          method,
+          headers,
+          body: body === undefined ? undefined : JSON.stringify(body),
+        }),
+      );
+      const text = await res.text();
+      // biome-ignore lint/suspicious/noExplicitAny: response bodies are checked by the assertions
+      return { status: res.status, text, json: (text ? JSON.parse(text) : undefined) as any };
+    }
+    const ask = (w: World, envId: string, body: unknown, who: Who = "bob") =>
+      crCall(who, "POST", crs(w, envId), body);
+
+    test("the apply is refused with a 409 until an approval exists, then goes once and is audited with it", async () => {
+      const w = await world({ environment: { net: "prod" } });
+      const env = await guard(w);
+      const res = await call("alice", w);
+      expect([res.status, res.json.code]).toEqual([409, "approval_required"]);
+      expect(w.triggered()).toBe(0);
+      expect(await applied(w)).toEqual([]);
+
+      const id = await approval(w, env, { stacks: { net: PLAN_JOB.net } });
+      expect((await call("alice", w)).status).toBe(202);
+      expect((await applied(w))[0]?.metadata).toMatchObject({ changeRequestId: id });
+      expect(await statusOf(id)).toBe("applied");
+    });
+
+    test("a developer asks, a maintainer other than them approves, and the apply goes", async () => {
+      const w = await world({ environment: { net: "prod" } });
+      const env = await guard(w);
+      const made = await ask(w, env.id, { kind: "iac_apply", runId: w.id });
+      expect(made.status).toBe(201);
+      expect(made.json).toMatchObject({
+        kind: "iac_apply",
+        status: "open",
+        subject: { runId: w.id, stacks: { app: PLAN_JOB.app, net: PLAN_JOB.net } },
+        author: { kind: "user" },
+      });
+      expect(made.json.diff.map((d: { key: string }) => d.key).sort()).toEqual(["app", "net"]);
+      expect(made.json.diff.every((d: { action: string }) => d.action === "apply")).toBe(true);
+      expect((await call("alice", w)).json.code).toBe("approval_required");
+
+      const path = `${crs(w, env.id)}/${made.json.id}`;
+      // not by the one who asked, nor by a developer
+      expect((await crCall("bob", "POST", `${path}/approve`)).status).toBe(403);
+      const ok = await crCall("alice", "POST", `${path}/approve`);
+      expect(ok.status).toBe(200);
+      expect(ok.json).toMatchObject({ status: "approved", appliedAt: null });
+      expect(w.triggered()).toBe(0);
+
+      expect((await call("alice", w)).status).toBe(202);
+      expect(await statusOf(made.json.id)).toBe("applied");
+      expect((await applied(w))[0]?.metadata).toMatchObject({ changeRequestId: made.json.id });
+    });
+
+    test("an approval is revoked by rejecting it, and approving needs no keys", async () => {
+      const w = await world({ environment: { net: "prod" } });
+      const env = await guard(w);
+      const made = await ask(w, env.id, { kind: "iac_apply", runId: w.id, stacks: ["net"] });
+      const path = `${crs(w, env.id)}/${made.json.id}`;
+      // nothing was sealed, so approving needs no key provider
+      const keyless = makeApp(undefined);
+      const ok = await crCall("alice", "POST", `${path}/approve`, undefined, keyless);
+      expect([ok.status, ok.json.status]).toEqual([200, "approved"]);
+      const revoked = await crCall("alice", "POST", `${path}/reject`);
+      expect([revoked.status, revoked.json.status]).toEqual([200, "rejected"]);
+      expect((await call("alice", w)).json.code).toBe("approval_required");
+      expect((await crCall("alice", "POST", `${path}/approve`)).status).toBe(409);
+      expect(w.triggered()).toBe(0);
+    });
+
+    test("a request is made in a protected environment only", async () => {
+      const w = await world({ environment: { net: "prod" } });
+      const open = await createEnvironment(t.db, {
+        organizationId: o1,
+        projectId: w.project.id,
+        name: "Dev",
+        slug: "dev",
+      });
+      const res = await ask(w, open.id, { kind: "iac_apply", runId: w.id });
+      expect([res.status, res.json.code]).toEqual([409, "environment_not_protected"]);
+    });
+
+    test("a maintainer cannot approve their own request", async () => {
+      const w = await world({ environment: { net: "prod" } });
+      const env = await guard(w);
+      const made = await ask(
+        w,
+        env.id,
+        { kind: "iac_apply", runId: w.id, stacks: ["net"] },
+        "alice",
+      );
+      expect(made.status).toBe(201);
+      expect(made.json.subject.stacks).toEqual({ net: PLAN_JOB.net });
+      const own = await crCall("alice", "POST", `${crs(w, env.id)}/${made.json.id}/approve`);
+      expect([own.status, own.json.code]).toEqual([403, "self_approval"]);
+      expect(await statusOf(made.json.id)).toBe("open");
+      expect((await call("alice", w)).json.code).toBe("approval_required");
+    });
+
+    test("only a run that can be applied is asked for", async () => {
+      const w = await world();
+      const env = await guard(w);
+      const unknownStack = await ask(w, env.id, {
+        kind: "iac_apply",
+        runId: w.id,
+        stacks: ["nope"],
+      });
+      expect([unknownStack.status, unknownStack.json.code]).toEqual([422, "unknown_stack"]);
+      const noRun = await ask(w, env.id, { kind: "iac_apply", runId: crypto.randomUUID() });
+      expect(noRun.status).toBe(404);
+      const waiting = await world({ states: { net: "planning" } });
+      const waitEnv = await guard(waiting);
+      const notPlanned = await ask(waiting, waitEnv.id, {
+        kind: "iac_apply",
+        runId: waiting.id,
+        stacks: ["net"],
+      });
+      expect([notPlanned.status, notPlanned.json.code]).toEqual([409, "not_planned"]);
+      // left to default, it asks for what is planned, and for nothing when nothing is
+      const idle = await world({ states: { net: "planning", app: "planning" } });
+      const idleEnv = await guard(idle);
+      const nothing = await ask(idle, idleEnv.id, { kind: "iac_apply", runId: idle.id });
+      expect([nothing.status, nothing.json.code]).toEqual([409, "not_planned"]);
+      const drift = await world({ drift: true });
+      const driftEnv = await guard(drift);
+      const onDrift = await ask(drift, driftEnv.id, { kind: "iac_apply", runId: drift.id });
+      expect([onDrift.status, onDrift.json.code]).toEqual([409, "drift_run"]);
+      // a reporter may not ask
+      const reporter = await ask(w, env.id, { kind: "iac_apply", runId: w.id }, "carol");
+      expect(reporter.status).toBe(403);
+      expect(
+        (await t.db.select().from(changeRequests).where(eq(changeRequests.projectId, w.project.id)))
+          .length,
+      ).toBe(0);
+    });
   });
 
   test("shows no token, no plan and no GitLab text", async () => {

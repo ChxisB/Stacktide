@@ -1,3 +1,4 @@
+import type { ApplySubject } from "@orch/core";
 import { sql } from "drizzle-orm";
 import {
   check,
@@ -36,6 +37,10 @@ export const changeRequests = pgTable(
     kind: text().notNull(),
     status: text().notNull().default("open"),
     diff: jsonb().notNull(),
+    // What an approval to apply is for: the run it lets through (`subject_id`) and, in `subject`, its
+    // target or the stacks at their plan jobs. Set for those kinds, never for variables.
+    subjectId: uuid(),
+    subject: jsonb().$type<Omit<ApplySubject, "runId">>(),
     // Null once the request is closed: a value nobody can apply is not kept.
     opsEnc: bytea(),
     // Who asked, as the audit trail names them, and as a person (`user:<id>` however they signed in).
@@ -66,15 +71,23 @@ export const changeRequests = pgTable(
     index("change_requests_expiry_idx")
       .on(t.expiresAt)
       .where(sql`${t.status} in ('open', 'approved')`),
-    check("change_requests_kind_check", sql`${t.kind} in ('variables')`),
+    check("change_requests_kind_check", sql`${t.kind} in ('variables', 'sync_apply', 'iac_apply')`),
     check(
       "change_requests_status_check",
       sql`${t.status} in ('open', 'approved', 'applied', 'rejected', 'expired')`,
     ),
+    // Edits are sealed while a request for variables is undecided; a request to apply seals nothing.
     check(
       "change_requests_ops_check",
-      sql`(${t.status} in ('open', 'approved')) = (${t.opsEnc} is not null)`,
+      sql`case when ${t.kind} = 'variables' then (${t.status} in ('open', 'approved')) = (${t.opsEnc} is not null) else ${t.opsEnc} is null end`,
     ),
+    check(
+      "change_requests_subject_check",
+      sql`(${t.kind} = 'variables') = (${t.subjectId} is null)`,
+    ),
+    index("change_requests_subject_idx")
+      .on(t.projectId, t.subjectId)
+      .where(sql`${t.subjectId} is not null`),
     // Four eyes, also in the database: whoever approved or applied is not whoever asked.
     check(
       "change_requests_four_eyes_check",

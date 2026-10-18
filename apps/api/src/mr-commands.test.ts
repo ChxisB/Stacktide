@@ -2,14 +2,18 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createLogger, DomainError } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
+  approveChangeRequest,
   auditEvents,
+  createApplyRequest,
   createConnection,
+  createEnvironment,
   createOrganization,
   createProject,
   latestRunOfMergeRequest,
   listRuns,
   moveRunStack,
   recordStackJobs,
+  setEnvironmentProtection,
   WEBHOOK_QUEUE,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
@@ -98,10 +102,10 @@ const TERRAFORM = [{ tag: "terraform" as const, confidence: "high" as const, evi
 
 let n = 0;
 /** A linked Terraform project with an open, approved merge request that changes the `net` stack. */
-async function world(detectedTypes = TERRAFORM) {
+async function world(detectedTypes = TERRAFORM, files: Record<string, string> = FILES) {
   const id = ++n;
   const path = `mc/p${id}`;
-  const gl = mock.addProject({ path, files: FILES });
+  const gl = mock.addProject({ path, files });
   const api = client();
   await api.repository.createBranch(gl.id, "feature", "main");
   await api.repository.commitFiles(gl.id, { branch: "feature", message: "edit" }, [
@@ -381,6 +385,57 @@ describe("orch apply", () => {
     expect(w.posts()).toBe(1);
     expect(w.replies().at(-1)).toBe('Not applied: `This run has no stack named "nope"`');
     expect(await w.audits("run.apply")).toEqual([]);
+  });
+
+  test("a stack of a protected environment waits for an approved request (GOV-3), and the reply says so", async () => {
+    const w = await world(TERRAFORM, {
+      ...FILES,
+      "stacks/net/stack.yml": `${FILES["stacks/net/stack.yml"]}environment: prod\n`,
+    });
+    // a stack plans with the variables of the environment it names: that needs an image with orch
+    const withImages = mrCommandHandler({
+      db: t.db,
+      gitlab: async () => client(),
+      roles,
+      config: { ...config, images: { terraform: "ghcr.io/example/terraform-orch" } },
+    });
+    const env = await createEnvironment(t.db, {
+      organizationId: o1,
+      projectId: w.project.id,
+      name: "Prod",
+      slug: "prod",
+    });
+    await setEnvironmentProtection(t.db, o1, w.project.id, env.id, true);
+    await withImages(w.note("orch plan", DEV));
+    await w.planned();
+    w.forget();
+    await w.say("orch apply net", MAINT);
+    expect(w.replies().at(-1)).toContain("Not applied:");
+    expect(w.replies().at(-1)).toContain("prod");
+    expect(await w.states()).toEqual({ app: "planned", net: "planned" });
+    expect(w.posts()).toBe(1);
+
+    const run = await w.latest();
+    const planJobId = run?.stacks.find((s) => s.stack === "net")?.planJobId;
+    if (!run || !planJobId) throw new Error("net was not planned");
+    const at = { organizationId: o1, projectId: w.project.id, environmentId: env.id };
+    const made = await createApplyRequest(t.db, {
+      ...at,
+      kind: "iac_apply",
+      subject: { runId: run.id, stacks: { net: planJobId } },
+      diff: [{ action: "apply", key: "net" }],
+      author: { kind: "user", id: "bob", ref: "user:bob" },
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    await approveChangeRequest(t.db, keys, at, made.id, {
+      kind: "user",
+      id: "alice",
+      ref: "user:alice",
+    });
+    w.forget();
+    await w.say("orch apply net", MAINT);
+    expect(w.replies().at(-1)).toBe("Apply started for `net`.");
+    expect(await w.states()).toEqual({ app: "planned", net: "applying" });
   });
 
   test("whatever else refuses an apply is said in the reply", async () => {

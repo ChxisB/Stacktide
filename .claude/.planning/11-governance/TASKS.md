@@ -8,7 +8,7 @@ Done when: tests cover filters, permission checks, export content free of values
 Do: `environments.protected`; variable writes on protected envs create a change request; approve/reject endpoints; author cannot approve own request; expiry.
 Done when: tests cover the full state machine, self-approval rejection, expiry and that pending values are encrypted.
 
-### GOV-3 - Approvals for sync and IaC apply  `[ ]` M - deps: GOV-2, SYNC-6, IAC-8
+### GOV-3 - Approvals for sync and IaC apply  `[x]` M - deps: GOV-2, SYNC-6, IAC-8
 Do: protected-environment sync apply and IaC apply require an approved change request; auto-sync stays manual there.
 Done when: tests show apply is rejected without approval and succeeds with it for both paths.
 

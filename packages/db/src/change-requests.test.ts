@@ -4,11 +4,14 @@ import { CryptoError, envKeyProvider } from "@orch/crypto";
 import { eq, sql } from "drizzle-orm";
 import {
   approveChangeRequest,
+  consumeApproval,
+  createApplyRequest,
   createChangeRequest,
   expireChangeRequests,
   getChangeRequest,
   listChangeRequests,
   type Person,
+  protectedEnvironments,
   rejectChangeRequest,
 } from "./change-requests";
 import { pgCode } from "./pg-error";
@@ -622,6 +625,25 @@ describe("the state machine, below the application", () => {
     expect(await raw(cr.id, sql`status = 'approved'`)).toBe("55000");
   });
 
+  test("an approval to apply may be revoked until it is used, then it is closed like the others", async () => {
+    const w = await world();
+    const cr = await createApplyRequest(t.db, {
+      ...w.at,
+      kind: "sync_apply",
+      subject: { runId: crypto.randomUUID() },
+      diff: [{ action: "apply", key: "main" }],
+      author,
+      expiresAt: new Date(Date.now() + DAY),
+    });
+    expect(
+      await raw(cr.id, sql`status = 'approved', decided_by_ref = 'user:approver'`),
+    ).toBeUndefined();
+    expect(await raw(cr.id, sql`status = 'open', decided_by_ref = null`)).toBe("55000");
+    expect(await raw(cr.id, sql`status = 'rejected'`)).toBeUndefined();
+    expect(await raw(cr.id, sql`status = 'approved'`)).toBe("55000");
+    expect(await raw(cr.id, sql`status = 'applied'`)).toBe("55000");
+  });
+
   test("what the approvers were shown cannot be edited", async () => {
     const cr = await open();
     expect(await raw(cr.id, sql`diff = '[]'::jsonb`)).toBe("55000");
@@ -761,5 +783,316 @@ describe("variables written alongside", () => {
     expect((await approve(w, cr.id)).result).toBe("applied");
     expect(await values(w)).toEqual({ K: "prod" });
     expect(await values({ ...w, scope: other })).toEqual({ K: "dev" });
+  });
+});
+
+describe("approvals to apply (GOV-3)", () => {
+  const ask = (
+    w: World,
+    kind: "sync_apply" | "iac_apply",
+    subject: { runId: string; targetId?: string; stacks?: Record<string, number> },
+    over: { expiresAt?: Date; by?: Person } = {},
+  ) =>
+    createApplyRequest(t.db, {
+      ...w.at,
+      kind,
+      subject,
+      diff: [{ action: "apply", key: "main" }],
+      author: over.by ?? author,
+      expiresAt: over.expiresAt ?? new Date(Date.now() + 7 * DAY),
+    });
+  const consume = (
+    w: World,
+    want: Parameters<typeof consumeApproval>[2],
+    at = { organizationId: w.org.id, projectId: w.project.id },
+  ) => t.db.transaction((tx) => consumeApproval(tx, at, want));
+  const run = () => crypto.randomUUID();
+
+  test("is stored open with no sealed edits, and shows what it is for", async () => {
+    const w = await world();
+    const runId = run();
+    const target = crypto.randomUUID();
+    const cr = await ask(w, "sync_apply", { runId, targetId: target });
+    expect(cr).toMatchObject({
+      status: "open",
+      kind: "sync_apply",
+      subjectId: runId,
+      subject: { targetId: target },
+      diff: [{ action: "apply", key: "main" }],
+      authorRef: "user:author",
+    });
+    expect((await rowOf(cr.id))?.opsEnc).toBeNull();
+    expect(await getChangeRequest(t.db, w.at, cr.id)).toMatchObject({ subjectId: runId });
+    // a request for variables has no subject
+    const vars = await propose(w, [{ op: "delete", key: "K" }]);
+    expect([vars.subjectId, vars.subject]).toEqual([null, null]);
+  });
+
+  test("is approved by someone else, and is not applied by being approved", async () => {
+    const w = await world();
+    const cr = await ask(w, "iac_apply", { runId: run(), stacks: { net: 7 } });
+    expect(await approve(w, cr.id, author)).toEqual({ result: "self" });
+    expect((await rowOf(cr.id))?.status).toBe("open");
+    const out = await approve(w, cr.id);
+    if (out.result !== "approved") throw new Error(`not approved: ${out.result}`);
+    expect(out.request).toMatchObject({
+      status: "approved",
+      decidedById: "approver",
+      appliedAt: null,
+    });
+    expect(out.request.decidedAt).toBeInstanceOf(Date);
+    expect(await approve(w, cr.id, person("third"))).toEqual({
+      result: "closed",
+      status: "approved",
+    });
+  });
+
+  test("is not approved after its time, and is rejected like any request", async () => {
+    const w = await world();
+    const lapsed = await ask(
+      w,
+      "sync_apply",
+      { runId: run() },
+      { expiresAt: new Date(Date.now() + 30) },
+    );
+    await Bun.sleep(60);
+    expect(await approve(w, lapsed.id)).toEqual({ result: "expired" });
+    const cr = await ask(w, "sync_apply", { runId: run() });
+    const out = await t.db.transaction((tx) => rejectChangeRequest(tx, w.at, cr.id, approver));
+    expect(out?.result).toBe("rejected");
+    expect(await approve(w, cr.id)).toEqual({ result: "closed", status: "rejected" });
+  });
+
+  test("an approval no apply has used can be revoked, and serves nothing after; a used one is closed", async () => {
+    const w = await world();
+    const runId = run();
+    const cr = await ask(w, "sync_apply", { runId });
+    await approve(w, cr.id);
+    const out = await t.db.transaction((tx) =>
+      rejectChangeRequest(tx, w.at, cr.id, person("revoker")),
+    );
+    expect(out).toMatchObject({
+      result: "rejected",
+      request: { status: "rejected", decidedById: "revoker" },
+    });
+    expect(await consume(w, { kind: "sync_apply", runId })).toBeUndefined();
+    // closed for good
+    expect(await approve(w, cr.id, person("third"))).toEqual({
+      result: "closed",
+      status: "rejected",
+    });
+
+    const used = await ask(w, "sync_apply", { runId });
+    await approve(w, used.id);
+    expect((await consume(w, { kind: "sync_apply", runId }))?.id).toBe(used.id);
+    const late = await t.db.transaction((tx) => rejectChangeRequest(tx, w.at, used.id, approver));
+    expect(late).toEqual({ result: "closed", status: "applied" });
+    expect((await rowOf(used.id))?.status).toBe("applied");
+  });
+
+  test("when several approvals cover an apply, the one naming the fewest stacks is used, and the broad one is kept", async () => {
+    const w = await world();
+    const runId = run();
+    const approved = async (stacks: Record<string, number>) => {
+      const cr = await ask(w, "iac_apply", { runId, stacks });
+      await approve(w, cr.id);
+      return cr.id;
+    };
+    const broad = await approved({ net: 7, app: 8 });
+    const narrow = await approved({ net: 7 });
+    expect((await consume(w, { kind: "iac_apply", runId, stacks: { net: 7 } }))?.id).toBe(narrow);
+    expect((await rowOf(broad))?.status).toBe("approved");
+    expect((await consume(w, { kind: "iac_apply", runId, stacks: { net: 7, app: 8 } }))?.id).toBe(
+      broad,
+    );
+  });
+
+  test("an approval is used once, by the run it names and no other", async () => {
+    const w = await world();
+    const runId = run();
+    const target = crypto.randomUUID();
+    const cr = await ask(w, "sync_apply", { runId, targetId: target });
+    const want = { kind: "sync_apply", runId, targetId: target } as const;
+    // asked for, not yet approved
+    expect(await consume(w, want)).toBeUndefined();
+    await approve(w, cr.id);
+    expect(await consume(w, { ...want, runId: run() })).toBeUndefined();
+    expect(await consume(w, { ...want, targetId: crypto.randomUUID() })).toBeUndefined();
+    expect(await consume(w, { kind: "iac_apply", runId })).toBeUndefined();
+    const other = await world();
+    expect(
+      await consume(w, want, { organizationId: w.org.id, projectId: other.project.id }),
+    ).toBeUndefined();
+    expect(
+      await consume(w, want, { organizationId: other.org.id, projectId: w.project.id }),
+    ).toBeUndefined();
+    const used = await consume(w, want);
+    expect(used).toMatchObject({ id: cr.id, status: "applied", decidedById: "approver" });
+    expect(used?.appliedAt).toBeInstanceOf(Date);
+    expect(await consume(w, want)).toBeUndefined();
+    expect((await rowOf(cr.id))?.status).toBe("applied");
+  });
+
+  test("is not used when it lapsed, was rejected or expired", async () => {
+    const w = await world();
+    const lapsedRun = run();
+    const lapsed = await ask(
+      w,
+      "sync_apply",
+      { runId: lapsedRun },
+      { expiresAt: new Date(Date.now() + 50) },
+    );
+    await approve(w, lapsed.id);
+    await Bun.sleep(80);
+    expect(await consume(w, { kind: "sync_apply", runId: lapsedRun })).toBeUndefined();
+    // the sweep closes it; a fresh approval of another run is not touched
+    const freshRun = run();
+    const fresh = await ask(w, "sync_apply", { runId: freshRun });
+    await approve(w, fresh.id);
+    await t.db.transaction((tx) => expireChangeRequests(tx, 100));
+    expect((await rowOf(lapsed.id))?.status).toBe("expired");
+    expect((await rowOf(fresh.id))?.status).toBe("approved");
+    const rejectedRun = run();
+    const rej = await ask(w, "sync_apply", { runId: rejectedRun });
+    await t.db.transaction((tx) => rejectChangeRequest(tx, w.at, rej.id, approver));
+    expect(await consume(w, { kind: "sync_apply", runId: rejectedRun })).toBeUndefined();
+    expect((await consume(w, { kind: "sync_apply", runId: freshRun }))?.id).toBe(fresh.id);
+  });
+
+  test("a stack is covered only by an approval that names it at the plan job it was made at", async () => {
+    const w = await world();
+    const runId = run();
+    const approved = async (stacks: Record<string, number>) => {
+      const cr = await ask(w, "iac_apply", { runId, stacks });
+      await approve(w, cr.id);
+      return cr;
+    };
+    const small = await approved({ a: 1 });
+    expect(await consume(w, { kind: "iac_apply", runId, stacks: { a: 1, b: 2 } })).toBeUndefined();
+    expect(await consume(w, { kind: "iac_apply", runId, stacks: { a: 2 } })).toBeUndefined();
+    expect((await rowOf(small.id))?.status).toBe("approved");
+    const wide = await approved({ a: 1, b: 2, c: 3 });
+    expect((await consume(w, { kind: "iac_apply", runId, stacks: { a: 1, b: 2 } }))?.id).toBe(
+      wide.id,
+    );
+    // a request for a subset of what was approved uses the whole approval
+    expect((await rowOf(wide.id))?.status).toBe("applied");
+    expect((await consume(w, { kind: "iac_apply", runId, stacks: { a: 1 } }))?.id).toBe(small.id);
+  });
+
+  test("an approval is kept when the transaction that used it does not commit", async () => {
+    const w = await world();
+    const runId = run();
+    const cr = await ask(w, "sync_apply", { runId });
+    await approve(w, cr.id);
+    await t.db
+      .transaction(async (tx) => {
+        const used = await consumeApproval(
+          tx,
+          { organizationId: w.org.id, projectId: w.project.id },
+          { kind: "sync_apply", runId },
+        );
+        expect(used?.id).toBe(cr.id);
+        throw new Error("the apply failed");
+      })
+      .catch(() => {});
+    expect((await rowOf(cr.id))?.status).toBe("approved");
+    expect((await consume(w, { kind: "sync_apply", runId }))?.id).toBe(cr.id);
+  });
+
+  test("at the same time one approval serves one of two applies", async () => {
+    const w = await world();
+    const runId = run();
+    const cr = await ask(w, "sync_apply", { runId });
+    await approve(w, cr.id);
+    const at = { organizationId: w.org.id, projectId: w.project.id };
+    const first = holding((tx) => consumeApproval(tx, at, { kind: "sync_apply", runId }));
+    await first.ready;
+    const second = consume(w, { kind: "sync_apply", runId });
+    await Bun.sleep(50);
+    first.release();
+    expect((await first.done)?.id).toBe(cr.id);
+    expect(await second).toBeUndefined();
+  });
+
+  test("lists the environments of a project that are protected, among the names given", async () => {
+    const w = await world();
+    const at = (slugs: string[]) => protectedEnvironments(t.db, w.org.id, w.project.id, slugs);
+    expect(await at(["prod", "dev"])).toEqual([]);
+    await setEnvironmentProtection(t.db, w.org.id, w.project.id, w.env.id, true);
+    expect(await at(["prod", "dev", "nowhere"])).toEqual(["prod"]);
+    expect(await at(["dev"])).toEqual([]);
+    expect(await at([])).toEqual([]);
+    // another project's environment of the same name does not count
+    const other = await world();
+    await setEnvironmentProtection(t.db, other.org.id, other.project.id, other.env.id, true);
+    expect(await at(["prod"])).toEqual(["prod"]);
+    await setEnvironmentProtection(t.db, w.org.id, w.project.id, w.env.id, false);
+    expect(await at(["prod"])).toEqual([]);
+  });
+
+  describe("below the application", () => {
+    const insert = async (
+      w: World,
+      over: { kind: string; ops: boolean; subject: boolean; status?: string },
+    ) => {
+      try {
+        await t.db.execute(sql`
+          insert into change_requests (organization_id, project_id, environment_id, kind, status, diff, ops_enc, subject_id, author_kind, author_id, author_ref, expires_at)
+          values (${w.org.id}, ${w.project.id}, ${w.env.id}, ${over.kind}, ${over.status ?? "open"}, '[]'::jsonb,
+            ${over.ops ? sql`'\\x00'::bytea` : sql`null`}, ${over.subject ? sql`${crypto.randomUUID()}::uuid` : sql`null`}, 'user', 'a', 'user:a', now())`);
+        return undefined;
+      } catch (e) {
+        return pgCode(e);
+      }
+    };
+
+    test("an apply request has a subject and no sealed edits; a variables request the other way", async () => {
+      const w = await world();
+      expect(await insert(w, { kind: "sync_apply", ops: false, subject: true })).toBeUndefined();
+      expect(await insert(w, { kind: "iac_apply", ops: false, subject: true })).toBeUndefined();
+      expect(await insert(w, { kind: "sync_apply", ops: true, subject: true })).toBe("23514");
+      expect(await insert(w, { kind: "sync_apply", ops: false, subject: false })).toBe("23514");
+      expect(await insert(w, { kind: "variables", ops: true, subject: true })).toBe("23514");
+      expect(await insert(w, { kind: "variables", ops: false, subject: false })).toBe("23514");
+      expect(await insert(w, { kind: "variables", ops: true, subject: false })).toBeUndefined();
+      expect(await insert(w, { kind: "other", ops: false, subject: true })).toBe("23514");
+    });
+
+    test("what an approval is for cannot be edited, and the decider is still not the author", async () => {
+      const w = await world();
+      const cr = await ask(w, "sync_apply", { runId: run() });
+      const raw = async (set: ReturnType<typeof sql>) => {
+        try {
+          await t.db.execute(sql`update change_requests set ${set} where id = ${cr.id}`);
+          return undefined;
+        } catch (e) {
+          return pgCode(e);
+        }
+      };
+      expect(await raw(sql`subject_id = ${crypto.randomUUID()}::uuid`)).toBe("55000");
+      expect(await raw(sql`subject_id = null`)).toBe("55000");
+      expect(await raw(sql`subject = '{"stacks":{"a":1}}'::jsonb`)).toBe("55000");
+      expect(await raw(sql`subject = null`)).toBe("55000");
+      expect(await raw(sql`status = 'approved', decided_by_ref = 'user:author'`)).toBe("23514");
+      expect(await raw(sql`status = 'approved', decided_by_ref = 'user:approver'`)).toBeUndefined();
+      expect(await raw(sql`status = 'applied', applied_at = now()`)).toBeUndefined();
+      expect(await raw(sql`status = 'approved'`)).toBe("55000");
+    });
+  });
+
+  test("the expiry job closes a lapsed approval that was never used", async () => {
+    const w = await world();
+    const cr = await ask(
+      w,
+      "iac_apply",
+      { runId: run(), stacks: { a: 1 } },
+      { expiresAt: new Date(Date.now() + 50) },
+    );
+    await approve(w, cr.id);
+    await Bun.sleep(80);
+    const closed = await t.db.transaction((tx) => expireChangeRequests(tx, 100));
+    expect(closed.map((r) => r.id)).toContain(cr.id);
+    expect((await rowOf(cr.id))?.status).toBe("expired");
   });
 });

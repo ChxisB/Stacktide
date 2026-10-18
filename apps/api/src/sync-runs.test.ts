@@ -5,9 +5,12 @@ import { envKeyProvider, type KeyProvider } from "@orch/crypto";
 import {
   AUTO_SYNC_DELAY_MS,
   AUTO_SYNC_QUEUE,
+  approveChangeRequest,
   auditEvents,
+  changeRequests,
   claim as claimJob,
   claimSyncRun,
+  createApplyRequest,
   createConnection,
   createEnvironment,
   createOrganization,
@@ -20,6 +23,7 @@ import {
   jobs,
   queueTargetSync,
   recordSyncItem,
+  setEnvironmentProtection,
   syncDrift,
   syncRunItems,
   syncRuns,
@@ -2074,6 +2078,286 @@ describe("the guardrails (POL-4)", () => {
     const said = lines.slice(mark).filter((l) => l.includes("drift not checked"));
     expect(said).toHaveLength(1);
     expect(said.join("\n")).toContain("production-secret-protected");
+  });
+});
+
+describe("a protected environment (GOV-3)", () => {
+  const protect = async (w: World, env: "prod" | "stage" = "prod", value = true) =>
+    expect(
+      await setEnvironmentProtection(t.db, w.org, w.project, w.envs[env], value),
+    ).toBeDefined();
+  const crs = (w: World, env: "prod" | "stage" = "prod") =>
+    `/organizations/${w.org}/projects/${w.project}/environments/${w.envs[env]}/change-requests`;
+  const ask = (w: World, planId: string, who: Who = "dan", env: "prod" | "stage" = "prod") =>
+    call(who, "POST", crs(w, env), { kind: "sync_apply", targetId: w.target, planId });
+  const decide = (w: World, id: string, who: Who = "alice", verb = "approve") =>
+    call(who, "POST", `${crs(w)}/${id}/${verb}`);
+  const rowOf = async (id: string) =>
+    (await t.db.select().from(changeRequests).where(eq(changeRequests.id, id)))[0];
+  /** A project with one variable and a plan of it. */
+  async function planned(over: Parameters<typeof world>[0] = {}) {
+    const w = await world(over);
+    await w.put("project", "A", "plain", "a");
+    const plan = (await w.plan()).json.id as string;
+    return { w, plan };
+  }
+  const approved = async (w: World, plan: string) => {
+    const made = await ask(w, plan);
+    expect(made.status).toBe(201);
+    expect((await decide(w, made.json.id)).status).toBe(200);
+    return made.json.id as string;
+  };
+
+  test("an apply on a target mapped to one is refused until a second person approves, and then goes once", async () => {
+    const { w, plan } = await planned();
+    await protect(w);
+    const refused = await w.apply(plan);
+    expect([refused.status, refused.json.code]).toEqual([409, "approval_required"]);
+    expect((await w.run(plan)).json.status).toBe("planned");
+    expect(await jobsFor(plan)).toEqual([]);
+    expect(w.writes()).toEqual([]);
+
+    const made = await ask(w, plan);
+    expect(made.status).toBe(201);
+    expect(made.json).toMatchObject({
+      kind: "sync_apply",
+      status: "open",
+      diff: [{ action: "apply", key: "main" }],
+      subject: { runId: plan, targetId: w.target },
+      author: { kind: "user", id: people.dan.id },
+    });
+    // asked for is not approved
+    expect((await w.apply(plan)).json.code).toBe("approval_required");
+    // not by the one who asked, and nothing changed
+    const own = await decide(w, made.json.id, "dan");
+    expect([own.status, own.json.code]).toEqual([403, "self_approval"]);
+
+    const ok = await decide(w, made.json.id);
+    expect(ok.status).toBe(200);
+    expect(ok.json).toMatchObject({ status: "approved", appliedAt: null });
+    expect(ok.json.decidedBy.id).toBe(people.alice.id);
+    // approving applies nothing
+    expect(await jobsFor(plan)).toEqual([]);
+    expect(w.writes()).toEqual([]);
+
+    // the one who asked may start it
+    expect((await w.apply(plan, "dan")).status).toBe(202);
+    expect((await w.finished(plan)).json.status).toBe("applied");
+    expect(await rowOf(made.json.id)).toMatchObject({ status: "applied" });
+    expect((await rowOf(made.json.id))?.appliedAt).toBeInstanceOf(Date);
+    expect(w.writes()).toEqual(["POST"]);
+    const [applied] = await eventsOf("sync_run.apply", plan);
+    expect(applied?.metadata).toMatchObject({ changeRequestId: made.json.id });
+    expect(await eventsOf("change_request.create", made.json.id)).toHaveLength(1);
+    expect(await eventsOf("change_request.approve", made.json.id)).toHaveLength(1);
+  });
+
+  test("an approval is for one apply: a new plan, or the same one again, needs another", async () => {
+    const { w, plan } = await planned();
+    await protect(w);
+    await approved(w, plan);
+    expect((await w.apply(plan)).status).toBe(202);
+    await w.finished(plan);
+    await w.put("project", "B", "plain", "b");
+    const next = (await w.plan()).json.id as string;
+    const refused = await w.apply(next);
+    expect([refused.status, refused.json.code]).toEqual([409, "approval_required"]);
+    // and the approval of one plan does not serve another
+    const other = (await w.plan()).json.id as string;
+    await approved(w, next);
+    expect((await w.apply(other)).json.code).toBe("approval_required");
+    expect((await w.apply(next)).status).toBe(202);
+  });
+
+  test("an approval is not spent by an apply that does not start", async () => {
+    const { w, plan } = await planned();
+    await protect(w);
+    const id = await approved(w, plan);
+    await w.put("project", "B", "plain", "b");
+    // the variables changed since the plan
+    expect((await w.apply(plan)).json.code).toBe("plan_stale");
+    expect((await rowOf(id))?.status).toBe("approved");
+
+    // another apply is running on the target
+    const second = await w.plan();
+    const wait = (await w.plan()).json.id as string;
+    const release = pause();
+    try {
+      await approved(w, second.json.id);
+      expect((await w.apply(second.json.id)).status).toBe(202);
+      const taken = await approved(w, wait);
+      const busy = await w.apply(wait);
+      expect([busy.status, busy.json.code]).toEqual([409, "apply_in_progress"]);
+      expect((await rowOf(taken))?.status).toBe("approved");
+    } finally {
+      release();
+    }
+    await w.finished(second.json.id);
+    expect((await w.apply(wait)).status).toBe(202);
+  });
+
+  test("two applies of one plan at once with one approval: one goes", async () => {
+    const { w, plan } = await planned();
+    await protect(w);
+    const id = await approved(w, plan);
+    const release = pause();
+    try {
+      const both = await Promise.all([w.apply(plan), w.apply(plan, "dan")]);
+      expect(both.map((r) => r.status).sort()).toEqual([202, 409]);
+      expect(await jobsFor(plan)).toHaveLength(1);
+    } finally {
+      release();
+    }
+    await w.finished(plan);
+    expect((await rowOf(id))?.status).toBe("applied");
+  });
+
+  test("a target whose environments are not protected, or not mapped, is applied as before", async () => {
+    const { w, plan } = await planned();
+    await protect(w, "stage");
+    expect((await w.apply(plan)).status).toBe(202);
+    await w.finished(plan);
+    // unprotecting lifts it
+    const again = await planned();
+    await protect(again.w);
+    await protect(again.w, "prod", false);
+    expect((await again.w.apply(again.plan)).status).toBe(202);
+    // a project without environments mapped has none to protect
+    const none = await planned({ mapping: {} });
+    await protect(none.w);
+    expect((await none.w.apply(none.plan)).status).toBe(202);
+  });
+
+  test("another project's protected environment of the same name does not gate this one", async () => {
+    const mine = await planned();
+    const theirs = await planned();
+    await protect(theirs.w);
+    expect((await mine.w.apply(mine.plan)).status).toBe(202);
+  });
+
+  test("a request is asked in a protected environment the target maps, where the approvers will look", async () => {
+    const { w, plan } = await planned();
+    // not protected yet
+    const open = await ask(w, plan);
+    expect([open.status, open.json.code]).toEqual([409, "environment_not_protected"]);
+    // protected, but not one this target maps
+    await protect(w, "stage");
+    const unmapped = await ask(w, plan, "dan", "stage");
+    expect([unmapped.status, unmapped.json.code]).toEqual([409, "target_not_mapped"]);
+    await protect(w);
+    expect((await ask(w, plan)).status).toBe(201);
+    expect(
+      await t.db.select().from(changeRequests).where(eq(changeRequests.subjectId, plan)),
+    ).toHaveLength(1);
+  });
+
+  test("a plan that has expired cannot be asked for", async () => {
+    const { w, plan } = await planned();
+    await protect(w);
+    await t.db
+      .update(syncRuns)
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(syncRuns.id, plan));
+    const late = await ask(w, plan);
+    expect([late.status, late.json.code]).toEqual([409, "plan_expired"]);
+  });
+
+  test("an approval made for another target does not serve this one, though it names this plan", async () => {
+    const { w, plan } = await planned();
+    await protect(w);
+    const at = { organizationId: w.org, projectId: w.project, environmentId: w.envs.prod };
+    const by = (id: string) => ({ kind: "user", id, ref: `user:${id}` }) as const;
+    const cr = await createApplyRequest(t.db, {
+      ...at,
+      kind: "sync_apply",
+      subject: { runId: plan, targetId: crypto.randomUUID() },
+      diff: [{ action: "apply", key: "main" }],
+      author: by(people.dan.id),
+      expiresAt: new Date(Date.now() + 86_400_000),
+    });
+    const out = await t.db.transaction((tx) =>
+      approveChangeRequest(tx, undefined, at, cr.id, by(people.alice.id)),
+    );
+    expect(out.result).toBe("approved");
+    expect((await w.apply(plan)).json.code).toBe("approval_required");
+    expect((await rowOf(cr.id))?.status).toBe("approved");
+  });
+
+  test("an approval can be revoked by a maintainer until the apply uses it", async () => {
+    const { w, plan } = await planned();
+    await protect(w);
+    const id = await approved(w, plan);
+    const revoked = await decide(w, id, "alice", "reject");
+    expect([revoked.status, revoked.json.status]).toEqual([200, "rejected"]);
+    expect((await w.apply(plan)).json.code).toBe("approval_required");
+    expect((await decide(w, id, "alice", "approve")).status).toBe(409);
+  });
+
+  test("asking takes a developer, names a plan of the target that can still be applied, and nothing else", async () => {
+    const { w, plan } = await planned();
+    await protect(w);
+    expect((await ask(w, plan, "carol")).status).toBe(403);
+    expect((await ask(w, plan, "erin")).status).toBe(404);
+    expect((await ask(w, plan, "bob")).status).toBe(201);
+    expect((await ask(w, crypto.randomUUID())).status).toBe(404);
+    const noTarget = await call("dan", "POST", crs(w), {
+      kind: "sync_apply",
+      targetId: crypto.randomUUID(),
+      planId: plan,
+    });
+    expect(noTarget.status).toBe(404);
+    // a plan of another target of the project
+    const second = await call("alice", "POST", w.targets, {
+      name: "second",
+      type: "gitlab-variables",
+      connectionId: conns.o1,
+      config: { project: w.of.project, protected: true },
+      environmentMapping: { prod: "production" },
+    });
+    expect(second.status).toBe(201);
+    const wrong = await call("dan", "POST", crs(w), {
+      kind: "sync_apply",
+      targetId: second.json.id,
+      planId: plan,
+    });
+    expect(wrong.status).toBe(404);
+    // no value, no unknown field, no mixing of the kinds
+    for (const body of [
+      { kind: "sync_apply", targetId: w.target },
+      { kind: "sync_apply", planId: plan },
+      { kind: "sync_apply", targetId: w.target, planId: plan, extra: 1 },
+      { kind: "sync_apply", targetId: w.target, planId: plan, ops: [] },
+      { kind: "nothing", targetId: w.target, planId: plan },
+    ]) {
+      expect([JSON.stringify(body), (await call("dan", "POST", crs(w), body)).status]).toEqual([
+        JSON.stringify(body),
+        422,
+      ]);
+    }
+    // a plan that was applied cannot be asked for again
+    const id = await approved(w, plan);
+    expect(id).toBeDefined();
+    expect((await w.apply(plan)).status).toBe(202);
+    await w.finished(plan);
+    const late = await ask(w, plan);
+    expect([late.status, late.json.code]).toEqual([409, "plan_not_applicable"]);
+  });
+
+  test("auto-sync does nothing for it, and the target still syncs on its own once it is unprotected", async () => {
+    const w = await world();
+    await autoOn(w);
+    await protect(w);
+    await w.put("project", "AUTO", "plain", "auto");
+    await runAuto(w);
+    expect(await w.runs()).toEqual([]);
+    expect(w.writes()).toEqual([]);
+
+    await protect(w, "prod", false);
+    await w.put("project", "AUTO2", "plain", "auto2");
+    await runAuto(w);
+    const [run] = await w.runs();
+    expect((await w.finished(run?.id ?? "")).json.status).toBe("applied");
+    expect(await onGitlab(w)).toEqual(["AUTO", "AUTO2"]);
   });
 });
 

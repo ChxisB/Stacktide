@@ -10,6 +10,7 @@ import {
 } from "@orch/db";
 import type { GuardrailConfig } from "@orch/sync";
 import { z } from "zod";
+import { protectedMappings } from "./apply-approval";
 import { startApply } from "./sync-apply";
 import { planTarget, storePlan } from "./sync-plan";
 import type { JobHandler } from "./worker";
@@ -49,6 +50,12 @@ export const syncAutoHandler =
     const target = await getSyncTarget(db, ids.organizationId, ids.projectId, ids.targetId);
     // gone, or switched off since the job was queued
     if (!target || !(target.autoSync || (ids.remediate && target.autoRemediate))) return;
+    // A protected environment (GOV-3) wants a second person's approval of each apply: nothing here asks for one.
+    const guarded = await protectedMappings(db, target);
+    if (guarded.length > 0) {
+      ctx.log.info("auto-sync left to a person", { target: target.id, environments: guarded });
+      return;
+    }
 
     let planned: Awaited<ReturnType<typeof planTarget>>;
     try {

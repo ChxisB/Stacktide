@@ -13934,7 +13934,9 @@
                           "kind": {
                             "type": "string",
                             "enum": [
-                              "variables"
+                              "variables",
+                              "sync_apply",
+                              "iac_apply"
                             ]
                           },
                           "status": {
@@ -13957,7 +13959,8 @@
                                   "enum": [
                                     "set",
                                     "rename",
-                                    "delete"
+                                    "delete",
+                                    "apply"
                                   ]
                                 },
                                 "key": {
@@ -13975,6 +13978,36 @@
                                 "key"
                               ]
                             }
+                          },
+                          "subject": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "runId": {
+                                "type": "string",
+                                "format": "uuid"
+                              },
+                              "targetId": {
+                                "type": "string",
+                                "format": "uuid"
+                              },
+                              "stacks": {
+                                "type": "object",
+                                "propertyNames": {
+                                  "type": "string"
+                                },
+                                "additionalProperties": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                }
+                              }
+                            },
+                            "required": [
+                              "runId"
+                            ]
                           },
                           "author": {
                             "type": "object",
@@ -14044,6 +14077,7 @@
                           "kind",
                           "status",
                           "diff",
+                          "subject",
                           "author",
                           "decidedBy",
                           "decidedAt",
@@ -14395,94 +14429,149 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "ops": {
-                    "minItems": 1,
-                    "maxItems": 1000,
-                    "type": "array",
-                    "items": {
-                      "oneOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "op": {
-                              "type": "string",
-                              "const": "set"
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "ops": {
+                        "minItems": 1,
+                        "maxItems": 1000,
+                        "type": "array",
+                        "items": {
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "op": {
+                                  "type": "string",
+                                  "const": "set"
+                                },
+                                "key": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+                                },
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "plain",
+                                    "secret",
+                                    "file"
+                                  ]
+                                },
+                                "value": {
+                                  "type": "string",
+                                  "maxLength": 65536
+                                }
+                              },
+                              "required": [
+                                "op",
+                                "key",
+                                "value"
+                              ],
+                              "additionalProperties": false
                             },
-                            "key": {
-                              "type": "string",
-                              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+                            {
+                              "type": "object",
+                              "properties": {
+                                "op": {
+                                  "type": "string",
+                                  "const": "rename"
+                                },
+                                "key": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+                                },
+                                "to": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+                                }
+                              },
+                              "required": [
+                                "op",
+                                "key",
+                                "to"
+                              ],
+                              "additionalProperties": false
                             },
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "plain",
-                                "secret",
-                                "file"
-                              ]
-                            },
-                            "value": {
-                              "type": "string",
-                              "maxLength": 65536
+                            {
+                              "type": "object",
+                              "properties": {
+                                "op": {
+                                  "type": "string",
+                                  "const": "delete"
+                                },
+                                "key": {
+                                  "type": "string",
+                                  "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
+                                }
+                              },
+                              "required": [
+                                "op",
+                                "key"
+                              ],
+                              "additionalProperties": false
                             }
-                          },
-                          "required": [
-                            "op",
-                            "key",
-                            "value"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "op": {
-                              "type": "string",
-                              "const": "rename"
-                            },
-                            "key": {
-                              "type": "string",
-                              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
-                            },
-                            "to": {
-                              "type": "string",
-                              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
-                            }
-                          },
-                          "required": [
-                            "op",
-                            "key",
-                            "to"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "op": {
-                              "type": "string",
-                              "const": "delete"
-                            },
-                            "key": {
-                              "type": "string",
-                              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,254}$"
-                            }
-                          },
-                          "required": [
-                            "op",
-                            "key"
-                          ],
-                          "additionalProperties": false
+                          ]
                         }
-                      ]
-                    }
+                      }
+                    },
+                    "required": [
+                      "ops"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "sync_apply"
+                      },
+                      "targetId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "planId": {
+                        "type": "string",
+                        "format": "uuid"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "targetId",
+                      "planId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "iac_apply"
+                      },
+                      "runId": {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      "stacks": {
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 63
+                        }
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "runId"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "ops"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           },
@@ -14515,7 +14604,9 @@
                     "kind": {
                       "type": "string",
                       "enum": [
-                        "variables"
+                        "variables",
+                        "sync_apply",
+                        "iac_apply"
                       ]
                     },
                     "status": {
@@ -14538,7 +14629,8 @@
                             "enum": [
                               "set",
                               "rename",
-                              "delete"
+                              "delete",
+                              "apply"
                             ]
                           },
                           "key": {
@@ -14556,6 +14648,36 @@
                           "key"
                         ]
                       }
+                    },
+                    "subject": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "targetId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "stacks": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      "required": [
+                        "runId"
+                      ]
                     },
                     "author": {
                       "type": "object",
@@ -14625,6 +14747,7 @@
                     "kind",
                     "status",
                     "diff",
+                    "subject",
                     "author",
                     "decidedBy",
                     "decidedAt",
@@ -15222,7 +15345,9 @@
                     "kind": {
                       "type": "string",
                       "enum": [
-                        "variables"
+                        "variables",
+                        "sync_apply",
+                        "iac_apply"
                       ]
                     },
                     "status": {
@@ -15245,7 +15370,8 @@
                             "enum": [
                               "set",
                               "rename",
-                              "delete"
+                              "delete",
+                              "apply"
                             ]
                           },
                           "key": {
@@ -15263,6 +15389,36 @@
                           "key"
                         ]
                       }
+                    },
+                    "subject": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "targetId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "stacks": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      "required": [
+                        "runId"
+                      ]
                     },
                     "author": {
                       "type": "object",
@@ -15332,6 +15488,7 @@
                     "kind",
                     "status",
                     "diff",
+                    "subject",
                     "author",
                     "decidedBy",
                     "decidedAt",
@@ -15707,7 +15864,9 @@
                     "kind": {
                       "type": "string",
                       "enum": [
-                        "variables"
+                        "variables",
+                        "sync_apply",
+                        "iac_apply"
                       ]
                     },
                     "status": {
@@ -15730,7 +15889,8 @@
                             "enum": [
                               "set",
                               "rename",
-                              "delete"
+                              "delete",
+                              "apply"
                             ]
                           },
                           "key": {
@@ -15748,6 +15908,36 @@
                           "key"
                         ]
                       }
+                    },
+                    "subject": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "targetId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "stacks": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      "required": [
+                        "runId"
+                      ]
                     },
                     "author": {
                       "type": "object",
@@ -15817,6 +16007,7 @@
                     "kind",
                     "status",
                     "diff",
+                    "subject",
                     "author",
                     "decidedBy",
                     "decidedAt",
@@ -16417,7 +16608,9 @@
                     "kind": {
                       "type": "string",
                       "enum": [
-                        "variables"
+                        "variables",
+                        "sync_apply",
+                        "iac_apply"
                       ]
                     },
                     "status": {
@@ -16440,7 +16633,8 @@
                             "enum": [
                               "set",
                               "rename",
-                              "delete"
+                              "delete",
+                              "apply"
                             ]
                           },
                           "key": {
@@ -16458,6 +16652,36 @@
                           "key"
                         ]
                       }
+                    },
+                    "subject": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "targetId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "stacks": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string"
+                          },
+                          "additionalProperties": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        }
+                      },
+                      "required": [
+                        "runId"
+                      ]
                     },
                     "author": {
                       "type": "object",
@@ -16527,6 +16751,7 @@
                     "kind",
                     "status",
                     "diff",
+                    "subject",
                     "author",
                     "decidedBy",
                     "decidedAt",

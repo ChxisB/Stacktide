@@ -4,6 +4,7 @@ import {
   attachRunPipeline,
   audit,
   auditedStacks,
+  consumeApproval,
   type Db,
   describeError,
   latestRunOfMergeRequest,
@@ -11,6 +12,7 @@ import {
   MAX_POLICY_SETS,
   moveRunStack,
   pgConstraint,
+  protectedEnvironments,
   type RunWithStacks,
   ruleNames,
   saveMergeRequestNote,
@@ -27,6 +29,7 @@ import {
   setsFor,
   type Tool,
 } from "@orch/iac";
+import { approvalRequired } from "./apply-approval";
 import { inline, refreshNote, writeNote } from "./mr-note";
 import { CHILD_PIPELINE, mrEvent, plannedProject } from "./mr-plan";
 import { hopeless, type RunDeps } from "./pipeline-runs";
@@ -73,9 +76,12 @@ const quoted = (names: readonly string[]) =>
  * started; none (merge path only) when no stack of the run opted in to be applied on merge, or all
  * have started already.
  *
+ * A stack whose `stack.yml` names a protected environment (GOV-3) also needs an approved change
+ * request that names it at the plan job it has now; it is used up by the claim.
+ *
  * The claim and the pipeline are one transaction: GitLab refusing the pipeline leaves every stack
- * `planned`. Everything it refuses is a 409 or 422 `DomainError` whose message is fixed words and
- * the names of stacks (never GitLab's text).
+ * `planned`, and an approval unused. Everything it refuses is a 409 or 422 `DomainError` whose
+ * message is fixed words and the names of stacks (never GitLab's text).
  *
  * shortcut: a failed commit after GitLab started the pipeline leaves it running with no stack
  * claimed (terraform's stale-plan check refuses a second apply of one plan); upgrade by recording
@@ -167,6 +173,18 @@ export async function applyRun(
   selected ??= choose(scan);
   if (selected.length === 0) throw refuse("not_planned", "No stack of this run is planned");
 
+  // Protected environments (GOV-3): the stacks that declare one need leave for their current plan.
+  // shortcut: a stack that declares no environment is not guarded, and a merge request can remove the declaration; GitLab's own merge approvals are the other check
+  const protectedSlugs = new Set(
+    await protectedEnvironments(
+      deps.db,
+      at.organizationId,
+      at.projectId,
+      selected.flatMap((name) => scanned.get(name)?.environment ?? []),
+    ),
+  );
+  const guardedPlans: Record<string, number> = {};
+
   // Policy (POL-3): the sets the stacks are judged by now, to tell a stack that is not judged from
   // one whose verdict has not come (or was dropped with its plan job): that one waits.
   const sets = await listPolicySets(deps.db, at.organizationId, { limit: MAX_POLICY_SETS });
@@ -214,6 +232,10 @@ export async function applyRun(
       }
     }
     planJobs[name] = s.planJobId;
+    const environment = scanned.get(name)?.environment;
+    if (environment !== undefined && protectedSlugs.has(environment)) {
+      guardedPlans[name] = s.planJobId;
+    }
   }
 
   let yaml: string;
@@ -235,6 +257,18 @@ export async function applyRun(
   }
 
   const pipelineId = await deps.db.transaction(async (tx) => {
+    const guarded = Object.keys(guardedPlans);
+    const approval =
+      guarded.length === 0
+        ? undefined
+        : await consumeApproval(
+            tx,
+            { organizationId: at.organizationId, projectId: at.projectId },
+            { kind: "iac_apply", runId: run.id, stacks: guardedPlans },
+          );
+    if (guarded.length > 0 && !approval) {
+      throw approvalRequired(`Stack ${quoted(guarded)}`, [...protectedSlugs]);
+    }
     for (const name of selected) {
       let moved: Awaited<ReturnType<typeof moveRunStack>>;
       try {
@@ -307,6 +341,7 @@ export async function applyRun(
         pipelineId: pipeline.id,
         // what a merged request's pipeline ran: the target branch, which moves on its own
         pipelineSha: pipeline.sha,
+        ...(approval && { changeRequestId: approval.id }),
         ...auditedStacks(selected),
       },
     });
