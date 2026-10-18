@@ -42,6 +42,8 @@ const config = loadConfig(
     ORCH_API_URL: z.string().min(1).optional(),
     ORCH_CI_AUDIENCE: z.string().min(1).optional(),
     ORCH_HELPER_IMAGE: z.string().min(1).optional(),
+    /** POL-3: the helper's tools and `conftest`, for the summary job of a stack that policy judges. Without it such a stack is not planned. */
+    ORCH_POLICY_IMAGE: z.string().min(1).optional(),
     /**
      * `orch plan` / `orch apply` in a merge request note (IAC-9) are run as the person who wrote them, with
      * the roles their GitLab membership gives: the API's two settings for that. Without them nobody holds a
@@ -116,7 +118,13 @@ if (keys) {
   // a trailing slash is the usual way to write an address; the generator wants none
   const mr =
     apiUrl !== undefined && audience !== undefined && helperImage !== undefined
-      ? { apiUrl: apiUrl.replace(/\/+$/, ""), audience, helperImage, images }
+      ? {
+          apiUrl: apiUrl.replace(/\/+$/, ""),
+          audience,
+          helperImage,
+          policyImage: config.ORCH_POLICY_IMAGE,
+          images,
+        }
       : undefined;
   if (mr) {
     consumers.push(mrPlanHandler({ ...gitlab, config: mr }));

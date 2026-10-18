@@ -1,13 +1,16 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createLogger } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
   auditEvents,
   createConnection,
   createOrganization,
+  createPolicySet,
   createProject,
+  deletePolicySet,
   getRun,
   latestRunOfMergeRequest,
+  listPolicySets,
   listRuns,
   planPipelinesOfRun,
   runOfPipeline,
@@ -647,5 +650,103 @@ describe("what goes wrong in GitLab", () => {
     await expect(handle(w)).rejects.toThrow();
     await handle(w);
     expect(await w.runs()).toBe(1);
+  });
+});
+
+describe("policy in the plan", () => {
+  const POLICY_IMAGE = "ghcr.io/example/orch-policy:1";
+  const TAGGED = {
+    ...FILES,
+    "stacks/net/stack.yml": "name: net\ntool: terraform\nversion: 1.9.0\ntags: [prod]\n",
+  };
+  const SET = { name: "prod", source: "platform/policies", ref: "v1", path: "rego", tag: "prod" };
+  const addSet = (organizationId = o1, over: Partial<typeof SET> = {}) =>
+    createPolicySet(t.db, { organizationId, ...SET, ...over });
+  afterEach(async () => {
+    for (const org of [o1, o2]) {
+      for (const set of await listPolicySets(t.db, org, { limit: 100 })) {
+        await deletePolicySet(t.db, org, set.id);
+      }
+    }
+  });
+  const plannedWith = async (policyImage: string | undefined) => {
+    const w = await world({ files: TAGGED });
+    await w.change("stacks/net/main.tf");
+    await w.open();
+    await handle(
+      w,
+      {},
+      mrPlanHandler({ db: t.db, gitlab: async () => client(), config: { ...config, policyImage } }),
+    );
+    return w;
+  };
+  const jobsOf = async (w: World) => {
+    const run = await w.latest();
+    const pipelines = await planPipelinesOfRun(t.db, o1, w.project.id, run?.id as string);
+    const yaml = mock.pipelineVariables(pipelines[0] as number)?.[0]?.value ?? "";
+    return {
+      run,
+      yaml,
+      jobs: Bun.YAML.parse(yaml) as Record<string, { image?: { name: string }; script?: string[] }>,
+    };
+  };
+
+  test("a stack with a set's tag has its summary job judge the plan and post to the run's policy route", async () => {
+    await addSet();
+    const w = await plannedWith(POLICY_IMAGE);
+    const { run, jobs } = await jobsOf(w);
+    const net = jobs["summary:net"];
+    expect(net?.image?.name).toBe(POLICY_IMAGE);
+    const script = (net?.script ?? []).join("\n");
+    expect(script).toContain("conftest test");
+    expect(script).toContain("platform%2Fpolicies/repository/archive.tar.gz?sha=v1");
+    expect(script).toContain(
+      `"$ORCH_API_URL/organizations/${o1}/projects/${w.project.id}/runs/${run?.id}/policy-verdict"`,
+    );
+    // a stack no set reaches is summarized as before
+    expect(jobs["summary:app"]?.image?.name).toBe(config.helperImage);
+    expect((jobs["summary:app"]?.script ?? []).join("\n")).not.toContain("conftest");
+  });
+
+  test("with no set, or only another organization's, nothing changes", async () => {
+    const none = await plannedWith(POLICY_IMAGE);
+    expect((await jobsOf(none)).yaml).not.toContain("conftest");
+    await addSet(o2);
+    const other = await plannedWith(POLICY_IMAGE);
+    expect((await jobsOf(other)).yaml).not.toContain("conftest");
+  });
+
+  test("a stack that a set reaches is not planned without the image to judge it, and the note says so", async () => {
+    await addSet();
+    const w = await plannedWith(undefined);
+    expect(await w.runs()).toBe(0);
+    expect(w.posts()).toBe(0);
+    const body = w.notes()[0]?.body ?? "";
+    expect(body).toContain("The pipeline could not be generated:");
+    expect(body).toContain("policy.image");
+  });
+
+  test("a set that could not be used in a job is not planned, and is named", async () => {
+    // stored behind the route's back: the generator is the one place that checks what it puts in a shell
+    await addSet(o1, { name: "bad", source: "a/b; rm -rf /" });
+    const w = await plannedWith(POLICY_IMAGE);
+    expect(await w.runs()).toBe(0);
+    expect(w.posts()).toBe(0);
+    const body = w.notes()[0]?.body ?? "";
+    expect(body).toContain("policy set");
+    expect(body).toContain("bad");
+  });
+
+  test("a drift check is not judged", async () => {
+    // planRequest without sets, as stack-drift.ts calls it
+    const { planRequest } = await import("./mr-plan");
+    const req = planRequest(
+      { ...config, policyImage: POLICY_IMAGE },
+      { organizationId: o1, projectId: "p" },
+      [],
+      [],
+      "r",
+    );
+    expect(req.policy).toBeUndefined();
   });
 });

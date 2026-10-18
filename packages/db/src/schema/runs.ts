@@ -86,6 +86,13 @@ export const runStacks = pgTable(
     planDestroy: integer(),
     planResources: jsonb(),
     summarizedAt: timestamp({ withTimezone: true }),
+    // What the policy sets that reach the stack said of its plan (POL-3): `pass`, `warn` or `deny`,
+    // with the names of the rules that fired, never what they said (a message may quote the plan).
+    // Null: not judged (yet). All set together, by the verdict the plan's summary job posts.
+    policyVerdict: text(),
+    policyDenied: jsonb(),
+    policyWarned: jsonb(),
+    policyAt: timestamp({ withTimezone: true }),
     ...timestamps(),
   },
   (t) => [
@@ -108,6 +115,15 @@ export const runStacks = pgTable(
     check(
       "run_stacks_jobs_check",
       sql`coalesce(${t.planJobId}, 1) > 0 and coalesce(${t.summaryJobId}, 1) > 0`,
+    ),
+    check(
+      "run_stacks_policy_check",
+      sql`(${t.policyVerdict} is null) = (${t.policyAt} is null)
+        and (${t.policyVerdict} is null) = (${t.policyDenied} is null)
+        and (${t.policyVerdict} is null) = (${t.policyWarned} is null)
+        and (${t.policyVerdict} is null or ${t.policyVerdict} in ('pass', 'warn', 'deny'))
+        and coalesce(length(${t.policyDenied}::text), 0) <= 100000
+        and coalesce(length(${t.policyWarned}::text), 0) <= 100000`,
     ),
     // The size bound is for the text of the stored value, which Bun.sql stores as a JSON string (every quote
     // escaped twice over): 500 addresses of 1024 quote marks come to about 2.3 million characters.

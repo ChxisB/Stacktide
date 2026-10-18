@@ -20,6 +20,7 @@ import { organizationRoutes } from "./routes/organizations";
 import { pipelineRoutes } from "./routes/pipeline";
 import { pipelineFleetRoutes } from "./routes/pipeline-fleet";
 import { pipelineRunRoutes } from "./routes/pipeline-runs";
+import { policySetRoutes } from "./routes/policy";
 import { projectRoutes } from "./routes/projects";
 import { runRoutes } from "./routes/runs";
 import { syncRunRoutes } from "./routes/sync-runs";
@@ -118,6 +119,7 @@ export function createApp(deps: AppDeps) {
     .use(syncTargetRoutes(deps))
     .use(notificationSinkRoutes(deps))
     .use(notificationSubscriptionRoutes(deps))
+    .use(policySetRoutes(deps))
     .use(syncRunRoutes(deps))
     .use(pipelineRoutes(deps))
     .use(pipelineFleetRoutes(deps))

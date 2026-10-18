@@ -45,7 +45,7 @@ Only this, and only for the job's project and environment:
 | | |
 |---|---|
 | read the project | `project.read` |
-| post the plan summary of an IaC run's stack (a job with no environment) | `run.summary` (audited as the CI job) |
+| post the plan summary, or the policy verdict, of an IaC run's stack (a job with no environment) | `run.summary` (audited as the CI job, as `run.summary` or `run.policy`) |
 | read the environment | `environment.read` |
 | read the environment's variables, secrets included | `secret.reveal` (audited as the CI job) |
 

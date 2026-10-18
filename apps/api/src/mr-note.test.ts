@@ -27,11 +27,64 @@ const stack = (over: Partial<RunStack> = {}): RunStack => ({
   planChange: null,
   planDestroy: null,
   summarizedAt: null,
+  policyVerdict: null,
+  policyDenied: null,
+  policyWarned: null,
+  policyAt: null,
   createdAt: new Date(0),
   updatedAt: new Date(0),
   ...over,
 });
 const URL = "https://gitlab.example.com/g/iac";
+
+describe("what the policy said, in the note", () => {
+  const judged = (over: Partial<RunStack>) => stack({ status: "planned", ...over });
+  const note = (stacks: RunStack[]) =>
+    renderNote({ run: { sha: SHA, stacks }, notice: null, projectUrl: undefined });
+
+  test("is a line per judged stack: the verdict and the names of the rules that fired", () => {
+    const body = note([
+      judged({ stack: "net", policyVerdict: "pass", policyDenied: [], policyWarned: [] }),
+      judged({
+        stack: "app",
+        policyVerdict: "deny",
+        policyDenied: ["data.main.deny_public"],
+        policyWarned: ["data.main.warn_tags"],
+      }),
+      judged({ stack: "db", policyVerdict: "warn", policyDenied: [], policyWarned: ["w1"] }),
+      stack({ stack: "queue" }),
+    ]);
+    expect(body).toContain("Policy:");
+    expect(body).toContain("- `net`: pass\n");
+    expect(body).toContain("- `app`: deny (`data.main.deny_public`, `data.main.warn_tags`)");
+    expect(body).toContain("- `db`: warn (`w1`)");
+    // a stack nothing has judged has no line
+    expect(body).not.toContain("- `queue`");
+  });
+
+  test("is left out when no stack has been judged", () => {
+    expect(note([stack({ stack: "net" })])).not.toContain("Policy");
+  });
+
+  test("shows three names at most, and cannot be turned into markdown", () => {
+    const names = ["a", "b", "c", "d", "e"].map((n) => `rule.${n}`);
+    const body = note([
+      judged({ stack: "net", policyVerdict: "deny", policyDenied: names, policyWarned: [] }),
+      // not a name the route would store, but the note does not trust the row for its markup
+      judged({
+        stack: "app",
+        policyVerdict: "deny",
+        policyDenied: ["x`](http://evil.example)\n# heading"],
+        policyWarned: [],
+      }),
+    ]);
+    expect(body).toContain("- `net`: deny (`rule.a`, `rule.b`, `rule.c`, and 2 more)");
+    expect(body).not.toContain("rule.d");
+    const line = body.split("\n").find((l) => l.startsWith("- `app`")) ?? "";
+    expect(line.split("`").length).toBe(5); // `app` and one code span: no span was ended early
+    expect(body).not.toContain("\n# heading");
+  });
+});
 
 describe("the note's text", () => {
   test("is a table with a row per stack: state, counts and a link to the plan job", () => {

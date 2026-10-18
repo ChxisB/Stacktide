@@ -2,6 +2,7 @@ import {
   latestRunOfMergeRequest,
   type MergeRequestNote,
   type RunStack,
+  ruleNames,
   saveMergeRequestNote,
   type Tx,
   withMergeRequest,
@@ -29,6 +30,18 @@ const plain = (text: string, max: number) =>
 const SAFE_URL = /^https?:\/\/[^\s()<>[\]`]+$/;
 const dash = "–";
 
+// What the policy said of a stack: its verdict and the names of the rules, never their messages.
+function policyLine(s: RunStack): string {
+  const names = [...ruleNames(s.policyDenied), ...ruleNames(s.policyWarned)];
+  const shown = names.slice(0, 3).map((n) => inline(n, 80));
+  return [
+    plain(s.policyVerdict ?? "", 10),
+    ...(shown.length > 0
+      ? [`(${shown.join(", ")}${names.length > 3 ? `, and ${names.length - 3} more` : ""})`]
+      : []),
+  ].join(" ");
+}
+
 /**
  * The note on a merge request: one table, a row per stack of the newest run, with its state, the
  * counts of its plan and a link to its plan job. Counts only: no address of a resource and no
@@ -55,6 +68,11 @@ export function renderNote({ run, notice, projectUrl }: NoteView): string {
       const status = `${plain(s.status, 20)}${s.error === null ? "" : ` (${plain(s.error, 100)})`}`;
       out.push(`| \`${plain(s.stack, 63)}\` | ${status} | ${counts.join(" | ")} | ${link} |`);
     }
+  }
+  const judged = run?.stacks.filter((s) => s.policyVerdict !== null) ?? [];
+  if (judged.length > 0) {
+    out.push("", "Policy:", "");
+    for (const s of judged) out.push(`- \`${plain(s.stack, 63)}\`: ${policyLine(s)}`);
   }
   if (notice) out.push("", notice);
   out.push(

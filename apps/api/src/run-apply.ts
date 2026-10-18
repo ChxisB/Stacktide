@@ -7,9 +7,12 @@ import {
   type Db,
   describeError,
   latestRunOfMergeRequest,
+  listPolicySets,
+  MAX_POLICY_SETS,
   moveRunStack,
   pgConstraint,
   type RunWithStacks,
+  ruleNames,
   saveMergeRequestNote,
   type Tx,
   withMergeRequest,
@@ -21,6 +24,7 @@ import {
   gitlabSource,
   PLAN_RETENTION_MS,
   scanStacks,
+  setsFor,
   type Tool,
 } from "@orch/iac";
 import { inline, refreshNote, writeNote } from "./mr-note";
@@ -163,6 +167,9 @@ export async function applyRun(
   selected ??= choose(scan);
   if (selected.length === 0) throw refuse("not_planned", "No stack of this run is planned");
 
+  // Policy (POL-3): the sets the stacks are judged by now, to tell a stack that is not judged from
+  // one whose verdict has not come (or was dropped with its plan job): that one waits.
+  const sets = await listPolicySets(deps.db, at.organizationId, { limit: MAX_POLICY_SETS });
   const planJobs: Record<string, number> = {};
   for (const name of selected) {
     const s = byName.get(name);
@@ -183,6 +190,18 @@ export async function applyRun(
       throw refuse(
         "plan_expired",
         `The plan of stack ${quoted([name])} is too old to apply; plan it again`,
+      );
+    }
+    if (s.policyVerdict === "deny") {
+      throw refuse(
+        "policy_denied",
+        `The policy denies the plan of stack ${quoted([name])}: ${quoted(ruleNames(s.policyDenied))}`,
+      );
+    }
+    if (s.policyVerdict === null && setsFor(scanned.get(name)?.tags ?? [], sets).length > 0) {
+      throw refuse(
+        "policy_pending",
+        `The policy has not judged the plan of stack ${quoted([name])}; plan it again`,
       );
     }
     for (const dep of scanned.get(name)?.dependsOn ?? []) {

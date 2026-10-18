@@ -1,4 +1,4 @@
-import { DomainError, type Logger, RUN_STATES } from "@orch/core";
+import { DomainError, type Logger, POLICY_RULE, RUN_STATES } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import {
   auditedStacks,
@@ -12,7 +12,9 @@ import {
   notifyStackDrift,
   type RunWithStacks,
   recordStackDrift,
+  ruleNames,
   storePlanSummary,
+  storePolicyVerdict,
 } from "@orch/db";
 import { GitlabError } from "@orch/gitlab";
 import type { Tool } from "@orch/iac";
@@ -21,6 +23,7 @@ import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { noKeys, WHY } from "../connections";
 import { guardPlugin } from "../guard";
+import type { Principal } from "../principal";
 import { applyRun } from "../run-apply";
 import { gitlabFor } from "./pipeline";
 import {
@@ -139,6 +142,22 @@ const summaryBody = z.strictObject({
     .max(MAX_LISTED),
 });
 
+// A rule name is the one thing of a policy's finding that travels (never its message, which may quote
+// the plan); the filter of the generated job and this pattern are one contract (POL-3).
+const rule = z.string().regex(POLICY_RULE, "not a rule name");
+const policyBody = z.discriminatedUnion("evaluated", [
+  z.strictObject({
+    stack: z.string().min(1).max(63),
+    evaluated: z.literal(true),
+    denied: z.array(rule).max(50),
+    warned: z.array(rule).max(50),
+  }),
+  // the evaluator ran and gave no answer that could be read: not a pass, so it judges as a deny
+  z.strictObject({ stack: z.string().min(1).max(63), evaluated: z.literal(false) }),
+]);
+/** The cap on a verdict's body: 100 rule names of at most 200 characters stay far below it. */
+const MAX_POLICY_BYTES = 64 * 1024;
+
 const applyBody = z.strictObject({
   /** Names of stacks of the run; the stacks that are planned when left out. */
   stacks: z
@@ -170,6 +189,16 @@ const applyProblem = (e: unknown) => {
 const notTheJob = () =>
   new DomainError("forbidden", 403, "Not allowed: only the summary job of this stack may post it");
 
+const cappedJson =
+  (max: number, what: string) =>
+  async ({ request }: { request: Request }) => {
+    const text = await readCapped(request, max);
+    if (text === undefined) {
+      throw new DomainError("payload_too_large", 413, `The ${what} is too large`);
+    }
+    return JSON.parse(text);
+  };
+
 /**
  * The runs of a project's IaC stacks (IAC-5): which stacks, on which commit, and where each one is.
  * Creating one only records it, with every stack `queued`; the states move as the pipeline's events
@@ -187,8 +216,37 @@ export const runRoutes = ({
   logger: Logger;
   keys?: KeyProvider;
   images?: Partial<Record<Tool, string>> | undefined;
-}) =>
-  new Elysia({ prefix: "/organizations/:orgId/projects/:projectId/runs" })
+}) => {
+  // Only the CI job the platform recorded as this stack's summary job (from the pipeline's events),
+  // on the run's own ref. A token holds `run.summary` for every job without an environment, so the
+  // scope alone would let any job of the project post any stack's summary, or its policy verdict.
+  const onlyTheSummaryJob = (
+    run: RunWithStacks,
+    caller: Principal | undefined,
+    stack: string,
+    what: string,
+    requestId: unknown,
+  ) => {
+    const job = caller?.kind === "ci" ? caller.job : undefined;
+    const mine = run.stacks.find((s) => s.stack === stack);
+    const why = !job
+      ? "the caller is not a CI job"
+      : !mine
+        ? "the stack is not in the run"
+        : job.ref !== run.ref
+          ? "the job's ref is not the run's"
+          : mine.summaryJobId === null
+            ? "no summary job is recorded for the stack yet"
+            : job.gitlabJobId !== mine.summaryJobId
+              ? "the job is not the stack's summary job"
+              : undefined;
+    if (why) {
+      // the caller gets one message; the log says which, for whoever finds a real job refused
+      logger.warn(`${what} refused`, { request_id: requestId, reason: why });
+      throw notTheJob();
+    }
+  };
+  return new Elysia({ prefix: "/organizations/:orgId/projects/:projectId/runs" })
     .use(auditPlugin(principal))
     .use(guardPlugin)
     .post(
@@ -275,30 +333,7 @@ export const runRoutes = ({
       async ({ params: { orgId, projectId, runId }, body, principal, audit, set }) => {
         const run = await getRun(db, orgId, projectId, runId);
         if (!run) throw notFound("Run");
-        // Only the CI job the platform recorded as this stack's summary job (from the pipeline's
-        // events), on the run's own ref. A token holds `run.summary` for every job without an
-        // environment, so the scope alone would let any job of the project post any stack's summary.
-        const job = principal?.kind === "ci" ? principal.job : undefined;
-        const mine = run.stacks.find((s) => s.stack === body.stack);
-        const why = !job
-          ? "the caller is not a CI job"
-          : !mine
-            ? "the stack is not in the run"
-            : job.ref !== run.ref
-              ? "the job's ref is not the run's"
-              : mine.summaryJobId === null
-                ? "no summary job is recorded for the stack yet"
-                : job.gitlabJobId !== mine.summaryJobId
-                  ? "the job is not the stack's summary job"
-                  : undefined;
-        if (why) {
-          // the caller gets one message; the log says which, for whoever finds a real job refused
-          logger.warn("plan summary refused", {
-            request_id: set.headers["x-request-id"],
-            reason: why,
-          });
-          throw notTheJob();
-        }
+        onlyTheSummaryJob(run, principal, body.stack, "plan summary", set.headers["x-request-id"]);
         await db.transaction(async (tx) => {
           const stored = await storePlanSummary(tx, orgId, projectId, runId, body.stack, body);
           if (!stored) {
@@ -364,15 +399,62 @@ export const runRoutes = ({
         params: params.extend({ runId: z.uuid() }),
         body: summaryBody,
         // The body is read in full before the guard runs (Elysia parses first), so it is capped here.
-        parse: async ({ request }) => {
-          const text = await readCapped(request, MAX_SUMMARY_BYTES);
-          if (text === undefined) {
-            throw new DomainError("payload_too_large", 413, "The summary is too large");
-          }
-          return JSON.parse(text);
-        },
+        parse: cappedJson(MAX_SUMMARY_BYTES, "summary"),
         response: { 204: z.undefined(), ...writeErrors, 413: problemSchema },
         audit: ["run.summary", "stack.drift"],
+        guard: "run.summary",
+      },
+    )
+    .post(
+      "/:runId/policy-verdict",
+      async ({ params: { orgId, projectId, runId }, body, principal, audit, set }) => {
+        const run = await getRun(db, orgId, projectId, runId);
+        if (!run) throw notFound("Run");
+        onlyTheSummaryJob(
+          run,
+          principal,
+          body.stack,
+          "policy verdict",
+          set.headers["x-request-id"],
+        );
+        await db.transaction(async (tx) => {
+          const stored = await storePolicyVerdict(tx, orgId, projectId, runId, body.stack, {
+            evaluated: body.evaluated,
+            denied: body.evaluated ? body.denied : [],
+            warned: body.evaluated ? body.warned : [],
+          });
+          if (!stored) {
+            throw new DomainError(
+              "stack_closed",
+              409,
+              "This stack's plan is no longer open to a policy verdict",
+            );
+          }
+          await audit(tx, {
+            action: "run.policy",
+            resourceType: "run",
+            resourceId: runId,
+            organizationId: orgId,
+            projectId,
+            // the verdict and how many rules; the names are on the stack, the messages in the job's log only
+            metadata: {
+              stack: body.stack,
+              verdict: stored.policyVerdict,
+              denied: ruleNames(stored.policyDenied).length,
+              warned: ruleNames(stored.policyWarned).length,
+              evaluated: body.evaluated,
+            },
+          });
+        });
+        set.status = 204;
+      },
+      {
+        params: params.extend({ runId: z.uuid() }),
+        body: policyBody,
+        parse: cappedJson(MAX_POLICY_BYTES, "verdict"),
+        response: { 204: z.undefined(), ...writeErrors, 413: problemSchema },
+        audit: "run.policy",
+        // the summary job's own scope: the job that judges the plan is the job that summarizes it
         guard: "run.summary",
       },
     )
@@ -424,3 +506,4 @@ export const runRoutes = ({
         guard: "run.apply",
       },
     );
+};

@@ -8,6 +8,7 @@ export * from "./notifications";
 export * from "./organizations";
 export * from "./pipeline-configs";
 export * from "./pipeline-runs";
+export * from "./policy";
 export * from "./projects";
 export * from "./runs";
 export * from "./schedules";

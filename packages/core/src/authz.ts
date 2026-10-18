@@ -94,6 +94,10 @@ export const RULES = {
   "notification.sink.delete": { org: "admin" },
   "notification.subscription.read": { project: "reporter" },
   "notification.subscription.update": { org: "admin" },
+  // Policy sets decide which plans may be applied: an organization's, so org admins write them, as for sinks, and everyone in the organization may read what they are. A project's maintainers apply plans, so they must not be the ones to take a policy away.
+  "policy.set.read": { org: "viewer" },
+  "policy.set.create": { org: "admin" },
+  "policy.set.delete": { org: "admin" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

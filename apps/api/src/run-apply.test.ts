@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { createLogger, DomainError, type Subject } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
@@ -8,14 +8,18 @@ import {
   auditEvents,
   createConnection,
   createOrganization,
+  createPolicySet,
   createProject,
   createRun,
   createSession,
+  deletePolicySet,
   getRun,
+  listPolicySets,
   moveRunStack,
   recordPipelineRun,
   recordStackJobs,
   runPipelines,
+  storePolicyVerdict,
   type Tx,
   upsertUser,
   WEBHOOK_QUEUE,
@@ -57,20 +61,25 @@ const PLAN_JOB: Record<Name, number> = { net: 501, app: 502 };
 const GHOST = "ghost";
 
 /** Two stacks, `app` depending on `net`; `applyOn` sets what their `stack.yml` says. */
-const repo = (applyOn: Partial<Record<Name, string>> = {}) => ({
+const repo = (
+  applyOn: Partial<Record<Name, string>> = {},
+  tags: Partial<Record<Name, string[]>> = {},
+) => ({
   ".gitlab-ci.yml": '"apply:net":\n  script: [echo]\n"apply:app":\n  script: [echo]\n',
   "stacks/net/stack.yml": `name: net\ntool: terraform\nversion: 1.9.0\n${
     applyOn.net ? `apply_on: ${applyOn.net}\n` : ""
-  }`,
+  }${tags.net ? `tags: [${tags.net.join(", ")}]\n` : ""}`,
   "stacks/net/main.tf": BACKEND,
   "stacks/app/stack.yml": `name: app\ntool: terraform\nversion: 1.9.0\ndepends_on: [net]\n${
     applyOn.app ? `apply_on: ${applyOn.app}\n` : ""
-  }`,
+  }${tags.app ? `tags: [${tags.app.join(", ")}]\n` : ""}`,
   "stacks/app/main.tf": BACKEND,
 });
 
 interface Opts {
   applyOn?: Partial<Record<Name, string>>;
+  /** The `tags` of each stack's `stack.yml`; policy sets attach to them. */
+  tags?: Partial<Record<Name, string[]>>;
   /** Where each stack of the run is; planned when left out. */
   states?: Partial<Record<Name, "queued" | "planning" | "planned" | "failed">>;
   /** Stacks whose plan job was never recorded. */
@@ -95,7 +104,7 @@ let edits = 0;
 async function world(o: Opts = {}) {
   const id = ++n;
   const path = `ap/p${id}`;
-  const gl = mock.addProject({ path, files: repo(o.applyOn) });
+  const gl = mock.addProject({ path, files: repo(o.applyOn, o.tags) });
   const api = client();
   await api.repository.createBranch(gl.id, "feature", "main");
   if (o.target) await api.repository.createBranch(gl.id, o.target, "main");
@@ -919,6 +928,34 @@ describe("the apply route", () => {
     expect(w.triggered()).toBe(0);
   });
 
+  test("a plan the policy has not passed is a 409 policy_pending, and one it denied a policy_denied", async () => {
+    const set = await createPolicySet(t.db, {
+      organizationId: o1,
+      name: "route",
+      source: "platform/policies",
+      ref: "v1",
+      path: ".",
+      tag: "prod",
+    });
+    try {
+      const w = await world({ tags: { net: ["prod"] } });
+      const waiting = await call("alice", w);
+      expect([waiting.status, waiting.json.code]).toEqual([409, "policy_pending"]);
+      await storePolicyVerdict(t.db, o1, w.project.id, w.id, "net", {
+        evaluated: true,
+        denied: ["data.main.deny_x"],
+        warned: [],
+      });
+      const denied = await call("alice", w);
+      expect([denied.status, denied.json.code]).toEqual([409, "policy_denied"]);
+      expect(denied.text).toContain("data.main.deny_x");
+      expect(w.triggered()).toBe(0);
+      expect(await applied(w)).toHaveLength(0);
+    } finally {
+      if (set) await deletePolicySet(t.db, o1, set.id);
+    }
+  });
+
   test("a failed precondition is a 409 with its code, and a second request finds the stacks taken", async () => {
     const stale = await world();
     await stale.push();
@@ -974,5 +1011,117 @@ describe("the apply route", () => {
     expect(res.text).not.toContain(mock.token);
     expect(res.text).not.toContain("injected");
     expect(lines.join("\n")).not.toContain(mock.token);
+  });
+});
+
+describe("policy", () => {
+  const SET = { name: "prod", source: "platform/policies", ref: "v1", path: ".", tag: "prod" };
+  const addSet = async (over: Partial<typeof SET> = {}) => {
+    const made = await createPolicySet(t.db, { organizationId: o1, ...SET, ...over });
+    if (!made) throw new Error("set not made");
+    return made;
+  };
+  const clearSets = async () => {
+    for (const set of await listPolicySets(t.db, o1, { limit: 100 })) {
+      await deletePolicySet(t.db, o1, set.id);
+    }
+  };
+  afterEach(clearSets);
+  const say = (w: World, stack: Name, report: Parameters<typeof storePolicyVerdict>[5]) =>
+    storePolicyVerdict(t.db, o1, w.project.id, w.id, stack, report);
+  const pass = { evaluated: true, denied: [], warned: [] };
+
+  test("a stack no set reaches is applied with no verdict, as before", async () => {
+    await addSet({ tag: "pci" });
+    const w = await world({ tags: { net: ["prod"], app: ["prod"] } });
+    expect(await apply(w)).toEqual(["app", "net"]);
+  });
+
+  test("a stack that a set judges is applied when it passed or was warned, and not before it was judged", async () => {
+    await addSet();
+    const w = await world({ tags: { net: ["prod"] } });
+    // judged by a set and not yet by the policy: it waits
+    const waiting = await refused(apply(w));
+    expect(waiting).toMatchObject({ status: 409, code: "policy_pending" });
+    expect(waiting.message).toContain("net");
+    expect(await w.states()).toEqual(PLANNED);
+    expect(w.triggered()).toBe(0);
+
+    await say(w, "net", { evaluated: true, denied: [], warned: ["data.main.warn_tags"] });
+    expect(await apply(w)).toEqual(["app", "net"]);
+    expect(w.triggered()).toBe(1);
+  });
+
+  test("a deny stops the apply of the whole request, naming the rules, and starts nothing", async () => {
+    await addSet();
+    const w = await world({ tags: { net: ["prod"], app: ["prod"] } });
+    await say(w, "app", pass);
+    await say(w, "net", {
+      evaluated: true,
+      denied: ["data.main.deny_public", "data.s3.deny_unencrypted"],
+      warned: [],
+    });
+    const e = await refused(apply(w));
+    expect(e).toMatchObject({ status: 409, code: "policy_denied" });
+    expect(e.message).toContain("data.main.deny_public");
+    expect(await w.states()).toEqual(PLANNED);
+    expect(w.triggered()).toBe(0);
+    // the stack that passed is not held back by name: applied alone it has to wait for net
+    expect(await refused(apply(w, { stacks: ["app"] }))).toMatchObject({
+      code: "dependency_not_applied",
+    });
+  });
+
+  test("an evaluator that crashed is a deny", async () => {
+    await addSet();
+    const w = await world({ tags: { net: ["prod"] } });
+    await say(w, "net", { evaluated: false, denied: [], warned: [] });
+    const e = await refused(apply(w));
+    expect(e).toMatchObject({ status: 409, code: "policy_denied" });
+    expect(e.message).toContain("evaluator-failed");
+    expect(w.triggered()).toBe(0);
+  });
+
+  test("a verdict stands after its set is removed: only a new plan lifts it", async () => {
+    const set = await addSet();
+    const w = await world({ tags: { net: ["prod"] } });
+    await say(w, "net", { evaluated: true, denied: ["data.main.deny_x"], warned: [] });
+    await deletePolicySet(t.db, o1, set.id);
+    expect(await refused(apply(w))).toMatchObject({ code: "policy_denied" });
+  });
+
+  test("a set added after the plan makes the stack wait for a plan that policy has judged", async () => {
+    const w = await world({ tags: { net: ["prod"] } });
+    await addSet();
+    expect(await refused(apply(w))).toMatchObject({ code: "policy_pending" });
+  });
+
+  test("a plan job that is replaced by a retry drops the verdict of the old plan", async () => {
+    await addSet();
+    const w = await world({ tags: { net: ["prod"] } });
+    await say(w, "net", pass);
+    // the same job seen again changes nothing
+    await recordStackJobs(t.db, o1, w.project.id, w.id, "net", { planJobId: PLAN_JOB.net });
+    expect((await w.run()).stacks.find((s) => s.stack === "net")?.policyVerdict).toBe("pass");
+    // a retried plan job is a new job with a new plan
+    await recordStackJobs(t.db, o1, w.project.id, w.id, "net", { planJobId: 777 });
+    const stack = (await w.run()).stacks.find((s) => s.stack === "net");
+    expect(stack).toMatchObject({
+      planJobId: 777,
+      policyVerdict: null,
+      policyDenied: null,
+      policyWarned: null,
+      policyAt: null,
+    });
+    expect(await refused(apply(w))).toMatchObject({ code: "policy_pending" });
+  });
+
+  test("the merge path says why, in the note, and applies nothing", async () => {
+    await addSet();
+    const w = await world({ applyOn: { net: "merge" }, tags: { net: ["prod"] } });
+    await say(w, "net", { evaluated: true, denied: ["data.main.deny_x"], warned: [] });
+    w.merge();
+    expect(await refused(apply(w, { when: "merge" }))).toMatchObject({ code: "policy_denied" });
+    expect(w.triggered()).toBe(0);
   });
 });

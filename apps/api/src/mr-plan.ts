@@ -9,6 +9,8 @@ import {
   getProject,
   latestRunOfMergeRequest,
   linkedProjects,
+  listPolicySets,
+  MAX_POLICY_SETS,
   MAX_RUN_STACKS,
   type MergeRequestNote,
   saveMergeRequestNote,
@@ -24,6 +26,7 @@ import {
   generatePipeline,
   gitlabSource,
   type PlanInput,
+  type PolicySet,
   scanStacks,
   type Tool,
 } from "@orch/iac";
@@ -52,6 +55,8 @@ export interface MrPlanConfig {
   audience: string;
   /** An image with `orch`, `curl` and `jq`, for the job that posts a summary. */
   helperImage: string;
+  /** An image with those and `conftest`, for the summary job of a stack that policy judges (POL-3). */
+  policyImage?: string | undefined;
   /** Image repository per tool that has no default (Terragrunt). */
   images?: Partial<Record<Tool, string>>;
 }
@@ -86,16 +91,24 @@ export const planRequest = (
   stacks: PlanInput["stacks"],
   select: readonly string[],
   runId: string,
-): PlanInput => ({
-  action: "plan",
-  audience: config.audience,
-  apiUrl: config.apiUrl,
-  summaryPath: `/organizations/${at.organizationId}/projects/${at.projectId}/runs/${runId}/plan-summary`,
-  helperImage: config.helperImage,
-  stacks,
-  select,
-  ...(config.images ? { images: config.images } : {}),
-});
+  /** The organization's policy sets; a drift check passes none (POL-3 judges merge request plans). */
+  policy: readonly PolicySet[] = [],
+): PlanInput => {
+  const run = `/organizations/${at.organizationId}/projects/${at.projectId}/runs/${runId}`;
+  return {
+    action: "plan",
+    audience: config.audience,
+    apiUrl: config.apiUrl,
+    summaryPath: `${run}/plan-summary`,
+    helperImage: config.helperImage,
+    stacks,
+    select,
+    ...(config.images ? { images: config.images } : {}),
+    ...(policy.length > 0
+      ? { policy: { sets: policy, image: config.policyImage, path: `${run}/policy-verdict` } }
+      : {}),
+  };
+};
 
 /** Starts a pipeline on `ref` that runs the generated child pipeline; `Refused` when GitLab will not. */
 export async function triggerPlan(gitlab: Gitlab, project: number, ref: string, yaml: string) {
@@ -254,7 +267,10 @@ async function start(c: Turn, tx: Tx, mr: MergeRequest, sha: string): Promise<st
     return notes;
   }
 
-  const request = (runId: string) => planRequest(deps.config, at, scan.stacks, affected, runId);
+  // all of the organization's sets (there are at most MAX_POLICY_SETS), read in the merge request's lock
+  const sets = await listPolicySets(tx, at.organizationId, { limit: MAX_POLICY_SETS });
+  const request = (runId: string) =>
+    planRequest(deps.config, at, scan.stacks, affected, runId, sets);
   try {
     generatePipeline(request(NO_RUN));
   } catch (error) {

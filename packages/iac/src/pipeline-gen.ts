@@ -1,5 +1,6 @@
 import { stringify } from "yaml";
 import { buildGraph } from "./graph";
+import { POLICY_FILTER, type PolicySet, policySetProblems, setsFor } from "./policy";
 import { type Stack, safeDir } from "./scan";
 import { NAME, SLUG, type Tool, VERSION } from "./stack";
 
@@ -32,6 +33,12 @@ export interface PlanInput extends Common {
   summaryPath: string;
   /** An image with `orch`, `curl` and `jq`, for the job that posts the summary. */
   helperImage: string;
+  /**
+   * Policy (POL-3): a stack that carries the tag of a set has its plan judged by it, in its summary
+   * job, which then runs `image` (the helper's tools and `conftest`) and posts the verdict to `path`.
+   * A stack the sets reach with no `image` is an error: it would be planned with nothing to judge it.
+   */
+  policy?: { sets: readonly PolicySet[]; image?: string | undefined; path: string };
 }
 
 export interface ApplyInput extends Common {
@@ -105,6 +112,32 @@ const stateVariables = (name: string) => {
 // The job signs in with its id_token; the summary job and a plan job of a stack with an environment both start so.
 const LOGIN = ['login="$(orch ci login)"', 'eval "$login"'];
 
+/**
+ * The lines of a summary job that judge a stack's plan: fetch each set from GitLab with the job's
+ * own token, run conftest on the plan, keep the names of the rules that fired and post them. Fails
+ * closed: whatever goes wrong before the answer is read (a set that cannot be fetched, a policy
+ * that does not load, conftest not there, an answer that is not a result) posts `evaluated: false`,
+ * which the platform takes as a denial. Only a failure to post leaves no verdict, and with none
+ * the platform will not apply the stack either.
+ */
+function policyScript(name: string, dir: string, sets: readonly PolicySet[], path: string) {
+  const dirs = sets.map((set, i) => (set.path === "." ? `policy/${i}` : `policy/${i}/${set.path}`));
+  const chain = [
+    ...sets.flatMap((set, i) => [
+      `curl --fail --silent --show-error --location --header "JOB-TOKEN: $CI_JOB_TOKEN" --output policy-${i}.tgz "$CI_API_V4_URL/projects/${encodeURIComponent(set.source)}/repository/archive.tar.gz?sha=${encodeURIComponent(set.ref)}"`,
+      `mkdir -p policy/${i}`,
+      `tar -xzf policy-${i}.tgz -C policy/${i} --strip-components=1`,
+    ]),
+    // conftest exits 1 for a denial as for a failure: what it printed decides, not how it ended
+    `{ conftest test --no-color --output json --all-namespaces ${dirs.map((d) => `--policy ${d}`).join(" ")} ${inDir(dir, "plan.json")} > policy.json || :; }`,
+    `jq -e -c -s --arg stack ${name} '${POLICY_FILTER}' policy.json > policy-verdict.json`,
+  ].join(" && ");
+  return [
+    `${chain} || printf '{"stack":"${name}","evaluated":false}' > policy-verdict.json`,
+    `curl --fail --silent --show-error --request POST --header "Authorization: Bearer $ORCH_TOKEN" --header "Content-Type: application/json" --data @policy-verdict.json "$ORCH_API_URL${path}"`,
+  ];
+}
+
 // names that come from a user are shown quoted and cut short
 const quoted = (s: string) => JSON.stringify(s.length > 64 ? `${s.slice(0, 64)}…` : s);
 const inDir = (dir: string, file: string) => (dir === "." ? file : `${dir}/${file}`);
@@ -176,6 +209,25 @@ export function generatePipeline(input: GenerateInput): string {
     else if (!VERSION.test(s.version)) problems.push(`${at} has a version that is not usable`);
     if (s.environment !== undefined && !SLUG.test(s.environment)) {
       problems.push(`${at} has an environment that is not usable in a job`);
+    }
+    if (input.action === "plan" && input.policy) {
+      const judged = setsFor(s.tags, input.policy.sets);
+      for (const set of judged) {
+        for (const p of policySetProblems(set)) {
+          // the same set judges every stack that carries its tag: say it once
+          const message = `policy set ${quoted(set.name)}: ${p}`;
+          if (!problems.includes(message)) problems.push(message);
+        }
+      }
+      if (judged.length > 0) {
+        if (!(input.policy.image && image.test(input.policy.image))) {
+          problems.push(
+            `${at} is judged by policy, so its summary job runs conftest: pass policy.image (an image with conftest, orch, curl and jq)`,
+          );
+        }
+        if (!PATH.test(input.policy.path))
+          problems.push("policy.path must be a path starting with /");
+      }
     }
     const repo = input.images?.[s.tool] ?? IMAGES[s.tool];
     if (repo === undefined) {
@@ -283,9 +335,13 @@ export function generatePipeline(input: GenerateInput): string {
           },
         },
       );
+      const judged = input.policy ? setsFor(byName.get(name)?.tags ?? [], input.policy.sets) : [];
       jobs[`summary:${name}`] = {
         stage: "summary",
-        image: { name: input.helperImage, entrypoint: [""] },
+        image: {
+          name: (judged.length > 0 && input.policy?.image) || input.helperImage,
+          entrypoint: [""],
+        },
         needs: [{ job: `plan:${name}`, artifacts: true }],
         id_tokens: { ORCH_ID_TOKEN: { aud: input.audience } },
         variables: { ORCH_API_URL: input.apiUrl },
@@ -293,6 +349,9 @@ export function generatePipeline(input: GenerateInput): string {
           ...LOGIN,
           `jq -c --arg stack ${name} '${SUMMARY_FILTER}' ${inDir(dir, "plan.json")} > summary.json`,
           `curl --fail --silent --show-error --request POST --header "Authorization: Bearer $ORCH_TOKEN" --header "Content-Type: application/json" --data @summary.json "$ORCH_API_URL${input.summaryPath}"`,
+          ...(judged.length > 0 && input.policy
+            ? policyScript(name, dir, judged, input.policy.path)
+            : []),
         ],
       };
     } else {

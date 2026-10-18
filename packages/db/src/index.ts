@@ -17,6 +17,7 @@ export * from "./notifications";
 export * from "./pg-error";
 export * from "./pipeline-configs";
 export * from "./pipeline-runs";
+export * from "./policy";
 export * from "./repo";
 export * from "./runs";
 export * from "./schedules";

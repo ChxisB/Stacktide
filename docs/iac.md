@@ -17,6 +17,7 @@ the job.
   - `ORCH_API_URL`: where CI jobs reach the API, such as `https://orch.example.com`.
   - `ORCH_CI_AUDIENCE`: the same value the API has (see `docs/ci.md`).
   - `ORCH_HELPER_IMAGE`: an image with `orch`, `curl` and `jq`, for the job that posts a plan's counts.
+  - `ORCH_POLICY_IMAGE` (only with policy sets, see Policy): the same and `tar` and `conftest`.
   - `ORCH_TERRAGRUNT_IMAGE` (only for Terragrunt stacks): an image repository without a tag; the stack's
     `version` is the tag. Terraform and OpenTofu have defaults.
   - `ORCH_TERRAFORM_IMAGE`, `ORCH_TOFU_IMAGE` (only for stacks with an `environment`, see Variables): the
@@ -277,6 +278,44 @@ with `{"events": ["stack.drift"]}`). Both need the master keys (`ORCH_MASTER_KEY
     return want.length === got.length && timingSafeEqual(want, got) && Math.abs(Date.now() / 1000 - Number(timestamp)) < 300;
   };
   ```
+
+## Policy
+
+An organization admin adds **policy sets** (`POST /organizations/:orgId/policy-sets`, action `policy.set.create`;
+`GET` lists, `DELETE /:setId` removes; the first needs org viewer, the others org admin). A set is
+`{name, source, ref, path, tag}`: Rego policies in the directory `path` of the GitLab project `source` (the same
+instance as the stacks) at `ref`, and the stack tag it is attached to. At most 50 sets for an organization. A stack
+that carries `tag` in its `stack.yml` has every plan judged by every set with that tag, by
+[conftest](https://www.conftest.dev/) over the plan's JSON. The sets are the organization's, not the
+repository's: a merge request cannot weaken the policy it is judged by (it can remove the tag from its own
+stack, see below).
+
+- Set `ORCH_POLICY_IMAGE` on the worker: an image with `orch`, `curl`, `jq`, `tar` and `conftest`. A stack tagged
+  for a set is **not planned** without it (the note shows the generator's error). Drift checks are not judged.
+- The plan pipeline gets one more step in the summary job of a tagged stack: download each set's archive with the
+  job token (the policy project must allow the job token of the stack's project to read it), run `conftest`,
+  reduce its answer to **rule names** and post it to `POST …/runs/:runId/policy-verdict` (action
+  `run.summary`: the job's own token, valid only for the stack's summary job, audited as `run.policy`). Messages
+  stay in the GitLab job log, because a message may quote a value of the plan; the platform stores only the names
+  (at most 50 of each, `[A-Za-z0-9_.:-]`, 200 characters).
+- The verdict is `pass`, `warn` (a `warn` rule fired) or `deny` (a `deny` rule fired). **A crashed, missing or
+  unreadable evaluator is a deny** (`evaluator-failed`): nothing judged is not a pass.
+- The merge request note has a *Policy* section with the verdict and up to three rule names for each judged stack.
+  That is the only place a `warn` shows.
+- **Applying is refused** (409) for a stack whose verdict is `deny` (`policy_denied`, with the rule names), and for a
+  stack that a set reaches now but that has no verdict (`policy_pending`: the post failed, the plan job was retried, or the set was
+  added after the plan; plan it again). A new plan job for a stack forgets the verdict of the old one.
+
+What to know:
+
+- Anyone who can write the policy project or move `ref` changes what is enforced. Pin a commit sha or a protected tag;
+  a branch moves under plans that were judged by an older version.
+- Removing the tag from `stack.yml` in the same merge request removes the policy for that stack's next plan. Only an
+  org admin can make a set, and nothing separates that admin's duties from approving a merge request.
+- A set that is deleted or added does not change a verdict already stored: a `deny` stays until the stack is planned
+  again. A set added after planning leaves the stacks it reaches `policy_pending` until then.
+- The conftest JSON shape (`metadata.query` as the rule's name) is the documented one but this is not tested against a
+  real conftest; a rule with no name is `unnamed`.
 
 ## What to know
 

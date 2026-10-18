@@ -13,6 +13,7 @@ import {
   type PlanInput,
   SUMMARY_FILTER,
 } from "./pipeline-gen";
+import { POLICY_FILTER, type PolicySet } from "./policy";
 import type { Stack } from "./scan";
 
 const stack = (name: string, over: Partial<Stack> = {}): Stack => ({
@@ -828,4 +829,427 @@ describe("the plan summary filter", () => {
     expect(summary.add).toBe(700);
     expect(summary.resources).toHaveLength(500);
   });
+});
+
+describe("policy in a plan pipeline", () => {
+  const SET: PolicySet = {
+    name: "prod-rules",
+    source: "platform/policies",
+    ref: "v1.2.0",
+    path: "terraform",
+    tag: "prod",
+  };
+  const OTHER: PolicySet = {
+    ...SET,
+    name: "pci",
+    source: "platform/pci",
+    ref: "main",
+    path: ".",
+    tag: "pci",
+  };
+  const IMAGE = "registry.example.com/orch/ci-policy:1.0.0";
+  const POLICY_PATH = "/runs/0b9e5bd2/policy-verdict";
+  const stacks = [
+    stack("net"),
+    stack("db", { dependsOn: ["net"], tags: ["prod", "pci"] }),
+    stack("app", { dependsOn: ["db"], tags: ["prod"] }),
+  ];
+  const withPolicy = (over: Partial<NonNullable<PlanInput["policy"]>> = {}) =>
+    plan({
+      stacks,
+      select: ["app", "db", "net"],
+      policy: { sets: [SET, OTHER], image: IMAGE, path: POLICY_PATH, ...over },
+    });
+
+  test("snapshot", () => {
+    expect(generatePipeline(withPolicy())).toMatchSnapshot();
+  });
+
+  test("a stack that carries a set's tag is judged in its summary job, with the policy image", () => {
+    const jobs = jobsOf(generatePipeline(withPolicy()));
+    const db = jobs["summary:db"] as Job;
+    expect(db.image.name).toBe(IMAGE);
+    const text = db.script.join("\n");
+    // both sets, fetched with the job's own token
+    expect(text).toContain("platform%2Fpolicies/repository/archive.tar.gz?sha=v1.2.0");
+    expect(text).toContain("platform%2Fpci/repository/archive.tar.gz?sha=main");
+    expect(text).toContain('--header "JOB-TOKEN: $CI_JOB_TOKEN"');
+    expect(text).toContain("--policy policy/0/terraform --policy policy/1 stacks/db/plan.json");
+    expect(text).toContain(`"$ORCH_API_URL${POLICY_PATH}"`);
+    // a stack with only one of the tags is judged by that set alone
+    expect((jobs["summary:app"] as Job).script.join("\n")).toContain(
+      "--policy policy/0/terraform stacks/app/plan.json",
+    );
+    expect((jobs["summary:app"] as Job).script.join("\n")).not.toContain("platform%2Fpci");
+  });
+
+  test("a stack no set reaches is planned and summarised exactly as without policy", () => {
+    const withOut = jobsOf(generatePipeline(plan({ stacks, select: ["app", "db", "net"] })));
+    const jobs = jobsOf(generatePipeline(withPolicy()));
+    expect(jobs["summary:net"]).toEqual(withOut["summary:net"]);
+    expect((jobs["summary:net"] as Job).image.name).toBe(
+      "registry.example.com/orch/ci-helper:1.0.0",
+    );
+    // and the plan jobs are never touched: the policy job holds the platform's token and nothing of the cloud's
+    for (const n of ["app", "db", "net"]) expect(jobs[`plan:${n}`]).toEqual(withOut[`plan:${n}`]);
+  });
+
+  test("sets that no selected stack carries change nothing, and need no image", () => {
+    const quiet = withPolicy({ sets: [{ ...SET, tag: "unused" }], image: undefined });
+    expect(generatePipeline(quiet)).toBe(
+      generatePipeline(plan({ stacks, select: ["app", "db", "net"] })),
+    );
+  });
+
+  test("a stack that policy reaches with no image to judge it is an error, not a plan nobody judges", () => {
+    const e = failure(() => generatePipeline(withPolicy({ image: undefined })));
+    expect(e.problems).toEqual([
+      expect.stringContaining('stack "app" is judged by policy'),
+      expect.stringContaining('stack "db" is judged by policy'),
+    ]);
+    expect(
+      failure(() => generatePipeline(withPolicy({ image: "Not An Image" }))).problems,
+    ).toHaveLength(2);
+    expect(failure(() => generatePipeline(withPolicy({ path: "runs/x" }))).problems[0]).toContain(
+      "policy.path",
+    );
+  });
+
+  test("a set that could reach a shell or a URL is refused, if it reaches a stack", () => {
+    const bad: Partial<PolicySet>[] = [
+      { source: "platform/policies;rm -rf /" },
+      { source: "single" },
+      { source: "../x/y" },
+      { ref: "$(id)" },
+      { ref: "a..b" },
+      { ref: "-x" },
+      { path: "/etc" },
+      { path: "a/../b" },
+      { path: "a b" },
+    ];
+    for (const over of bad) {
+      const e = failure(() =>
+        generatePipeline(withPolicy({ sets: [{ ...SET, tag: "pci", ...over }] })),
+      );
+      expect(e.problems.join("\n"), JSON.stringify(over)).toContain('policy set "prod-rules"');
+    }
+    // one set reaching two stacks is one complaint, not two
+    const twice = failure(() =>
+      generatePipeline(withPolicy({ sets: [{ ...SET, tag: "prod", source: "single" }] })),
+    );
+    expect(twice.problems.filter((p) => p.includes('policy set "prod-rules"'))).toHaveLength(1);
+    // a bad set that reaches no selected stack is not this plan's problem
+    expect(() =>
+      generatePipeline(withPolicy({ sets: [{ ...SET, tag: "other", ref: "$(id)" }] })),
+    ).not.toThrow();
+  });
+
+  test("an apply pipeline has no policy in it", () => {
+    expect(
+      generatePipeline(
+        apply({ stacks, select: ["app", "db", "net"], planJobs: { app: 3, db: 2, net: 1 } }),
+      ),
+    ).not.toContain("conftest");
+  });
+});
+
+describe("the policy filter", () => {
+  const jq = Bun.which("jq");
+  const run = async (input: string) => {
+    const proc = Bun.spawn(
+      [jq as string, "-e", "-c", "-s", "--arg", "stack", "db", POLICY_FILTER],
+      {
+        stdin: new TextEncoder().encode(input),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const out = await new Response(proc.stdout).text();
+    return { code: await proc.exited, out: out.trim() };
+  };
+  const fired = (failures: string[], warnings: string[] = []) =>
+    JSON.stringify([
+      {
+        filename: "plan.json",
+        namespace: "main",
+        successes: 2,
+        failures: failures.map((q) => ({ msg: "bucket x holds hunter2", metadata: { query: q } })),
+        warnings: warnings.map((q) => ({ msg: "tag it, hunter2", metadata: { query: q } })),
+      },
+    ]);
+
+  test.skipIf(!jq)("a result that fired nothing is an evaluation with nothing denied", async () => {
+    // conftest leaves failures and warnings out when there are none
+    const r = await run('[{"filename":"plan.json","namespace":"main","successes":3}]');
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({ stack: "db", evaluated: true, denied: [], warned: [] });
+  });
+
+  test.skipIf(!jq)("keeps the names of the rules that fired and never what they said", async () => {
+    const r = await run(
+      fired(
+        ["data.main.deny_public", "data.main.deny_public", "data.terraform.deny_open_sg"],
+        ["data.main.warn_tags"],
+      ),
+    );
+    expect(JSON.parse(r.out)).toEqual({
+      stack: "db",
+      evaluated: true,
+      denied: ["data.main.deny_public", "data.terraform.deny_open_sg"],
+      warned: ["data.main.warn_tags"],
+    });
+    expect(r.out).not.toContain("hunter2");
+  });
+
+  test.skipIf(!jq)("results of several files and namespaces are all counted", async () => {
+    const r = await run(
+      JSON.stringify([
+        { namespace: "a", failures: [{ msg: "m", metadata: { query: "data.a.deny" } }] },
+        { namespace: "b", warnings: [{ msg: "m", metadata: { query: "data.b.warn" } }] },
+      ]),
+    );
+    expect(JSON.parse(r.out)).toMatchObject({ denied: ["data.a.deny"], warned: ["data.b.warn"] });
+  });
+
+  test.skipIf(!jq)(
+    "a rule with no name, or an odd one, is still named, in the alphabet the platform takes",
+    async () => {
+      const r = await run(
+        JSON.stringify([
+          {
+            failures: [
+              { msg: "m" },
+              { msg: "m", metadata: { query: "data.main.deny[x] y`z" } },
+              { msg: "m", metadata: { query: "x".repeat(300) } },
+            ],
+          },
+        ]),
+      );
+      const { denied } = JSON.parse(r.out);
+      expect(denied).toHaveLength(3);
+      for (const d of denied) expect(/^[A-Za-z0-9_.:-]{1,200}$/.test(d), d).toBe(true); // core's POLICY_RULE; the API test holds the two together
+    },
+  );
+
+  test.skipIf(!jq)("at most 50 rules are reported, and a denial stays one", async () => {
+    const r = await run(fired(Array.from({ length: 80 }, (_, i) => `data.main.deny_${i}`)));
+    const body = JSON.parse(r.out);
+    expect(body.denied).toHaveLength(50);
+  });
+
+  // The cases a verdict must never be made of: jq fails (and with it the whole chain), so the job posts `evaluated: false`.
+  for (const [what, input] of [
+    ["nothing at all", ""],
+    ["an empty list: nothing was judged", "[]"],
+    ["an error message", "Error: running test: load: loading policies: no policies found"],
+    ["an object, not a list", '{"error": "x"}'],
+    ["null", "null"],
+    ["a list whose results are not objects", '["x"]'],
+  ] as const) {
+    test.skipIf(!jq)(`${what} is an error, never an empty verdict`, async () => {
+      expect((await run(input)).code).not.toBe(0);
+    });
+  }
+});
+
+describe("the policy lines of a summary job, as the runner's shell runs them", () => {
+  const jq = Bun.which("jq");
+  const tar = Bun.which("tar");
+  const sh = !!jq && !!tar;
+  let root: string;
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "orch-policy-"));
+    await mkdir(join(root, "bin"), { recursive: true });
+    // curl: serves the policy archive for a download, records what is posted
+    await writeFile(
+      join(root, "bin/curl"),
+      `#!/bin/sh
+out=""; data=""; post=""
+echo "$@" >> "$WORK/curl.log"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output) out="$2"; shift;;
+    --data) data="\${2#@}"; shift;;
+    --request) post="$2"; shift;;
+  esac
+  shift
+done
+if [ -n "$post" ]; then
+  [ -n "$FAKE_POST_FAILS" ] && exit 22
+  cp "$data" "$WORK/posted.json"
+  exit 0
+fi
+[ -n "$FAKE_FETCH_FAILS" ] && exit 22
+cp "$FIXTURE_TGZ" "$out"
+`,
+      { mode: 0o755 },
+    );
+    // conftest: prints a canned answer and exits as asked, like the real one (1 for a denial as well as for a failure)
+    await writeFile(
+      join(root, "bin/conftest"),
+      `#!/bin/sh
+echo "$@" > "$WORK/conftest.args"
+[ -n "$FAKE_CONFTEST_OUT" ] && printf '%s' "$FAKE_CONFTEST_OUT"
+exit \${FAKE_CONFTEST_EXIT:-0}
+`,
+      { mode: 0o755 },
+    );
+    // an archive as GitLab makes it: everything under one directory
+    await mkdir(join(root, "src/policies-v1-abc/terraform"), { recursive: true });
+    await writeFile(join(root, "src/policies-v1-abc/terraform/main.rego"), "package main\n");
+    const p = Bun.spawn([
+      "tar",
+      "-czf",
+      join(root, "fixture.tgz"),
+      "-C",
+      join(root, "src"),
+      "policies-v1-abc",
+    ]);
+    await p.exited;
+  });
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const SETS: PolicySet[] = [
+    { name: "rules", source: "platform/policies", ref: "v1", path: "terraform", tag: "prod" },
+  ];
+  const lines = () => {
+    const job = jobsOf(
+      generatePipeline(
+        plan({
+          stacks: [stack("db", { tags: ["prod"] })],
+          select: ["db"],
+          policy: {
+            sets: SETS,
+            image: "registry.example.com/orch/ci-policy:1",
+            path: "/runs/r/policy-verdict",
+          },
+        }),
+      ),
+    )["summary:db"] as Job;
+    return (job.script as string[]).slice(4); // after the login and the summary
+  };
+
+  /** Runs the policy lines in a fresh directory; says how each ended and what was posted. */
+  async function run(env: Record<string, string> = {}) {
+    const work = await mkdtemp(join(root, "job-"));
+    await mkdir(join(work, "stacks/db"), { recursive: true });
+    await writeFile(join(work, "stacks/db/plan.json"), "{}");
+    const codes: number[] = [];
+    for (const line of lines()) {
+      const proc = Bun.spawn(["sh", "-c", line], {
+        cwd: work,
+        stderr: "pipe",
+        env: {
+          PATH: `${join(root, "bin")}:${process.env.PATH}`,
+          WORK: work,
+          FIXTURE_TGZ: join(root, "fixture.tgz"),
+          CI_JOB_TOKEN: "job-token",
+          CI_API_V4_URL: "https://gitlab.example.com/api/v4",
+          ORCH_API_URL: "https://orch.example.com",
+          ORCH_TOKEN: "orch-token",
+          ...env,
+        },
+      });
+      codes.push(await proc.exited);
+    }
+    const posted = await readFile(join(work, "posted.json"), "utf8").catch(() => undefined);
+    return {
+      codes,
+      work,
+      posted: posted === undefined ? undefined : JSON.parse(posted),
+      raw: posted,
+      conftest: await readFile(join(work, "conftest.args"), "utf8").catch(() => undefined),
+    };
+  }
+  const result = (failures: string[] = [], warnings: string[] = []) =>
+    JSON.stringify([
+      {
+        filename: "stacks/db/plan.json",
+        namespace: "main",
+        successes: 4,
+        ...(failures.length
+          ? { failures: failures.map((q) => ({ msg: "x holds hunter2", metadata: { query: q } })) }
+          : {}),
+        ...(warnings.length
+          ? { warnings: warnings.map((q) => ({ msg: "y", metadata: { query: q } })) }
+          : {}),
+      },
+    ]);
+
+  test.skipIf(!sh)(
+    "a plan that breaks no rule posts an evaluation with nothing in it",
+    async () => {
+      const r = await run({ FAKE_CONFTEST_OUT: result() });
+      expect(r.codes).toEqual([0, 0]);
+      expect(r.posted).toEqual({ stack: "db", evaluated: true, denied: [], warned: [] });
+      // the set was fetched and unpacked where conftest was told to look
+      expect(r.conftest).toContain("--policy policy/0/terraform stacks/db/plan.json");
+      expect(await Bun.file(join(r.work, "policy/0/terraform/main.rego")).exists()).toBe(true);
+    },
+  );
+
+  test.skipIf(!sh)("a warning is posted as a warning", async () => {
+    const r = await run({ FAKE_CONFTEST_OUT: result([], ["data.main.warn_tags"]) });
+    expect(r.posted).toEqual({
+      stack: "db",
+      evaluated: true,
+      denied: [],
+      warned: ["data.main.warn_tags"],
+    });
+  });
+
+  test.skipIf(!sh)(
+    "a denial is posted by name, however conftest exits, and without what it said",
+    async () => {
+      for (const code of ["0", "1"]) {
+        const r = await run({
+          FAKE_CONFTEST_OUT: result(["data.main.deny_public"]),
+          FAKE_CONFTEST_EXIT: code,
+        });
+        expect(r.codes).toEqual([0, 0]);
+        expect(r.posted).toEqual({
+          stack: "db",
+          evaluated: true,
+          denied: ["data.main.deny_public"],
+          warned: [],
+        });
+        expect(r.raw).not.toContain("hunter2");
+      }
+    },
+  );
+
+  test.skipIf(!sh)("a crashed evaluator posts a failed evaluation, not an empty one", async () => {
+    // conftest dies with nothing on stdout; and with an error text there; and with a result that is not a list
+    for (const out of [
+      "",
+      "Error: running test: load: loading policies: no policies found",
+      '{"error":"x"}',
+      "[]",
+    ]) {
+      const r = await run({ FAKE_CONFTEST_OUT: out, FAKE_CONFTEST_EXIT: "2" });
+      expect(r.codes, out).toEqual([0, 0]);
+      expect(r.posted, out).toEqual({ stack: "db", evaluated: false });
+    }
+  });
+
+  test.skipIf(!sh)(
+    "a set that cannot be fetched posts a failed evaluation, and conftest never runs",
+    async () => {
+      const r = await run({ FAKE_FETCH_FAILS: "1", FAKE_CONFTEST_OUT: result() });
+      expect(r.codes).toEqual([0, 0]);
+      expect(r.posted).toEqual({ stack: "db", evaluated: false });
+      expect(r.conftest).toBeUndefined();
+    },
+  );
+
+  test.skipIf(!sh)(
+    "a verdict the platform did not take fails the job, which leaves it without one",
+    async () => {
+      const r = await run({ FAKE_CONFTEST_OUT: result(), FAKE_POST_FAILS: "1" });
+      expect(r.codes[1]).not.toBe(0);
+      expect(r.posted).toBeUndefined();
+    },
+  );
 });

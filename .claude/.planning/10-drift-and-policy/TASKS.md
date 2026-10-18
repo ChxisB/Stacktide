@@ -8,7 +8,7 @@ Done when: tests with a fake clock cover schedule, clean->drifted->clean transit
 Do: sink interface; HMAC-signed webhook sink; Slack formatter; per-project subscriptions; retries through the queue.
 Done when: tests cover signature verification, retry/backoff, dead-letter and payload leak test.
 
-### POL-3 - Policy-as-code (runner side)  `[ ]` M - deps: IAC-8, IAC-4
+### POL-3 - Policy-as-code (runner side)  `[x]` M - deps: IAC-8, IAC-4
 Do: policy set repo reference + tag attachment; generated plan job runs the evaluator on plan JSON and posts pass/deny/warn; `deny` becomes an apply precondition; evaluator failure = deny.
 Done when: fixtures with allow, warn and deny plans behave as specified, and a crashed evaluator blocks apply.
 

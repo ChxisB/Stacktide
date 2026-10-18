@@ -234,6 +234,7 @@ describe("coverage", () => {
       [`POST ${P}/:projectId/runs`]: "run.create",
       [`GET ${P}/:projectId/runs/:runId`]: "run.read",
       [`POST ${P}/:projectId/runs/:runId/plan-summary`]: "run.summary",
+      [`POST ${P}/:projectId/runs/:runId/policy-verdict`]: "run.summary",
       [`POST ${P}/:projectId/runs/:runId/apply`]: "run.apply",
       [`GET ${O}/:orgId/connections`]: "connection.read",
       [`POST ${O}/:orgId/connections`]: "connection.create",
@@ -245,6 +246,9 @@ describe("coverage", () => {
       [`GET ${O}/:orgId/notification-sinks`]: "notification.sink.read",
       [`POST ${O}/:orgId/notification-sinks`]: "notification.sink.create",
       [`DELETE ${O}/:orgId/notification-sinks/:sinkId`]: "notification.sink.delete",
+      [`GET ${O}/:orgId/policy-sets`]: "policy.set.read",
+      [`POST ${O}/:orgId/policy-sets`]: "policy.set.create",
+      [`DELETE ${O}/:orgId/policy-sets/:setId`]: "policy.set.delete",
       [`GET ${P}/:projectId/notifications`]: "notification.subscription.read",
       [`PUT ${P}/:projectId/notifications/:sinkId`]: "notification.subscription.update",
       [`DELETE ${P}/:projectId/notifications/:sinkId`]: "notification.subscription.update",
@@ -302,7 +306,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(100);
+    expect(routes.length).toBe(104);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

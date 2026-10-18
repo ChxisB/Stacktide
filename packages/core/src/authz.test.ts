@@ -110,6 +110,10 @@ const allowed: Record<string, string[]> = {
   "notification.sink.delete": ["org admin", "org owner"],
   "notification.subscription.read": REPORTER_UP,
   "notification.subscription.update": ["org admin", "org owner"],
+  // Policy is the organization's: anyone in it may read the sets, only admins write them (a project maintainer applies plans and must not remove what judges them).
+  "policy.set.read": ORG_ALL,
+  "policy.set.create": ["org admin", "org owner"],
+  "policy.set.delete": ["org admin", "org owner"],
 };
 
 describe("role x action", () => {

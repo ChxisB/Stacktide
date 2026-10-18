@@ -15,7 +15,7 @@ export const MAX_MANIFEST_BYTES = 64 * 1024;
 // of generated pipelines, so they are closed character sets, not free text.
 export const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 export const VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]{1,32})?$/;
-const TAG = /^[a-z0-9][a-z0-9._-]{0,31}$/;
+export const TAG = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 // The platform's own rule for an environment's slug (apps/api routes/shared.ts), so that a marker
 // cannot name one that could never exist. It ends up in a generated job's `environment:`.
 export const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;

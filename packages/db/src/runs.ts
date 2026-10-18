@@ -1,5 +1,5 @@
 import { canTransition, isFinishedRun, type RunAction, type RunState } from "@orch/core";
-import { and, desc, eq, getTableColumns, inArray, isNotNull, lt, ne } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNotNull, lt, ne, sql } from "drizzle-orm";
 import type { Executor } from "./repo";
 import { pipelineRuns, runPipelines, runStacks, runs } from "./schema";
 
@@ -241,8 +241,20 @@ export async function recordStackJobs(
   stack: string,
   jobs: { planJobId?: number | undefined; summaryJobId?: number | undefined },
 ): Promise<void> {
+  // A retried plan job is a new plan: the policy's verdict was of the old one, so it goes (POL-3).
+  // The summary job's retry posts a new one; until then the stack is not judged, and apply waits.
+  const forgotten = <T>(column: T) =>
+    sql`case when ${runStacks.planJobId} is distinct from ${jobs.planJobId} then null else ${column} end`;
   const set = {
-    ...(jobs.planJobId === undefined ? {} : { planJobId: jobs.planJobId }),
+    ...(jobs.planJobId === undefined
+      ? {}
+      : {
+          planJobId: jobs.planJobId,
+          policyVerdict: forgotten(runStacks.policyVerdict),
+          policyDenied: forgotten(runStacks.policyDenied),
+          policyWarned: forgotten(runStacks.policyWarned),
+          policyAt: forgotten(runStacks.policyAt),
+        }),
     ...(jobs.summaryJobId === undefined ? {} : { summaryJobId: jobs.summaryJobId }),
   };
   if (Object.keys(set).length === 0) return;
