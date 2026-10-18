@@ -10,7 +10,7 @@ export interface FakeAwsOptions {
   region: string;
   /** The clock the fake judges expiry by; the client under test has its own. */
   now?: () => Date;
-  /** The most parameters one DescribeParameters page holds (50 at most, as AWS), to make a client follow the token. */
+  /** The most one DescribeParameters or ListSecrets page holds (50 and 100 at most, as AWS), to make a client follow the token. */
   pageSize?: number;
   /** Text put into the message of every error, as AWS puts ARNs and fields in its own: a client must pass none of it on. */
   leak?: string;
@@ -22,6 +22,15 @@ export interface FakeParameter {
   keyId?: string;
   tags: Record<string, string>;
   version: number;
+}
+
+export interface FakeSecret {
+  /** Oldest first. Each version carries the staging labels it holds; one holds `AWSCURRENT`. */
+  versions: { id: string; token: string; value: string; stages: string[] }[];
+  tags: Record<string, string>;
+  kmsKeyId?: string;
+  /** Set once DeleteSecret scheduled it for deletion: the secret can no longer be read or changed. */
+  deletedAt?: Date;
 }
 
 export interface FakeAwsCall {
@@ -36,19 +45,23 @@ const STAMP = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/;
 const PUT_TYPES = ["String", "StringList", "SecureString"];
 
 /**
- * AWS as far as the sync clients use it, as a `fetch`: STS (AssumeRole, GetCallerIdentity) and SSM
- * Parameter Store, written from the services' documentation, not from a recording. It checks what a
+ * AWS as far as the sync clients use it, as a `fetch`: STS (AssumeRole, GetCallerIdentity), SSM
+ * Parameter Store and Secrets Manager, written from the services' documentation, not from a recording. It checks what a
  * real endpoint checks of a request: the host names the region, the signature is the one the caller's
  * secret makes (re-signed here, so a header changed after signing is caught), the session token goes
  * with the key, assumed credentials expire after 900 s, and SSM refuses what the service refuses (names,
- * sizes, `Tags` with `Overwrite`, a value that looks like `{{ref}}`).
+ * sizes, `Tags` with `Overwrite`, a value that looks like `{{ref}}`), and Secrets Manager refuses what it
+ * refuses (names, sizes, tags, a name that is waiting to be deleted) and keeps versions and staging labels.
  *
  * shortcut: standard-tier parameters only, no versions or labels, no KMS (a SecureString is stored
- * readable and handed out only to `WithDecryption`); add them when an adapter needs them.
+ * readable and handed out only to `WithDecryption`); secrets are text (no binary), found by name and
+ * never by ARN, and a scheduled deletion never completes; add them when an adapter needs them.
  */
 export function fakeAws(o: FakeAwsOptions) {
   const now = o.now ?? (() => new Date());
   const params = new Map<string, FakeParameter>();
+  const secrets = new Map<string, FakeSecret>();
+  let versionsMade = 0;
   const assumed = new Map<string, { secret: string; token: string; expiresAt: Date }>();
   const calls: FakeAwsCall[] = [];
   /** SSM actions the assumed role may not call. */
@@ -213,6 +226,226 @@ export function fakeAws(o: FakeAwsOptions) {
     }
   }
 
+  const SECRET_NAME = /^[A-Za-z0-9/_+=.@-]{1,512}$/;
+  const TOKEN = /^[\w-]{32,64}$/;
+  const arnOf = (name: string) =>
+    `arn:aws:secretsmanager:${o.region}:${account}:secret:${name}-Ab12Cd`;
+
+  function secretTags(raw: unknown): Record<string, string> | undefined {
+    const out: Record<string, string> = {};
+    if (raw === undefined) return out;
+    if (!Array.isArray(raw)) return undefined;
+    for (const t of raw) {
+      const { Key: k, Value: v } = t as { Key?: unknown; Value?: unknown };
+      if (typeof k !== "string" || typeof v !== "string") return undefined;
+      if (!/^[\w .:/=+@-]{1,128}$/.test(k) || /^aws:/i.test(k) || v.length > 256) return undefined;
+      if (k in out) return undefined;
+      out[k] = v;
+    }
+    return out;
+  }
+  const secretText = (v: unknown) =>
+    typeof v === "string" && Buffer.byteLength(v) >= 1 && Buffer.byteLength(v) <= 65536;
+  const current = (s: FakeSecret) => s.versions.find((v) => v.stages.includes("AWSCURRENT"));
+  const entryOf = (name: string, s: FakeSecret) => ({
+    ARN: arnOf(name),
+    Name: name,
+    ...(Object.keys(s.tags).length
+      ? { Tags: Object.entries(s.tags).map(([Key, Value]) => ({ Key, Value })) }
+      : {}),
+    ...(s.deletedAt ? { DeletedDate: s.deletedAt.getTime() / 1000 } : {}),
+  });
+  /** The secret a request names, or the answer that says it cannot be had. */
+  function target(
+    b: Record<string, unknown>,
+    allowDeleted = false,
+  ): [string, FakeSecret] | Response {
+    const name = b.SecretId;
+    if (typeof name !== "string" || name === "") return invalid();
+    const s = secrets.get(name);
+    if (!s) return jsonError(400, "ResourceNotFoundException");
+    // as the service: a secret waiting to be deleted can be described and restored, nothing else
+    if (s.deletedAt && !allowDeleted) return jsonError(400, "InvalidRequestException");
+    return [name, s];
+  }
+  function addVersion(s: FakeSecret, value: string, token: unknown, stages: string[]) {
+    if (token !== undefined && (typeof token !== "string" || !TOKEN.test(token))) return invalid();
+    const seen = token === undefined ? undefined : s.versions.find((v) => v.token === token);
+    // the same token with the same value is the same request again; with another value it is a clash
+    if (seen) return seen.value === value ? seen : jsonError(400, "ResourceExistsException");
+    versionsMade += 1;
+    if (stages.includes("AWSCURRENT")) {
+      for (const v of s.versions) {
+        v.stages = v.stages.filter((x) => x !== "AWSPREVIOUS");
+        if (v.stages.includes("AWSCURRENT")) {
+          v.stages = [...v.stages.filter((x) => x !== "AWSCURRENT"), "AWSPREVIOUS"];
+        }
+      }
+    }
+    const made = {
+      id: `00000000-0000-4000-8000-${String(versionsMade).padStart(12, "0")}`,
+      token: typeof token === "string" ? token : `auto-${versionsMade}`,
+      value,
+      stages,
+    };
+    s.versions.push(made);
+    return made;
+  }
+
+  function secretsManager(action: string, b: Record<string, unknown>): Response {
+    switch (action) {
+      case "CreateSecret": {
+        const name = b.Name;
+        if (typeof name !== "string" || !SECRET_NAME.test(name) || !secretText(b.SecretString)) {
+          return invalid();
+        }
+        const tags = secretTags(b.Tags);
+        if (!tags || Object.keys(tags).length > 50) return invalid();
+        if (b.KmsKeyId !== undefined && typeof b.KmsKeyId !== "string") return invalid();
+        const there = secrets.get(name);
+        if (there) {
+          return jsonError(
+            400,
+            there.deletedAt ? "InvalidRequestException" : "ResourceExistsException",
+          );
+        }
+        const s: FakeSecret = {
+          versions: [],
+          tags,
+          ...(typeof b.KmsKeyId === "string" ? { kmsKeyId: b.KmsKeyId } : {}),
+        };
+        const v = addVersion(s, b.SecretString as string, b.ClientRequestToken, ["AWSCURRENT"]);
+        if (v instanceof Response) return v;
+        secrets.set(name, s);
+        return Response.json({ ARN: arnOf(name), Name: name, VersionId: v.id });
+      }
+      case "PutSecretValue": {
+        const t = target(b);
+        if (t instanceof Response) return t;
+        if (!secretText(b.SecretString)) return invalid();
+        const stages = b.VersionStages === undefined ? ["AWSCURRENT"] : b.VersionStages;
+        if (!Array.isArray(stages) || stages.some((x) => typeof x !== "string")) return invalid();
+        const v = addVersion(
+          t[1],
+          b.SecretString as string,
+          b.ClientRequestToken,
+          stages as string[],
+        );
+        if (v instanceof Response) return v;
+        return Response.json({
+          ARN: arnOf(t[0]),
+          Name: t[0],
+          VersionId: v.id,
+          VersionStages: v.stages,
+        });
+      }
+      case "GetSecretValue": {
+        const t = target(b);
+        if (t instanceof Response) return t;
+        const stage = b.VersionStage ?? "AWSCURRENT";
+        if (typeof stage !== "string") return invalid();
+        const v = t[1].versions.find((x) => x.stages.includes(stage));
+        if (!v) return jsonError(400, "ResourceNotFoundException");
+        return Response.json({
+          ARN: arnOf(t[0]),
+          Name: t[0],
+          VersionId: v.id,
+          SecretString: v.value,
+          VersionStages: v.stages,
+        });
+      }
+      case "DescribeSecret": {
+        const t = target(b, true);
+        if (t instanceof Response) return t;
+        return Response.json(entryOf(...t));
+      }
+      case "ListSecrets": {
+        const max = b.MaxResults ?? 100;
+        if (typeof max !== "number" || max < 1 || max > 100) return invalid();
+        const filters = Array.isArray(b.Filters) ? b.Filters : [];
+        let names = [...secrets.keys()].filter(
+          (n) => b.IncludePlannedDeletion === true || !secrets.get(n)?.deletedAt,
+        );
+        for (const f of filters as { Key?: unknown; Values?: unknown }[]) {
+          const values = Array.isArray(f.Values) ? (f.Values as string[]) : [];
+          if (values.length < 1) return invalid();
+          // every filter is a prefix match, and the tag filters are independent of each other
+          const some = (xs: string[]) => xs.some((x) => values.some((v) => x.startsWith(v)));
+          if (f.Key === "name") names = names.filter((n) => some([n]));
+          else if (f.Key === "tag-key") {
+            names = names.filter((n) => some(Object.keys(secrets.get(n)?.tags ?? {})));
+          } else if (f.Key === "tag-value") {
+            names = names.filter((n) => some(Object.values(secrets.get(n)?.tags ?? {})));
+          } else return invalid();
+        }
+        // no order is promised: a client that relies on one is caught by this one
+        names.sort().reverse();
+        const size = Math.min(max, o.pageSize ?? 100);
+        let from = 0;
+        if (b.NextToken !== undefined) {
+          const m = /^page-(\d+)$/.exec(String(b.NextToken));
+          if (!m) return jsonError(400, "InvalidNextTokenException");
+          from = Number(m[1]);
+        }
+        return Response.json({
+          SecretList: names.slice(from, from + size).map((n) => {
+            const s = secrets.get(n);
+            return s ? entryOf(n, s) : {};
+          }),
+          ...(from + size < names.length ? { NextToken: `page-${from + size}` } : {}),
+        });
+      }
+      case "TagResource": {
+        const t = target(b);
+        if (t instanceof Response) return t;
+        const tags = secretTags(b.Tags);
+        if (!tags || Object.keys(tags).length < 1) return invalid();
+        const merged = { ...t[1].tags, ...tags };
+        if (Object.keys(merged).length > 50) return jsonError(400, "LimitExceededException");
+        t[1].tags = merged;
+        return Response.json({});
+      }
+      case "UntagResource": {
+        const t = target(b);
+        if (t instanceof Response) return t;
+        const keys = b.TagKeys;
+        if (!Array.isArray(keys) || keys.length < 1 || keys.some((k) => typeof k !== "string")) {
+          return invalid();
+        }
+        t[1].tags = Object.fromEntries(
+          Object.entries(t[1].tags).filter(([k]) => !keys.includes(k)),
+        );
+        return Response.json({});
+      }
+      case "RestoreSecret": {
+        const t = target(b, true);
+        if (t instanceof Response) return t;
+        delete t[1].deletedAt;
+        return Response.json({ ARN: arnOf(t[0]), Name: t[0] });
+      }
+      case "DeleteSecret": {
+        const t = target(b, true);
+        if (t instanceof Response) return t;
+        const days = b.RecoveryWindowInDays ?? 30;
+        const force = b.ForceDeleteWithoutRecovery === true;
+        if (typeof days !== "number" || !Number.isInteger(days) || days < 7 || days > 30) {
+          return invalid();
+        }
+        // "you can't use both"
+        if (force && b.RecoveryWindowInDays !== undefined) return invalid();
+        if (force) secrets.delete(t[0]);
+        else t[1].deletedAt = t[1].deletedAt ?? new Date(now().getTime() + days * 86_400_000);
+        return Response.json({
+          ARN: arnOf(t[0]),
+          Name: t[0],
+          DeletionDate: (t[1].deletedAt ?? now()).getTime() / 1000,
+        });
+      }
+      default:
+        return jsonError(400, "UnknownOperationException");
+    }
+  }
+
   const fetch: Fetch = async (url, init) => {
     const u = new URL(url);
     const headers: Record<string, string> = Object.fromEntries(new Headers(init.headers).entries());
@@ -303,9 +536,10 @@ export function fakeAws(o: FakeAwsOptions) {
       return xmlError(400, "InvalidAction");
     }
 
-    if (service === "ssm" && region === o.region) {
-      const target = headers["x-amz-target"] ?? "";
-      const action = target.startsWith("AmazonSSM.") ? target.slice("AmazonSSM.".length) : "";
+    if ((service === "ssm" || service === "secretsmanager") && region === o.region) {
+      const prefix = service === "ssm" ? "AmazonSSM." : "secretsmanager.";
+      const named = headers["x-amz-target"] ?? "";
+      const action = named.startsWith(prefix) ? named.slice(prefix.length) : "";
       if (headers["content-type"] !== "application/x-amz-json-1.1") {
         return jsonError(415, "UnsupportedMediaType");
       }
@@ -316,10 +550,11 @@ export function fakeAws(o: FakeAwsOptions) {
         return invalid();
       }
       calls.push({ service, action, region, accessKeyId, body: parsed });
-      // only the assumed role is allowed to touch parameters: the platform's own identity may not
+      // only the assumed role is allowed to touch parameters and secrets: the platform's own identity may not
       if (!temp || denied.has(action)) return jsonError(400, "AccessDeniedException");
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return invalid();
-      return ssm(action, parsed as Record<string, unknown>);
+      const args = parsed as Record<string, unknown>;
+      return service === "ssm" ? ssm(action, args) : secretsManager(action, args);
     }
     return new Response("", { status: 404 });
   };
@@ -328,6 +563,28 @@ export function fakeAws(o: FakeAwsOptions) {
     fetch,
     /** The Parameter Store, by name. A test may put a parameter in or take one out "by hand". */
     params,
+    /** Secrets Manager, by name. */
+    secrets,
+    /** What the secret holds now (its `AWSCURRENT` version), or undefined when there is none. */
+    secretValue: (name: string) => {
+      const s = secrets.get(name);
+      return s && current(s)?.value;
+    },
+    /** Adds a secret the platform did not make (no tags unless given). */
+    seedSecret(name: string, value: string, tags: Record<string, string> = {}) {
+      versionsMade += 1;
+      secrets.set(name, {
+        tags,
+        versions: [
+          {
+            id: `seed-${versionsMade}`,
+            token: `seed-${versionsMade}`,
+            value,
+            stages: ["AWSCURRENT"],
+          },
+        ],
+      });
+    },
     calls,
     denied,
     /** Adds a parameter the platform did not make (no tags unless given). */

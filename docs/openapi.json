@@ -17793,7 +17793,8 @@
                     "type": "string",
                     "enum": [
                       "gitlab-variables",
-                      "aws-ssm"
+                      "aws-ssm",
+                      "aws-sm"
                     ]
                   },
                   "connectionId": {

@@ -8,7 +8,7 @@ Done when: ADR approved; tests prove secrets are encrypted at rest and never ret
 Do: adapter with path prefix mapping, SecureString for secrets, tags for ownership (so `prune` only touches managed parameters).
 Done when: passes the conformance suite (emulator or fake); prune never deletes unmanaged parameters.
 
-### EXT-3 - AWS Secrets Manager adapter  `[ ]` M - deps: EXT-1, SYNC-1
+### EXT-3 - AWS Secrets Manager adapter  `[x]` M - deps: EXT-1, SYNC-1
 Do: adapter with one secret per environment (JSON) or per key (configurable), version staging handled.
 Done when: passes the conformance suite; partial updates don't clobber unrelated keys.
 

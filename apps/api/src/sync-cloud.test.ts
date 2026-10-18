@@ -143,6 +143,7 @@ async function world(
     connection?: string;
     type?: string;
     config?: Record<string, unknown>;
+    layout?: string;
     policy?: string;
   } = {},
 ) {
@@ -156,7 +157,12 @@ async function world(
       name: "ssm",
       type: over.type ?? "aws-ssm",
       connectionId: over.connection ?? conns.role,
-      config: over.config ?? { region: REGION, prefix, protected: true },
+      config: over.config ?? {
+        region: REGION,
+        prefix,
+        protected: true,
+        ...(over.layout && { layout: over.layout }),
+      },
       environmentMapping: {},
       ...(over.policy && { unmanagedPolicy: over.policy }),
       ...b,
@@ -183,6 +189,7 @@ async function world(
       throw new Error("the apply did not finish");
     },
     param: (name: string) => aws.params.get(`${prefix}/${name}`),
+    secret: (name: string) => aws.secrets.get(`${prefix}/${name}`),
     patch: (target: string, b: object) => call("alice", "PATCH", `${targets}/${target}`, b),
   };
   return w;
@@ -337,7 +344,109 @@ describe("an aws-ssm target", () => {
     expect(res.json.code).toBe("connection_type");
     expect(aws.calls.length).toBe(before);
   });
+});
 
+describe("an aws-sm target", () => {
+  const tagsOf = (w: Awaited<ReturnType<typeof world>>, key: string) => w.secret(key)?.tags;
+
+  test("is applied through the assumed role, one secret a key, and a plain value does not plan an update every time", async () => {
+    const w = await world({ type: "aws-sm", policy: "prune" });
+    const target = (await w.make({ name: "sm" })).json.id as string;
+    const plainValue = sekrit("sm-plain");
+    const secretValue = sekrit("sm-secret");
+    await w.put("API_URL", "plain", plainValue);
+    await w.put("DB_PASSWORD", "secret", secretValue);
+    // ours but no longer wanted, and not ours at all
+    aws.seedSecret(`${w.prefix}/OLD`, "old", { [OWNER_TAG]: w.prefix, "orch-layout": "per-key" });
+    aws.seedSecret(`${w.prefix}/HAND`, "by hand");
+
+    const plan = await w.plan(target);
+    expect(plan.status).toBe(201);
+    expect(brief(plan)).toEqual(["create API_URL *", "create DB_PASSWORD *", "delete OLD *"]);
+    // planning reads; it writes nothing
+    expect(w.secret("API_URL")).toBeUndefined();
+
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(aws.secretValue(`${w.prefix}/API_URL`)).toBe(plainValue);
+    expect(aws.secretValue(`${w.prefix}/DB_PASSWORD`)).toBe(secretValue);
+    expect(tagsOf(w, "API_URL")).toEqual({
+      [OWNER_TAG]: w.prefix,
+      "orch-layout": "per-key",
+      "orch-plain:API_URL": "1",
+    });
+    expect(tagsOf(w, "DB_PASSWORD")).toEqual({ [OWNER_TAG]: w.prefix, "orch-layout": "per-key" });
+    // the old one is scheduled for deletion, not gone; the hand-made one is untouched
+    expect(w.secret("OLD")?.deletedAt).toBeInstanceOf(Date);
+    expect(aws.secretValue(`${w.prefix}/HAND`)).toBe("by hand");
+    expect(w.secret("HAND")?.deletedAt).toBeUndefined();
+
+    // every secret is encrypted in AWS, and the plain/secret flag still round-trips: nothing to do
+    const again = await w.plan(target);
+    expect(brief(again)).toEqual(["noop API_URL *", "noop DB_PASSWORD *"]);
+  });
+
+  test("one secret a scope keeps the keys that someone else put in it", async () => {
+    const w = await world({ type: "aws-sm", layout: "per-scope" });
+    const target = (await w.make({ name: "sm-scope" })).json.id as string;
+    const value = sekrit("sm-scope");
+    await w.put("FROM_US", "secret", value);
+    aws.seedSecret(`${w.prefix}/_`, JSON.stringify({ HAND: "by hand", COUNT: 3 }), {
+      [OWNER_TAG]: w.prefix,
+      "orch-layout": "per-scope",
+    });
+
+    const plan = await w.plan(target);
+    expect(brief(plan)).toEqual(["create FROM_US *"]);
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(JSON.parse(aws.secretValue(`${w.prefix}/_`) ?? "null")).toEqual({
+      HAND: "by hand",
+      COUNT: 3,
+      FROM_US: value,
+    });
+    expect(brief(await w.plan(target))).toEqual(["noop FROM_US *"]);
+  });
+
+  test("does not take over a secret that is there but not ours", async () => {
+    const w = await world({ type: "aws-sm" });
+    const target = (await w.make({ name: "sm" })).json.id as string;
+    await w.put("CLASH", "plain", "ours");
+    aws.seedSecret(`${w.prefix}/CLASH`, "by hand");
+    const run = await w.finished(
+      target,
+      (await w.apply(target, (await w.plan(target)).json.id)).json.id,
+    );
+    expect(run.json.status).toBe("failed");
+    expect(run.json.items[0].error).toContain(`${OWNER_TAG}=${w.prefix}`);
+    expect(aws.secretValue(`${w.prefix}/CLASH`)).toBe("by hand");
+  });
+
+  test("a role AWS refuses fails the plan in the adapter's words, and a bad layout or a GitLab connection is refused at creation", async () => {
+    const w = await world({ type: "aws-sm" });
+    const target = (await w.make({ name: "sm" })).json.id as string;
+    aws.denied.add("ListSecrets");
+    try {
+      const res = await w.plan(target);
+      expect(res.status).toBe(502);
+      expect(res.json.detail).toBe(
+        "reading the secrets: AWS answered forbidden (AccessDeniedException)",
+      );
+    } finally {
+      aws.denied.delete("ListSecrets");
+    }
+    const bad = await w.make({
+      name: "bad",
+      config: { region: REGION, prefix: "/x", layout: "per-env" },
+    });
+    expect(bad.status).toBe(422);
+    expect((await w.make({ name: "gl", connectionId: conns.gitlab })).json.code).toBe(
+      "connection_type_mismatch",
+    );
+  });
+});
+
+describe("across every target type", () => {
   test("nothing secret reaches a plan, a row, an audit event, a job or a log line", async () => {
     const all = JSON.stringify([
       await t.db.select().from(syncRuns),

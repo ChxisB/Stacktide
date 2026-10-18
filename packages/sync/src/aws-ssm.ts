@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { AwsCreds, AwsDeps } from "./aws";
+import { failed, kmsKeySchema, label, OWNER_TAG, prefixSchema, regionSchema } from "./aws-common";
 import { AwsApiError, awsJson } from "./aws-json";
 import { SyncError } from "./errors";
-import { CloudError } from "./http";
 import { byKeyThenScope } from "./ref";
 import {
   ALL_SCOPES,
@@ -17,8 +17,8 @@ import {
 export const AWS_SSM = "aws-ssm";
 
 const SSM = { service: "ssm", target: "AmazonSSM" };
-/** The tag that says a parameter was made by this platform for this prefix. Its value is the prefix. */
-export const OWNER_TAG = "orch-managed";
+
+export { OWNER_TAG };
 
 /** The standard tier takes 4 KB. */
 const MAX_VALUE = 4096;
@@ -31,17 +31,9 @@ const MAX_PAGES = 200;
 // a name part: no dots-only part (`.` and `..`), the characters SSM allows in one
 const part = /^(?!\.+$)[A-Za-z0-9_.-]{1,255}$/;
 const configSchema = z.strictObject({
-  region: z.string().regex(/^[a-z]{2}(-[a-z]+)+-\d$/),
-  // up to 13 levels, so a scope and a key still fit in the 15 SSM allows; the first level may not start with aws or ssm, which SSM reserves
-  prefix: z
-    .string()
-    .max(200)
-    .regex(/^(\/(?!\.+(?=\/|$))[A-Za-z0-9_.-]{1,60}){1,13}$/)
-    .refine((p) => !/^\/(aws|ssm)/i.test(p)),
-  kmsKeyId: z
-    .string()
-    .regex(/^[A-Za-z0-9:/_-]{1,2048}$/)
-    .optional(),
+  region: regionSchema,
+  prefix: prefixSchema,
+  kmsKeyId: kmsKeySchema.optional(),
   protected: z.boolean().optional(),
 });
 
@@ -61,18 +53,6 @@ export function parseAwsSsmConfig(config: unknown): AwsSsmConfig {
     );
   }
   return parsed.data;
-}
-
-const label = ({ key, scope }: ItemRef) =>
-  `${JSON.stringify(key.slice(0, 64))} (${scope.slice(0, 64)})`;
-
-/** Fixed words and AWS's name for the error (a word the service defines), so nothing AWS said can reach one. */
-function failed(what: string, e: unknown) {
-  let why = "the request could not be made";
-  if (e instanceof AwsApiError) why = `AWS answered ${e.reason}${e.code ? ` (${e.code})` : ""}`;
-  else if (e instanceof CloudError) why = `AWS could not be asked (${e.reason})`;
-  else if (e instanceof z.ZodError) why = "AWS answered something unexpected";
-  return new SyncError("failed", `${what}: ${why}`);
 }
 
 const described = z.object({

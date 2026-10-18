@@ -1,5 +1,6 @@
 export * from "./aws";
 export { AwsApiError, assumedSession } from "./aws-json";
+export * from "./aws-sm";
 export * from "./aws-ssm";
 export * from "./errors";
 export * from "./fake";

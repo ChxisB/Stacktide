@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { AWS_SM } from "./aws-sm";
 import { AWS_SSM } from "./aws-ssm";
 import { SyncError } from "./errors";
 import { GITLAB_VARIABLES } from "./gitlab-variables";
@@ -6,14 +7,16 @@ import { isProtected, TARGET_TYPE_NAMES, TARGET_TYPES } from "./targets";
 
 describe("target types", () => {
   test("lists the known types, each with the connection it needs", () => {
-    expect(TARGET_TYPE_NAMES).toEqual([GITLAB_VARIABLES, AWS_SSM]);
+    expect(TARGET_TYPE_NAMES).toEqual([GITLAB_VARIABLES, AWS_SSM, AWS_SM]);
     expect(TARGET_TYPES[GITLAB_VARIABLES].connection).toBe("gitlab");
     expect(TARGET_TYPES[AWS_SSM].connection).toBe("aws_assume_role");
+    expect(TARGET_TYPES[AWS_SM].connection).toBe("aws_assume_role");
   });
 
   test("a target is protected only when its config says so with a boolean true", () => {
     expect(isProtected({ project: 7, protected: true })).toBe(true);
     expect(isProtected({ region: "eu-west-1", prefix: "/a/b", protected: true })).toBe(true);
+    expect(isProtected({ region: "eu-west-1", prefix: "/a/b", layout: "per-scope" })).toBe(false);
     for (const config of [
       {},
       { protected: false },

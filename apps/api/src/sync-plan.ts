@@ -12,7 +12,9 @@ import {
 import { createGitlab } from "@orch/gitlab";
 import {
   ALL_SCOPES,
+  AWS_SM,
   AWS_SSM,
+  awsSmAdapter,
   awsSsmAdapter,
   checkItems,
   GITLAB_VARIABLES,
@@ -198,6 +200,10 @@ export async function openTarget(
     case AWS_SSM: {
       const { aws, session } = await openAwsSession(deps, organizationId, connectionId, requestId);
       return awsSsmAdapter(session, aws);
+    }
+    case AWS_SM: {
+      const { aws, session } = await openAwsSession(deps, organizationId, connectionId, requestId);
+      return awsSmAdapter(session, aws);
     }
   }
   throw new DomainError("target_type", 422, "This type of sync target cannot be used");
