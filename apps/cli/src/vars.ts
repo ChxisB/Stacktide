@@ -286,10 +286,12 @@ const push: Command = {
 const FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 /** What `orch` holds for itself: the token it calls the API with, and the id_token that gets one. */
 const WITHHELD = ["ORCH_TOKEN", "ORCH_ID_TOKEN"];
+/** What `--prefix` may be: the start of an environment variable name (Terraform reads `TF_VAR_<name>`). */
+const PREFIX = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 
 const runCommand: Command = {
   summary:
-    "run a command with an environment's variables, kept off disk, exiting as it does (126/127 if it cannot start): orch run [options] -- <command> [args]",
+    "run a command with an environment's variables, kept off disk, exiting as it does (126/127 if it cannot start); --prefix TF_VAR_ names each TF_VAR_<name>: orch run [options] -- <command> [args]",
   async run(ctx, args) {
     const usage = () => new CliError("usage: orch run [options] -- <command> [args...]", 2);
     // the command and its words are everything after the first `--`, so none of them is ours
@@ -298,10 +300,18 @@ const runCommand: Command = {
     const { values, positionals } = parse(args.slice(0, split), {
       ...targetOptions,
       "ignore-issues": { type: "boolean" },
+      prefix: { type: "string" },
     });
     noExtra(positionals);
     const [command, ...rest] = args.slice(split + 1);
     if (!command) throw usage();
+    const prefix = values.prefix ?? "";
+    if (values.prefix !== undefined && !PREFIX.test(prefix)) {
+      throw new CliError(
+        "--prefix must start an environment variable name: letters, digits and _, not starting with a digit, at most 64",
+        2,
+      );
+    }
 
     const { pairs } = await loadEnvironment(ctx, values);
     const nul = pairs.find((p) => p.value.includes("\0"));
@@ -313,7 +323,7 @@ const runCommand: Command = {
     // default name, not one given to `orch ci login --id-token-env`; upgrade if that gets common.
     const env = Object.fromEntries([
       ...Object.entries(ctx.env).filter(([name]) => !WITHHELD.includes(name)),
-      ...pairs.map(({ key, value }) => [key, value] as const),
+      ...pairs.map(({ key, value }) => [`${prefix}${key}`, value] as const),
     ]);
 
     // Installed before the spawn: with no handler a SIGTERM kills orch and leaves the command running.

@@ -1,7 +1,7 @@
 import { stringify } from "yaml";
 import { buildGraph } from "./graph";
 import { type Stack, safeDir } from "./scan";
-import { NAME, type Tool, VERSION } from "./stack";
+import { NAME, SLUG, type Tool, VERSION } from "./stack";
 
 /** Everything wrong with the request, so that it can be fixed in one go. */
 export class GenerateError extends Error {
@@ -102,6 +102,9 @@ const stateVariables = (name: string) => {
   };
 };
 
+// The job signs in with its id_token; the summary job and a plan job of a stack with an environment both start so.
+const LOGIN = ['login="$(orch ci login)"', 'eval "$login"'];
+
 // names that come from a user are shown quoted and cut short
 const quoted = (s: string) => JSON.stringify(s.length > 64 ? `${s.slice(0, 64)}…` : s);
 const inDir = (dir: string, file: string) => (dir === "." ? file : `${dir}/${file}`);
@@ -115,7 +118,10 @@ const inDir = (dir: string, file: string) => (dir === "." ? file : `${dir}/${fil
  *   another backend or none (see `stateVariables`).
  * - `plan` saves the plan and its JSON as artifacts and, in a later job that holds the platform's
  *   `id_token` and nothing of the cloud's, posts the counts to the platform.
- * - `apply` fetches the plan the given job saved and applies exactly that.
+ * - the plan job of a stack with an `environment` holds that `id_token` too, signs in, and runs
+ *   each tool command through `orch run --prefix TF_VAR_`, so the environment's variables reach the
+ *   tool as `TF_VAR_*` and nothing else: no value is ever in the pipeline. The image must hold `orch`.
+ * - `apply` fetches the plan the given job saved and applies exactly that (the plan holds the values).
  *
  * Throws a `GenerateError` for a cycle, a stack with no tool version, an unknown stack, and any
  * name, path, version or option that could reach a shell or a job's configuration.
@@ -168,10 +174,21 @@ export function generatePipeline(input: GenerateInput): string {
     if (!safeDir(s.path)) problems.push(`${at} has a path that is not usable in a job`);
     if (s.version === null) problems.push(`${at} has no version: set version in its stack.yml`);
     else if (!VERSION.test(s.version)) problems.push(`${at} has a version that is not usable`);
+    if (s.environment !== undefined && !SLUG.test(s.environment)) {
+      problems.push(`${at} has an environment that is not usable in a job`);
+    }
     const repo = input.images?.[s.tool] ?? IMAGES[s.tool];
     if (repo === undefined) {
       problems.push(`${at} uses ${s.tool}, which needs an image: pass images.${s.tool}`);
-    } else repoOf.set(name, repo);
+    } else {
+      repoOf.set(name, repo);
+      // the tool's stock image has no orch to sign in with
+      if (input.action === "plan" && s.environment !== undefined && !input.images?.[s.tool]) {
+        problems.push(
+          `${at} has an environment, so its plan job runs orch: pass images.${s.tool} (an image with ${s.tool} and orch)`,
+        );
+      }
+    }
     if (input.action === "apply") {
       const job = input.planJobs[name];
       if (!(Number.isSafeInteger(job) && (job as number) > 0)) {
@@ -211,23 +228,30 @@ export function generatePipeline(input: GenerateInput): string {
   if (tooMany.length > 0) throw new GenerateError(tooMany);
 
   const { action } = input;
-  const tokens = cloud.length
-    ? { id_tokens: Object.fromEntries(cloud.map((name) => [name, { aud: cloudTokens[name] }])) }
-    : {};
   const toolJob = (name: string, script: string[], extra: object) => {
     const s = byName.get(name) as Stack;
+    // the plan of a stack with an environment signs in to the platform (an apply never does)
+    const platform = input.action === "plan" && s.environment !== undefined ? input : undefined;
+    // state settings only where the stack uses them: `http`, or Terragrunt, whose backend is not
+    // read here. A backend of its own is passed through (its code and the runner's credentials
+    // reach it) and a stack with none has local state, which these would not change.
+    const variables = {
+      ...(s.backend === "http" || s.backend === "unchecked" ? stateVariables(name) : {}),
+      ...(platform ? { ORCH_API_URL: platform.apiUrl } : {}),
+    };
+    const idTokens = {
+      ...Object.fromEntries(cloud.map((n) => [n, { aud: cloudTokens[n] }])),
+      ...(platform ? { ORCH_ID_TOKEN: { aud: platform.audience } } : {}),
+    };
     return {
       stage: stageOf.get(name),
       image: { name: `${repoOf.get(name)}:${s.version}`, entrypoint: [""] },
       resource_group: `stack-${name}`,
-      // only where the stack uses them: `http`, or Terragrunt, whose backend is not read here. A
-      // backend of its own is passed through (its code and the runner's credentials reach it) and a
-      // stack with none has local state, which these would not change.
-      ...(s.backend === "http" || s.backend === "unchecked"
-        ? { variables: stateVariables(name) }
-        : {}),
+      // `access`: the job reads the environment's variables; it deploys nothing to it
+      ...(platform ? { environment: { name: s.environment, action: "access" } } : {}),
+      ...(Object.keys(variables).length > 0 ? { variables } : {}),
       needs: needsOf(name).map((n) => ({ job: `${action}:${n}`, artifacts: false })),
-      ...tokens,
+      ...(Object.keys(idTokens).length > 0 ? { id_tokens: idTokens } : {}),
       ...extra,
       script: s.path === "." ? script : [`cd ${s.path}`, ...script],
     };
@@ -235,14 +259,18 @@ export function generatePipeline(input: GenerateInput): string {
 
   const jobs: Record<string, unknown> = {};
   for (const name of waves.flat()) {
-    const { path: dir, tool } = byName.get(name) as Stack;
+    const { path: dir, tool, environment } = byName.get(name) as Stack;
     if (input.action === "plan") {
+      // the tool commands that read the configuration get the environment's variables as TF_VAR_*
+      const withVariables = (line: string) =>
+        environment === undefined ? line : `orch run --prefix TF_VAR_ -- ${line}`;
       jobs[`plan:${name}`] = toolJob(
         name,
         [
-          `${tool} init -input=false`,
-          `${tool} plan -input=false -lock-timeout=${LOCK_TIMEOUT} -out=plan.tfplan`,
-          `${tool} show -json plan.tfplan > plan.json`,
+          ...(environment === undefined ? [] : LOGIN),
+          withVariables(`${tool} init -input=false`),
+          withVariables(`${tool} plan -input=false -lock-timeout=${LOCK_TIMEOUT} -out=plan.tfplan`),
+          withVariables(`${tool} show -json plan.tfplan > plan.json`),
         ],
         {
           // a newer push may cancel a plan; an apply is never cut off
@@ -262,8 +290,7 @@ export function generatePipeline(input: GenerateInput): string {
         id_tokens: { ORCH_ID_TOKEN: { aud: input.audience } },
         variables: { ORCH_API_URL: input.apiUrl },
         script: [
-          'login="$(orch ci login)"',
-          'eval "$login"',
+          ...LOGIN,
           `jq -c --arg stack ${name} '${SUMMARY_FILTER}' ${inDir(dir, "plan.json")} > summary.json`,
           `curl --fail --silent --show-error --request POST --header "Authorization: Bearer $ORCH_TOKEN" --header "Content-Type: application/json" --data @summary.json "$ORCH_API_URL${input.summaryPath}"`,
         ],

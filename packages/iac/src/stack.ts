@@ -16,6 +16,9 @@ export const MAX_MANIFEST_BYTES = 64 * 1024;
 export const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 export const VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]{1,32})?$/;
 const TAG = /^[a-z0-9][a-z0-9._-]{0,31}$/;
+// The platform's own rule for an environment's slug (apps/api routes/shared.ts), so that a marker
+// cannot name one that could never exist. It ends up in a generated job's `environment:`.
+export const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 const name = z
   .string()
@@ -86,6 +89,12 @@ export const stackManifest = z.strictObject({
   depends_on: z.array(name).max(50).default([]),
   watch: z.array(watchPath).max(50).default([]),
   apply_on: z.enum(APPLY_ON).default("command"),
+  // the platform environment whose variables the stack's plan gets as `TF_VAR_*` (IAC-11)
+  environment: z
+    .string()
+    .max(63)
+    .regex(SLUG, "must be the slug of an environment: lowercase letters and digits, single dashes")
+    .optional(),
 });
 export type StackManifest = z.output<typeof stackManifest>;
 

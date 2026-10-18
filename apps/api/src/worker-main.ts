@@ -19,6 +19,7 @@ import { runEventHandler } from "./run-ingest";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
 import { syncAutoHandler } from "./sync-auto";
 import { driftCheckHandler, driftTickHandler } from "./sync-drift";
+import { toolImageEnv, toolImages } from "./tool-images";
 import { chain, createWorker, type JobHandler } from "./worker";
 
 const config = loadConfig(
@@ -43,8 +44,8 @@ const config = loadConfig(
      */
     GITLAB_URL: z.url().optional(),
     GITLAB_MEMBERSHIP_TOKEN: z.string().min(1).optional(),
-    /** Terragrunt has no default image: the repository (no tag) the stack's version is a tag of. */
-    ORCH_TERRAGRUNT_IMAGE: z.string().min(1).optional(),
+    /** The image repository (no tag) per tool; Terragrunt has no default, and a stack with an `environment` needs one with `orch`. */
+    ...toolImageEnv,
     /** How often every sync target is checked for drift (SYNC-8); 0 switches the checks off. */
     DRIFT_CHECK_SECONDS: z.coerce
       .number()
@@ -92,7 +93,7 @@ if (keys) {
     ORCH_CI_AUDIENCE: audience,
     ORCH_HELPER_IMAGE: helperImage,
   } = config;
-  const images = config.ORCH_TERRAGRUNT_IMAGE ? { terragrunt: config.ORCH_TERRAGRUNT_IMAGE } : {};
+  const images = toolImages(config);
   const consumers = [
     pipelineEventHandler(gitlab),
     runEventHandler(gitlab),

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "@orch/api";
@@ -16,6 +16,7 @@ import {
   upsertUser,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
+import { generatePipeline } from "@orch/iac";
 import { ciCommands } from "./ci";
 import { runCli } from "./cli";
 import { varsCommands } from "./vars";
@@ -443,4 +444,140 @@ describe("what is refused", () => {
     expect(res.code).toBe(2);
     expect(res.err.join("\n")).toContain("no API URL");
   });
+});
+
+// IAC-11: the plan job the platform generates for a stack with an `environment`, run the way the
+// runner runs it: its script lines, in order, stopping at the first that fails, with the real `orch`
+// against the real API, signed in by an id_token, and a `terraform` that only records what it was given.
+describe("a generated plan job of a stack with an environment", () => {
+  const main = join(import.meta.dir, "main.ts");
+
+  /** The job's script and variables for a stack in `environment`, from the generator. */
+  const generated = (environment: string) => {
+    const yaml = generatePipeline({
+      action: "plan",
+      stacks: [
+        {
+          name: "app",
+          path: "stacks/app",
+          tool: "terraform",
+          version: "1.9.8",
+          tags: [],
+          dependsOn: [],
+          watch: [],
+          applyOn: "command",
+          environment,
+          backend: "http",
+        },
+      ],
+      select: ["app"],
+      audience: AUDIENCE,
+      apiUrl: api,
+      summaryPath: "/runs/0b9e5bd2/plan-summary",
+      helperImage: "registry.example.com/orch/helper:1",
+      images: { terraform: "registry.example.com/platform/terraform-orch" },
+    });
+    const job = (Bun.YAML.parse(yaml) as Record<string, { script: string[] }>)["plan:app"];
+    if (!job) throw new Error("no plan job");
+    return { yaml, script: job.script };
+  };
+
+  /** Runs the job script in a fresh directory where `orch` is this repository's and `terraform` a recorder. */
+  async function runJob(environment: string, claims: Record<string, unknown> = {}) {
+    const { yaml, script } = generated(environment);
+    const work = await mkdtemp(join(dir, "job-"));
+    const bin = join(work, "bin");
+    const seen = join(work, "seen");
+    await mkdir(bin);
+    await mkdir(seen);
+    await mkdir(join(work, "stacks", "app"), { recursive: true });
+    const tool = async (name: string, body: string) => {
+      await writeFile(join(bin, name), `#!/bin/sh\n${body}\n`);
+      await chmod(join(bin, name), 0o755);
+    };
+    await tool("orch", `exec "${process.execPath}" "${main}" "$@"`);
+    await tool(
+      "terraform",
+      [
+        'env > "$SEEN/$1.env"',
+        'case "$1" in',
+        "  plan) : > plan.tfplan ;;",
+        `  show) echo '{"resource_changes":[]}' ;;`,
+        "esac",
+      ].join("\n"),
+    );
+    const proc = Bun.spawn(["sh", "-ec", script.join("\n")], {
+      cwd: work,
+      env: {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        HOME: work,
+        ORCH_CONFIG: join(work, "no-config.json"),
+        ORCH_API_URL: api,
+        ORCH_ID_TOKEN: await idToken({ environment, ...claims }),
+        SEEN: seen,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, err, code] = [
+      await new Response(proc.stdout).text(),
+      await new Response(proc.stderr).text(),
+      await proc.exited,
+    ];
+    // the job's own output is quiet: no token, no value
+    quiet.push(out, err);
+    const run = async (command: string) => {
+      const file = Bun.file(join(seen, `${command}.env`));
+      if (!(await file.exists())) return undefined;
+      return Object.fromEntries(
+        (await file.text())
+          .split("\n")
+          .filter((line) => line.includes("="))
+          .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+      );
+    };
+    return { yaml, code, out, err, work, run };
+  }
+
+  test("every tool command gets the environment's variables as TF_VAR_*, and nothing else of orch's", async () => {
+    const job = await runJob("dev");
+    expect(job.code).toBe(0);
+    expect(job.out).toBe("");
+    // the pipeline never held a value: they were fetched when the job ran
+    expect(job.yaml).not.toContain(dbPassword);
+    expect(job.yaml).not.toContain(orgSecret);
+    for (const command of ["init", "plan", "show"]) {
+      const env = await job.run(command);
+      expect(env, command).toBeDefined();
+      expect(env).toMatchObject({ TF_VAR_DB_PASSWORD: dbPassword, TF_VAR_ORG_SECRET: orgSecret });
+      // under no name but the prefixed one, and without the keys orch signs in with
+      for (const name of ["DB_PASSWORD", "ORG_SECRET", "ORCH_TOKEN", "ORCH_ID_TOKEN"]) {
+        expect(env, `${command} ${name}`).not.toHaveProperty(name);
+      }
+      expect(
+        Object.keys(env ?? {})
+          .filter((k) => k.startsWith("TF_VAR_"))
+          .sort(),
+      ).toEqual(["TF_VAR_DB_PASSWORD", "TF_VAR_ORG_SECRET"]);
+    }
+    // what the tool wrote to stdout is the plan JSON, untouched by anything orch said
+    expect(await readFile(join(job.work, "stacks/app/plan.json"), "utf8")).toBe(
+      '{"resource_changes":[]}\n',
+    );
+    expect(await Bun.file(join(job.work, "stacks/app/plan.tfplan")).exists()).toBe(true);
+  }, 60_000);
+
+  test("a job that cannot sign in stops before the tool runs: an environment the project lacks, an unprotected ref on a protected one", async () => {
+    for (const [environment, claims, why] of [
+      ["staging", {}, "environment_not_found"],
+      ["prod", { environment_protected: "true", ref_protected: "false" }, "ref_not_protected"],
+    ] as const) {
+      const job = await runJob(environment, claims);
+      expect([environment, job.code === 0]).toEqual([environment, false]);
+      expect(job.err).toContain(why);
+      for (const command of ["init", "plan", "show"])
+        expect(await job.run(command)).toBeUndefined();
+      expect(await Bun.file(join(job.work, "stacks/app/plan.json")).exists()).toBe(false);
+    }
+  }, 60_000);
 });

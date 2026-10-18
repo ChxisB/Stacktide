@@ -57,8 +57,17 @@ the platform recorded as that stack's summary job, on the run's own ref.
 
 `orch run` does not pass `ORCH_TOKEN` or `ORCH_ID_TOKEN` on to the command it starts (the id_token can be traded for a new token until it expires). An id_token under another name (`--id-token-env`) is not held back.
 
+## Variables for Terraform: `--prefix`
+
+`orch run --prefix TF_VAR_ -- terraform plan` hands each variable on as `TF_VAR_<NAME>` instead of
+`<NAME>`, which is how Terraform reads its input variables from the environment. Only the prefixed names
+are set from the platform (the parent's other variables, a `TF_VAR_*` among them, pass through as they are). The prefix is the start of an
+environment variable name: letters, digits and `_`, not starting with a digit, at most 64 characters.
+The generated plan jobs of a stack with an `environment` do this for you (`docs/iac.md`).
+
 ## Options
 
+- `orch run --prefix <PREFIX>`: name every variable `<PREFIX><NAME>` for the command.
 - `orch ci login --api-url <url>`: instead of `ORCH_API_URL`.
 - `orch ci login --id-token-env NAME`: when the `id_tokens:` entry is not called `ORCH_ID_TOKEN`.
 - `orch --json ci login`: one JSON document with the token and what it is for.

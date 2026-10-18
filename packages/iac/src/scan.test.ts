@@ -31,7 +31,7 @@ describe("scanStacks", () => {
       repo({
         "infra/network/stack.yml": manifest(
           "network",
-          "version: 1.9.8\ntags: [prod]\ndepends_on: [base]\nwatch: [modules/**]\napply_on: merge\n",
+          "version: 1.9.8\ntags: [prod]\ndepends_on: [base]\nwatch: [modules/**]\napply_on: merge\nenvironment: staging\n",
         ),
         "infra/network/main.tf": HTTP,
         "infra/base/stack.yml": manifest("base"),
@@ -61,6 +61,7 @@ describe("scanStacks", () => {
         dependsOn: ["base"],
         watch: ["modules/**"],
         applyOn: "merge",
+        environment: "staging",
         backend: "http",
       },
     ]);

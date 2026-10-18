@@ -259,6 +259,120 @@ describe("an apply pipeline", () => {
   });
 });
 
+describe("a stack with an environment gets its variables as TF_VAR_* (IAC-11)", () => {
+  // the tool image must hold orch as well, so the default one is not enough
+  const images = {
+    terraform: "registry.example.com/platform/terraform-orch",
+    tofu: "registry.example.com/platform/tofu-orch",
+  };
+  const stacks = [stack("db", { environment: "staging" }), stack("net")];
+  const generate = (over: Partial<PlanInput> = {}) =>
+    generatePipeline(plan({ stacks, select: ["db", "net"], images, ...over }));
+
+  test("its plan job signs in as the job and runs each tool command with the variables", () => {
+    const job = jobsOf(generate())["plan:db"] as Job;
+    expect(job.environment).toEqual({ name: "staging", action: "access" });
+    expect(job.id_tokens).toEqual({ ORCH_ID_TOKEN: { aud: "orch.example.com" } });
+    expect(job.variables).toMatchObject({
+      ORCH_API_URL: "https://orch.example.com",
+      TF_HTTP_USERNAME: "gitlab-ci-token",
+    });
+    expect(job.image.name).toBe("registry.example.com/platform/terraform-orch:1.9.8");
+    expect(job.script).toEqual([
+      "cd stacks/db",
+      'login="$(orch ci login)"',
+      'eval "$login"',
+      "orch run --prefix TF_VAR_ -- terraform init -input=false",
+      "orch run --prefix TF_VAR_ -- terraform plan -input=false -lock-timeout=5m -out=plan.tfplan",
+      "orch run --prefix TF_VAR_ -- terraform show -json plan.tfplan > plan.json",
+    ]);
+  });
+
+  test("a stack with none is as it was: no sign-in, no id_token, no environment", () => {
+    const job = jobsOf(generate())["plan:net"] as Job;
+    expect(job.environment).toBeUndefined();
+    expect(job.id_tokens).toBeUndefined();
+    expect(job.variables).not.toHaveProperty("ORCH_API_URL");
+    expect(job.script).toEqual([
+      "cd stacks/net",
+      "terraform init -input=false",
+      "terraform plan -input=false -lock-timeout=5m -out=plan.tfplan",
+      "terraform show -json plan.tfplan > plan.json",
+    ]);
+  });
+
+  test("the cloud's id_tokens stay next to the platform's, and the other tools are wrapped the same way", () => {
+    const tofu = [stack("q", { tool: "tofu", version: "1.8.2", environment: "prod" })];
+    const jobs = jobsOf(
+      generate({ stacks: tofu, select: ["q"], cloudTokens: { AWS_ID_TOKEN: "sts" } }),
+    );
+    expect(jobs["plan:q"]?.id_tokens).toEqual({
+      AWS_ID_TOKEN: { aud: "sts" },
+      ORCH_ID_TOKEN: { aud: "orch.example.com" },
+    });
+    expect(jobs["plan:q"]?.script).toContain("orch run --prefix TF_VAR_ -- tofu init -input=false");
+    const tg = [stack("t", { tool: "terragrunt", version: "0.67.0", environment: "prod" })];
+    const grunt = jobsOf(
+      generate({
+        stacks: tg,
+        select: ["t"],
+        images: { terragrunt: "registry.example.com/tg-orch" },
+      }),
+    );
+    expect(grunt["plan:t"]?.script).toContain(
+      "orch run --prefix TF_VAR_ -- terragrunt plan -input=false -lock-timeout=5m -out=plan.tfplan",
+    );
+  });
+
+  test("nothing of a variable is in the pipeline: TF_VAR_ is only the prefix handed to orch", () => {
+    const yaml = generate();
+    const mentions = yaml.match(/TF_VAR_\S*/g) ?? [];
+    expect(mentions).toHaveLength(3);
+    expect(new Set(mentions)).toEqual(new Set(["TF_VAR_"]));
+    expect(yaml).not.toMatch(/export |TF_VAR_\w+=/);
+    // the job token and the id_token are references, never values
+    expect(yaml).not.toMatch(/eyJ[A-Za-z0-9_-]{10,}/);
+  });
+
+  test("an apply of the same stack is unchanged: the saved plan holds the values, so nothing signs in", () => {
+    const yaml = generatePipeline(apply({ stacks, select: ["db"], planJobs: { db: 7 } }));
+    const job = jobsOf(yaml)["apply:db"] as Job;
+    expect(job.environment).toBeUndefined();
+    expect(job.id_tokens).toBeUndefined();
+    expect(job.variables).not.toHaveProperty("ORCH_API_URL");
+    expect(job.image.name).toBe("hashicorp/terraform:1.9.8");
+    expect(job.script.join("\n")).not.toContain("orch");
+    expect(yaml).not.toContain("TF_VAR_");
+  });
+
+  test("the plan is refused until the tool has an image that holds orch", () => {
+    const e = failure(() => generatePipeline(plan({ stacks, select: ["db", "net"] })));
+    expect(e.problems).toEqual([
+      'stack "db" has an environment, so its plan job runs orch: pass images.terraform (an image with terraform and orch)',
+    ]);
+    // one problem, not two, where the tool has no image at all
+    const tg = [stack("t", { tool: "terragrunt", version: "0.67.0", environment: "prod" })];
+    expect(failure(() => generatePipeline(plan({ stacks: tg, select: ["t"] }))).problems).toEqual([
+      'stack "t" uses terragrunt, which needs an image: pass images.terragrunt',
+    ]);
+    // an empty image is no image: it is refused, never built into ":1.9.8"
+    const empty = failure(() =>
+      generatePipeline(plan({ stacks, select: ["db"], images: { terraform: "" } })),
+    );
+    expect(empty.problems).toContain("image for terraform is not an image repository");
+  });
+
+  test("an environment that could reach a job's configuration is refused", () => {
+    for (const environment of ["", "Prod", "a b", "a--b", "a;id", "x\ny", "$X", "a:b", "-a"]) {
+      const s = stack("db", { environment });
+      expect(
+        () => generatePipeline(plan({ stacks: [s], select: ["db"], images })),
+        JSON.stringify(environment),
+      ).toThrow(GenerateError);
+    }
+  });
+});
+
 describe("the output is a pipeline GitLab accepts", () => {
   const stops: Array<() => void> = [];
   afterEach(() => {
@@ -279,6 +393,13 @@ describe("the output is a pipeline GitLab accepts", () => {
       generatePipeline(plan({ cloudTokens: { AWS_ID_TOKEN: "sts" } })),
       generatePipeline(apply()),
       generatePipeline(apply({ select: ["net"] })),
+      generatePipeline(
+        plan({
+          stacks: [stack("db", { environment: "staging" })],
+          select: ["db"],
+          images: { terraform: "registry.example.com/platform/terraform-orch" },
+        }),
+      ),
     ]) {
       expect(await gitlab.ci.lint(project.id, yaml)).toMatchObject({ valid: true, errors: [] });
     }

@@ -41,6 +41,7 @@
         "@orch/crypto": "workspace:*",
         "@orch/db": "workspace:*",
         "@orch/gitlab": "workspace:*",
+        "@orch/iac": "workspace:*",
         "@orch/pipelines": "workspace:*",
         "drizzle-orm": "0.45.4",
       },

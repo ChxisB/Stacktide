@@ -25,6 +25,8 @@ export interface Stack {
   dependsOn: string[];
   watch: string[];
   applyOn: ApplyOn;
+  /** The platform environment whose variables the plan gets as `TF_VAR_*`; none: it gets none. */
+  environment?: string | undefined;
   backend: Backend;
 }
 
@@ -199,6 +201,7 @@ export async function scanStacks(source: RepoSource, options: ScanOptions = {}) 
       dependsOn: m.depends_on,
       watch: m.watch,
       applyOn: m.apply_on,
+      environment: m.environment,
       backend,
     };
     return { stack, problems: mine };

@@ -40,6 +40,6 @@ Done when: tests cover unknown stack, unauthorised user, ambiguous command text 
 Do: inject GitLab-managed state env into generated jobs (state name per stack); passthrough for a custom backend declared in the marker.
 Done when: generated jobs init against a fake HTTP backend in a test, with lock/unlock hit.
 
-### IAC-11 - Stack variables  `[ ]` M - deps: IAC-4, CLI-5, VAR-4
+### IAC-11 - Stack variables  `[x]` M - deps: IAC-4, CLI-5, VAR-4
 Do: jobs obtain platform variables as `TF_VAR_*` via `orch ci login && orch run` (OIDC), not via stored CI variables.
 Done when: a test shows the generated job has no secret literal and the resolved set maps names to `TF_VAR_` correctly.

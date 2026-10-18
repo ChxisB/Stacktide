@@ -776,6 +776,49 @@ describe("run", () => {
     expect(seen).not.toHaveProperty("UNSET");
   });
 
+  test("--prefix hands each variable on under prefix + name, and under no other name", async () => {
+    const got = file("run-prefix.json");
+    const res = await orch(["run", ...dev(["--prefix", "TF_VAR_"]), "--", bun, "-e", dumpEnv], {
+      env: {
+        GOT: got,
+        KEEP: "mine",
+        TF_VAR_REGION: "from-the-parent",
+        TF_VAR_ONLY_HERE: "from-the-parent",
+        ORCH_ID_TOKEN: "header.payload.signature",
+      },
+    });
+    expect(res).toEqual({ code: 0, out: [], err: [] });
+    const seen = JSON.parse(await readFile(got, "utf8"));
+    // the job's own TF_VAR_* (a CI/CD variable of the project) still reaches the command: only the platform's names are renamed
+    expect(seen.TF_VAR_ONLY_HERE).toBe("from-the-parent");
+    expect(seen).toMatchObject(
+      Object.fromEntries(
+        Object.entries(expectedDev).map(([key, value]) => [`TF_VAR_${key}`, value]),
+      ),
+    );
+    // the platform's value wins over the parent's, as it does unprefixed; the parent's other names are not prefixed
+    expect(seen.TF_VAR_REGION).toBe("eu-west-1");
+    expect(seen.KEEP).toBe("mine");
+    // each variable is there once, prefixed: none under its own name
+    for (const key of Object.keys(expectedDev)) expect(seen).not.toHaveProperty(key);
+    // the tokens are still withheld
+    expect(seen).not.toHaveProperty("ORCH_TOKEN");
+    expect(seen).not.toHaveProperty("ORCH_ID_TOKEN");
+    expect(seen).not.toHaveProperty("TF_VAR_ORCH_TOKEN");
+  });
+
+  test("--prefix must be the start of an environment variable name: nothing runs otherwise", async () => {
+    const got = file("run-bad-prefix.json");
+    for (const prefix of ["", "1TF_", "TF VAR_", "TF=", "TF_VAR_\n", "é_", "A".repeat(65)]) {
+      const res = await orch(["run", ...dev(["--prefix", prefix]), "--", bun, "-e", dumpEnv], {
+        env: { GOT: got },
+      });
+      expect({ prefix, code: res.code }).toEqual({ prefix, code: 2 });
+      expect(res.err[0]).toContain("--prefix");
+    }
+    expect(await exists(got)).toBe(false);
+  });
+
   test("an exit code passes through, also one made by a signal", async () => {
     const run = (script: string) => orch(["run", ...dev(), "--", "sh", "-c", script]);
     expect((await run("exit 0")).code).toBe(0);

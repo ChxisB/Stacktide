@@ -35,6 +35,7 @@ describe("stack.yml", () => {
           "depends_on: [network, db]",
           "watch: [../modules/**, shared/*.tf]".replace("../", "mods/"),
           "apply_on: merge",
+          "environment: staging",
         ].join("\n"),
       ),
     ).toEqual({
@@ -45,6 +46,7 @@ describe("stack.yml", () => {
       depends_on: ["network", "db"],
       watch: ["mods/modules/**", "shared/*.tf"],
       apply_on: "merge",
+      environment: "staging",
     });
     expect(ok("name: a\ntool: terraform\nversion: 1.10.0-rc1\n").version).toBe("1.10.0-rc1");
   });
@@ -139,6 +141,32 @@ describe("stack.yml", () => {
       "modules/vpc",
     ];
     expect(ok(`name: a\ntool: tofu\nwatch: ${JSON.stringify(fine)}\n`).watch).toEqual(fine);
+  });
+
+  test("environment is the slug of a platform environment, as the platform allows it", () => {
+    // it ends up in a generated job's `environment:`, so it is a closed character set
+    for (const e of [
+      "Staging",
+      "a b",
+      "-a",
+      "a-",
+      "a--b",
+      "a_b",
+      "",
+      "a/b",
+      "a.b",
+      "x".repeat(64),
+      "$X",
+      "näme",
+    ]) {
+      expect(bad(`name: a\ntool: tofu\nenvironment: ${JSON.stringify(e)}\n`)[0]).toContain(
+        "environment",
+      );
+    }
+    for (const e of ["a", "prod-eu", "0", "x".repeat(63)]) {
+      expect(ok(`name: a\ntool: tofu\nenvironment: ${JSON.stringify(e)}\n`).environment).toBe(e);
+    }
+    expect(ok("name: a\ntool: tofu\n").environment).toBeUndefined();
   });
 
   test("apply_on is merge or command", () => {

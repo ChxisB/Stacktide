@@ -19,9 +19,11 @@ the job.
   - `ORCH_HELPER_IMAGE`: an image with `orch`, `curl` and `jq`, for the job that posts a plan's counts.
   - `ORCH_TERRAGRUNT_IMAGE` (only for Terragrunt stacks): an image repository without a tag; the stack's
     `version` is the tag. Terraform and OpenTofu have defaults.
+  - `ORCH_TERRAFORM_IMAGE`, `ORCH_TOFU_IMAGE` (only for stacks with an `environment`, see Variables): the
+    same, for an image that holds the tool **and `orch`**. It replaces the default for every stack of that tool.
 
   Without the first three the worker logs which are missing and plans nothing. The API needs
-  `ORCH_TERRAGRUNT_IMAGE` too (the same value) to start the apply of a Terragrunt stack, and
+  the same image settings to start the apply of a stack with an overridden image, and
   `ORCH_MASTER_KEYS` (it opens the connection's token).
 - Every stack that is planned has a `version` in its `stack.yml`.
 
@@ -157,6 +159,44 @@ CI variables are believed to win over the generated ones, as GitLab's variable p
 variables above a job's; not verified here.) Terragrunt stacks (whose backend the platform does not read) get the settings, so their
 `remote_state` should be `backend = "http"` with `config = {}`. The job's user needs the role GitLab asks
 to lock and write state (Maintainer).
+
+## Variables
+
+A stack gets the variables of a platform environment as `TF_VAR_*`, with nothing stored in GitLab. In its
+`stack.yml`:
+
+```yaml
+name: app
+tool: terraform
+version: 1.9.8
+environment: staging     # the slug of an environment of this project in the platform
+```
+
+The generated **plan** job of that stack declares `environment: staging` (with `action: access`: it reads
+the environment, it deploys nothing), holds the `id_token` for the platform, signs in
+(`orch ci login`, see `docs/ci.md`) and runs `init`, `plan` and `show` as
+`orch run --prefix TF_VAR_ -- terraform plan ...`. The resolved variables of the environment (its own,
+the project's and the organization's, secrets included) reach the tool as `TF_VAR_<NAME>`, and nothing
+else of `orch`: not the platform token, not the `id_token`. Terraform matches the name exactly: the
+platform variable `DB_PASSWORD` is `variable "DB_PASSWORD"` in the stack. A variable the stack does not
+declare is ignored by Terraform (a warning at most for an environment variable).
+
+- The pipeline holds no value, only the prefix. The apply job does not sign in: the saved plan already
+  holds the values it was planned with.
+- The tool's image must hold `orch`. Setting `environment` on a stack whose tool has no image of your own
+  (`ORCH_TERRAFORM_IMAGE`, `ORCH_TOFU_IMAGE`, `ORCH_TERRAGRUNT_IMAGE`) is refused on the merge request.
+- A plan job fails before the tool starts if the project has no environment of that slug, or if the
+  environment is protected and the merge request's ref is not (`docs/ci.md`: a protected environment
+  needs a protected ref).
+- `plan.tfplan` and `plan.json` hold the values the plan was made with, secrets included: they are
+  limited to developers (see below) and expire after a week.
+- **Whoever can push a branch chooses the `environment` and the code that reads it.** The plan of a
+  merge request runs the merge request's own `stack.yml` and `.tf` files, so an unprotected environment's
+  secrets can be read by anyone who can push a branch to the project (a `local-exec`, an `external` data
+  source or an output can print them). Keep real secrets in a **protected** environment: its plan then
+  needs a protected ref, which a branch author does not have.
+- A `TF_VAR_*` variable that is already in the job (a CI/CD variable of the GitLab project) still reaches
+  the tool: `--prefix` renames the platform's variables, it does not clear the others.
 
 ## What to know
 
