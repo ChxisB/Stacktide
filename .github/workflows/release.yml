@@ -1,0 +1,84 @@
+# Cuts a release from the Conventional Commits since the last v* tag (scripts/version.ts): the next semver version, the
+# changelog, the four `orch` binaries with SHA256SUMS and the container image. Run it from the Actions tab.
+# publish=false (the default) is the dry run: it builds and tests everything and publishes nothing.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish: commit the version, tag it, create the GitHub release and push the image (off = dry run)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release
+
+env:
+  BUN_VERSION: 1.4.2
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the tags and the commits since the last one
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - name: Next version
+        id: next
+        run: |
+          version=$(bun scripts/version.ts --apply --notes "$RUNNER_TEMP/notes.md")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ -z "$version" ]; then
+            echo "Nothing releasable since the last tag." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            { echo "Release **v$version**"; echo; cat "$RUNNER_TEMP/notes.md"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: The lock still agrees with the new version
+        if: steps.next.outputs.version != ''
+        run: bun install --frozen-lockfile
+      - name: Binaries
+        if: steps.next.outputs.version != ''
+        run: bun run release:build
+      - name: Image
+        if: steps.next.outputs.version != ''
+        run: |
+          image=ghcr.io/${GITHUB_REPOSITORY,,}
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          deploy/image-test.sh "$image:${{ steps.next.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        if: steps.next.outputs.version != ''
+        with:
+          name: release-v${{ steps.next.outputs.version }}
+          path: dist/release/
+      - name: Push the image
+        if: steps.next.outputs.version != '' && inputs.publish && github.ref_name == github.event.repository.default_branch
+        run: |
+          version=${{ steps.next.outputs.version }}
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for tag in "$version" "${version%.*}" latest; do
+            docker tag "$IMAGE:$version" "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
+      # The commit and the tag go up together or not at all; the release is created last, from the tag.
+      - name: Commit, tag and publish
+        if: steps.next.outputs.version != '' && inputs.publish && github.ref_name == github.event.repository.default_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${{ steps.next.outputs.version }}
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/cli/package.json bun.lock CHANGELOG.md
+          git commit --message "chore(release): v$version"
+          git tag --annotate "v$version" --message "v$version"
+          git push --atomic origin "HEAD:${GITHUB_REF_NAME}" "v$version"
+          gh release create "v$version" dist/release/* --title "v$version" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
