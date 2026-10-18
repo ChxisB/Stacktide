@@ -405,6 +405,46 @@ describe("the Kubernetes and Vault connections", () => {
   });
 });
 
+describe("the references opt-in (EXT-6)", () => {
+  test.each([
+    ["aws_assume_role", aws],
+    ["vault_approle", vault],
+  ] as const)(
+    "a %s connection is created with references off unless asked",
+    async (_label, body) => {
+      const plain = await call("alice", "POST", url(), make(body));
+      expect(plain.status).toBe(201);
+      expect(plain.json.config).not.toHaveProperty("references");
+
+      for (const references of [true, false]) {
+        const res = await call("alice", "POST", url(), make(body, { references }));
+        expect([references, res.status]).toEqual([references, 201]);
+        expect(res.json.config.references).toBe(references);
+        expect((await stored(res.json.id))?.config).toMatchObject({ references });
+        const listed = await call("alice", "GET", `${url()}?limit=100`);
+        const item = listed.json.items.find((c: { id: string }) => c.id === res.json.id);
+        expect(item.config.references).toBe(references);
+      }
+    },
+  );
+
+  test("only a boolean is accepted, and only by the kinds that can be read from", async () => {
+    for (const [body, references] of [
+      [aws, "yes"],
+      [aws, 1],
+      [aws, null],
+      [vault, "true"],
+      [vault, ["true"]],
+      [kube, true],
+    ] as const) {
+      const before = (await t.db.select().from(connections)).length;
+      const res = await call("alice", "POST", url(), make(body, { references }));
+      expect([body.type, references, res.status]).toEqual([body.type, references, 422]);
+      expect((await t.db.select().from(connections)).length).toBe(before);
+    }
+  });
+});
+
 describe("types that hold different secrets", () => {
   test("a connection of another type is never used as a GitLab connection", async () => {
     const c = await call("alice", "POST", url(), make(kube));

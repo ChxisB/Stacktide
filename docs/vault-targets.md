@@ -32,6 +32,8 @@ path "secret/metadata/apps/prod/*" { capabilities = ["create", "update", "list"]
 That is all the platform asks for. It has no `delete` (it never deletes or destroys a version) and no `read` on
 metadata (the `GET` of `data` answers with the metadata it needs). The connection test names what is missing.
 
+A connection that variables may point at ([external references](external-references.md)) also needs `read` on the data paths it is pointed at; `create`/`update` are not needed for that.
+
 ## The target
 
 ```json

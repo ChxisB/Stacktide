@@ -53,6 +53,8 @@ export const awsConfigSchema = z.strictObject({
     .string()
     .regex(/^arn:aws:iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/, "must be an IAM role ARN"),
   region: z.string().regex(/^[a-z]{2}(-[a-z]+)+-\d$/, "must be an AWS region such as eu-west-1"),
+  /** Lets variables point at secrets this role can read (`aws-sm://<name>/…`); off unless set (EXT-6). */
+  references: z.boolean().optional(),
 });
 export type AwsConfig = z.infer<typeof awsConfigSchema>;
 

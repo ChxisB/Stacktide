@@ -5,6 +5,7 @@ import {
   createConnection,
   deleteConnection,
   getConnection,
+  getConnectionByName,
   listConnections,
   openConnection,
 } from "./connections";
@@ -190,6 +191,19 @@ describe("connection rules", () => {
     expect(await deleteConnection(t.db, o2.id, c.id)).toBe(false);
     expect(await listConnections(t.db, o2.id, { limit: 10 })).toEqual([]);
     expect(await getConnection(t.db, o1.id, c.id)).toBeDefined();
+  });
+
+  test("a connection is found by its name in its own organization only, and the name is exact", async () => {
+    const [o1, o2] = [await org(), await org()];
+    const a = await make(o1.id, { name: "Prod Vault" });
+    const b = await make(o2.id, { name: "Prod Vault" });
+    expect((await getConnectionByName(t.db, o1.id, "Prod Vault"))?.id).toBe(a.id);
+    expect((await getConnectionByName(t.db, o2.id, "Prod Vault"))?.id).toBe(b.id);
+    for (const name of ["prod vault", "Prod Vault ", "Prod%", "Prod_Vault", ""]) {
+      expect(await getConnectionByName(t.db, o1.id, name)).toBeUndefined();
+    }
+    const [shown] = [await getConnectionByName(t.db, o1.id, "Prod Vault")];
+    expect(JSON.stringify(shown)).not.toContain(TOKEN);
   });
 
   test("lists in creation order and pages by id", async () => {

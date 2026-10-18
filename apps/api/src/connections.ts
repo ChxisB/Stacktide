@@ -242,7 +242,7 @@ export async function openAwsSession(
   orgId: string,
   connectionId: string,
   requestId: unknown,
-): Promise<{ aws: AwsDeps; session: () => Promise<AwsCreds> }> {
+): Promise<{ aws: AwsDeps; session: () => Promise<AwsCreds>; region: string }> {
   const { connection, token } = await openAnyConnection(deps, orgId, connectionId, requestId);
   // The type is free-form: another kind's secret must not be used as an external ID.
   if (connection.type !== AWS_ASSUME_ROLE) {
@@ -252,5 +252,9 @@ export async function openAwsSession(
   if (!base) throw awsUnavailable();
   const role = storedConfig(awsConfigSchema, connection.config);
   const aws: AwsDeps = { fetch: deps.cloud?.fetch ?? globalThis.fetch };
-  return { aws, session: assumedSession(aws, base, { ...role, externalId: token }) };
+  return {
+    aws,
+    session: assumedSession(aws, base, { ...role, externalId: token }),
+    region: role.region,
+  };
 }

@@ -76,6 +76,16 @@ export async function getConnection(db: Executor, organizationId: string, id: st
   return (await db.select(visible).from(connections).where(inOrg(organizationId, id)))[0];
 }
 
+/** By its name, which is unique in the organization; the name is matched exactly. */
+export async function getConnectionByName(db: Executor, organizationId: string, name: string) {
+  return (
+    await db
+      .select(visible)
+      .from(connections)
+      .where(and(eq(connections.organizationId, organizationId), eq(connections.name, name)))
+  )[0];
+}
+
 /** Ordered by id (a v7 uuid: creation order to the millisecond, not a strict guarantee). */
 export function listConnections(db: Executor, organizationId: string, page: Page<string>) {
   return db

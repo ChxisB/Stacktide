@@ -11,6 +11,7 @@ export * from "./kubernetes";
 export * from "./kubernetes-secret";
 export * from "./plan";
 export { byKeyThenScope, refId } from "./ref";
+export * from "./references";
 export * from "./targets";
 export * from "./types";
 export * from "./vault";

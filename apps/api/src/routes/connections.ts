@@ -150,7 +150,11 @@ async function prepareCloud(
   let secret: string;
   let address: string | undefined;
   if (body.type === AWS_ASSUME_ROLE) {
-    config = { roleArn: body.roleArn, region: body.region };
+    config = {
+      roleArn: body.roleArn,
+      region: body.region,
+      ...(body.references === undefined ? {} : { references: body.references }),
+    };
     secret = body.externalId;
   } else if (body.type === KUBERNETES) {
     config = {
@@ -167,6 +171,7 @@ async function prepareCloud(
       authMount: body.authMount,
       kvMount: body.kvMount,
       prefix: body.prefix,
+      ...(body.references === undefined ? {} : { references: body.references }),
     };
     secret = body.secretId;
     address = body.address;

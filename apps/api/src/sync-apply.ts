@@ -137,11 +137,11 @@ async function applyLines(
   run: SyncRun,
   target: SyncTarget,
 ): Promise<number> {
-  const { db, keys } = deps;
+  const { db } = deps;
   const adapter = await openTarget(deps, target, ctx.id);
   const config = adapter.validate(target.config);
   // the same check the endpoint made: a plan is only applied while it is still true
-  const desired = await desiredSnapshot(db, keys, target);
+  const desired = await desiredSnapshot(deps, target, ctx.id);
   if (desired.digest !== run.desiredDigest) {
     throw new DomainError(
       "plan_stale",

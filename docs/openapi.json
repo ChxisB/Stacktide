@@ -7624,6 +7624,9 @@
                         "type": "string",
                         "pattern": "^[a-z]{2}(-[a-z]+)+-\\d$"
                       },
+                      "references": {
+                        "type": "boolean"
+                      },
                       "externalId": {
                         "type": "string",
                         "minLength": 16,
@@ -7718,6 +7721,9 @@
                       "prefix": {
                         "type": "string",
                         "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(\\/[A-Za-z0-9_][A-Za-z0-9_.-]*){0,7}$"
+                      },
+                      "references": {
+                        "type": "boolean"
                       },
                       "secretId": {
                         "type": "string",

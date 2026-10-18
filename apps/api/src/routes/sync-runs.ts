@@ -14,7 +14,7 @@ import { auditPlugin } from "../audit";
 import { type CloudDeps, noKeys } from "../connections";
 import { guardPlugin } from "../guard";
 import { startApply } from "../sync-apply";
-import { ACTIONS, desiredSnapshot, planTarget, storePlan } from "../sync-plan";
+import { ACTIONS, planTarget, snapshotDigest, storePlan } from "../sync-plan";
 import {
   iso,
   mapDbError,
@@ -177,8 +177,8 @@ export const syncRunRoutes = ({
         if (run.expiresAt.getTime() <= Date.now()) {
           throw conflict("plan_expired", "This plan has expired: plan again");
         }
-        const desired = await desiredSnapshot(db, keys, target).catch(failing(logger)(set));
-        if (desired.digest !== run.desiredDigest) {
+        const digest = await snapshotDigest(db, keys, target).catch(failing(logger)(set));
+        if (digest !== run.desiredDigest) {
           throw conflict(
             "plan_stale",
             "The variables or the target's settings changed: plan again",

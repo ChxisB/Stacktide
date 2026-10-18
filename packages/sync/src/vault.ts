@@ -26,6 +26,8 @@ export const vaultConfigSchema = z.strictObject({
       new RegExp(`^${segment}(/${segment}){0,7}$`),
       "must be a path of up to 8 names of letters, digits, _ . - that do not start with a dot",
     ),
+  /** Lets variables point at secrets under the prefix (`vault://<name>/…`); off unless set (EXT-6). */
+  references: z.boolean().optional(),
 });
 export type VaultConfig = z.infer<typeof vaultConfigSchema>;
 

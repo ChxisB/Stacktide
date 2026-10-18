@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: `${KEY}` is the reference syntax under test
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createLogger, type Subject } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
@@ -22,6 +23,8 @@ import {
   OWNER_TAG,
   PLAIN_ANNOTATION,
   PLAIN_PREFIX,
+  REFERENCE_WHY,
+  type ReferenceReason,
 } from "@orch/sync";
 import { fakeAws, fakeKube, fakeVault } from "@orch/sync/testing";
 import { createApp } from "./app";
@@ -158,6 +161,26 @@ beforeAll(async () => {
     "not-the-vault-secret-id-0123",
   );
   conns.vaultOther = await connect(o2, "vault_approle", "vault", store, VAULT_SECRET_ID);
+  // connections that variables may point at (EXT-6): only the ones created with `references: true`
+  const refs = { ...store, references: true };
+  await connect(o1, "vault_approle", "vault-refs", refs, VAULT_SECRET_ID);
+  await connect(o1, "vault_approle", "vault-refs-wrong", refs, "not-the-vault-secret-id-0123");
+  await connect(
+    o1,
+    "vault_approle",
+    "vault-refs-denied",
+    { ...refs, prefix: "other" },
+    VAULT_SECRET_ID,
+  );
+  await connect(o1, "aws_assume_role", "aws-refs", { ...role, references: true }, EXTERNAL_ID);
+  await connect(
+    o1,
+    "aws_assume_role",
+    "aws-refs-wrong",
+    { ...role, references: true },
+    "not-the-id",
+  );
+  await connect(o2, "vault_approle", "o2-only", refs, VAULT_SECRET_ID);
   let gitlabId = 900;
   for (const name of ["alice", "bob"] as const) {
     const user = await upsertUser(t.db, { gitlabId: ++gitlabId, username: name, name });
@@ -904,6 +927,284 @@ describe("a vault-kv target", () => {
     const res = await w.plan(row.id);
     expect([res.status, res.json.code]).toEqual([422, "connection_type"]);
     expect(vault.calls.length).toBe(before);
+  });
+});
+
+describe("external references", () => {
+  const make = async (over: Parameters<typeof world>[0] = {}) => {
+    const w = await world(over);
+    const made = await w.make({ name: "refs" });
+    expect(made.status).toBe(201);
+    return { w, target: made.json.id as string };
+  };
+  /** A source of values of this test's own, under the Vault prefix. */
+  const source = () => `ref${++n}`;
+  const runs = async () => (await t.db.select().from(syncRuns)).length;
+  const gets = () => vault.calls.filter((c) => c.method === "GET" && c.path.startsWith("kv/data/"));
+
+  test("a variable that points at a Vault field is synced as that value, as a secret", async () => {
+    const { w, target } = await make();
+    const src = source();
+    const value = sekrit("ref-vault");
+    vault.seed(`${VAULT_PREFIX}/${src}/db`, { password: value, other: "unused" });
+    const pointer = `vault://vault-refs/${src}/db#password`;
+    await w.put("DB_PASSWORD", "plain", pointer);
+    await w.put("API_URL", "plain", "https://api.example.test");
+
+    const plan = await w.plan(target);
+    expect(plan.status).toBe(201);
+    expect(brief(plan)).toEqual(["create API_URL *", "create DB_PASSWORD *"]);
+    // planning read the secret and wrote nothing
+    expect(w.param("DB_PASSWORD")).toBeUndefined();
+    expect(vault.live.size).toBe(0);
+
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    // a plain variable that held a pointer is a secret where it lands
+    expect(w.param("DB_PASSWORD")).toMatchObject({ type: "SecureString", value });
+    expect(w.param("API_URL")).toMatchObject({ type: "String", value: "https://api.example.test" });
+    expect(vault.live.size).toBe(0);
+    // nothing changed since: the next plan has only no-ops
+    expect(brief(await w.plan(target))).toEqual(["noop API_URL *", "noop DB_PASSWORD *"]);
+
+    // everywhere else the variable is still the pointer, and listing it asks no store anything
+    const before = gets().length;
+    const listed = await call(
+      "alice",
+      "GET",
+      `/organizations/${o1}/projects/${w.project}/variables`,
+    );
+    expect(listed.text).toContain(pointer);
+    expect(listed.text).not.toContain(value);
+    expect(gets().length).toBe(before);
+  });
+
+  test("the value read when the apply runs is the one written, not the one at plan time", async () => {
+    const { w, target } = await make();
+    const src = source();
+    const first = sekrit("ref-first");
+    const second = sekrit("ref-second");
+    vault.seed(`${VAULT_PREFIX}/${src}/db`, { password: first });
+    await w.put("DB_PASSWORD", "plain", `vault://vault-refs/${src}/db#password`);
+    const plan = await w.plan(target);
+    vault.seed(`${VAULT_PREFIX}/${src}/db`, { password: second });
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.param("DB_PASSWORD")).toMatchObject({ value: second });
+  });
+
+  test("a Secrets Manager secret, whole or by a JSON field, can be synced to another kind of target", async () => {
+    const { w, target } = await make({ type: "vault-kv" });
+    const src = source();
+    const whole = sekrit("ref-aws-whole");
+    const field = sekrit("ref-aws-field");
+    aws.seedSecret(`${src}/token`, whole);
+    aws.seedSecret(`${src}/db`, JSON.stringify({ password: field, user: "u" }));
+    await w.put("TOKEN", "plain", `aws-sm://aws-refs/${src}/token`);
+    await w.put("DB_PASSWORD", "secret", `aws-sm://aws-refs/${src}/db#password`);
+    const plan = await w.plan(target);
+    expect(brief(plan)).toEqual(["create DB_PASSWORD *", "create TOKEN *"]);
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.vdata()).toEqual({ TOKEN: whole, DB_PASSWORD: field });
+    // both are secrets there: neither is flagged plain
+    expect(w.vmeta()).toEqual({ [MANAGED_KEY]: `${VAULT_PREFIX}/${w.path}` });
+  });
+
+  test("a variable that reads a pointer is a secret too, and what the store holds is never read as references", async () => {
+    const { w, target } = await make();
+    const src = source();
+    const value = [sekrit("ref-odd"), "${NOPE}", "$${LITERAL}", "$"].join("");
+    vault.seed(`${VAULT_PREFIX}/${src}/db`, { password: value });
+    await w.put("DB_PASSWORD", "plain", `vault://vault-refs/${src}/db#password`);
+    await w.put("DB_URL", "plain", "postgres://app:${DB_PASSWORD}@db.example.test/app");
+    const plan = await w.plan(target);
+    expect(plan.status).toBe(201);
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.param("DB_PASSWORD")).toMatchObject({ type: "SecureString", value });
+    expect(w.param("DB_URL")).toMatchObject({
+      type: "SecureString",
+      value: `postgres://app:${value}@db.example.test/app`,
+    });
+  });
+
+  test("a pointer of an environment lands in the scope of that environment", async () => {
+    const w = await world({ type: "vault-kv" });
+    const env = await createEnvironment(t.db, {
+      organizationId: o1,
+      projectId: w.project,
+      name: "production",
+      slug: "production",
+    });
+    const target = (
+      await w.make({ name: "refs", environmentMapping: { production: "production" } })
+    ).json.id as string;
+    const src = source();
+    const base = sekrit("ref-base");
+    const prod = sekrit("ref-prod");
+    vault.seed(`${VAULT_PREFIX}/${src}/base`, { key: base });
+    vault.seed(`${VAULT_PREFIX}/${src}/prod`, { key: prod });
+    await w.put("API_KEY", "plain", `vault://vault-refs/${src}/base#key`);
+    const set = await call(
+      "alice",
+      "POST",
+      `/organizations/${o1}/projects/${w.project}/environments/${env.id}/variables`,
+      { key: "API_KEY", kind: "plain", value: `vault://vault-refs/${src}/prod#key` },
+    );
+    expect(set.status).toBe(201);
+    const plan = await w.plan(target);
+    expect(brief(plan)).toEqual(["create API_KEY *", "create API_KEY production"]);
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("applied");
+    expect(w.vdata()).toEqual({ API_KEY: base });
+    expect(w.vdata("production")).toEqual({ API_KEY: prod });
+  });
+
+  test("a pointer used by several variables is read once, on one login", async () => {
+    const { w, target } = await make();
+    const src = source();
+    vault.seed(`${VAULT_PREFIX}/${src}/db`, { password: sekrit("ref-shared") });
+    vault.seed(`${VAULT_PREFIX}/${src}/other`, { password: sekrit("ref-other") });
+    const pointer = `vault://vault-refs/${src}/db#password`;
+    await w.put("A", "plain", pointer);
+    await w.put("B", "secret", pointer);
+    await w.put("C", "plain", `vault://vault-refs/${src}/other#password`);
+    const [loggedIn, read] = [vault.logins, gets().length];
+    const plan = await w.plan(target);
+    expect(plan.status).toBe(201);
+    expect([vault.logins - loggedIn, gets().length - read]).toEqual([1, 2]);
+    expect(vault.live.size).toBe(0);
+  });
+
+  const failing: [string, string, number, string, ReferenceReason][] = [
+    [
+      "a secret that is not there",
+      "vault://vault-refs/{src}/gone#f",
+      502,
+      "reference_failed",
+      "not_found",
+    ],
+    [
+      "a field that is not there",
+      "vault://vault-refs/{src}/db#absent",
+      502,
+      "reference_failed",
+      "not_found",
+    ],
+    [
+      "a path the credential may not read",
+      "vault://vault-refs-denied/{src}/db#f",
+      502,
+      "reference_failed",
+      "denied",
+    ],
+    [
+      "a Vault that refuses the secret ID",
+      "vault://vault-refs-wrong/{src}/db#f",
+      502,
+      "reference_failed",
+      "credential",
+    ],
+    [
+      "an AWS role that refuses the external ID",
+      "aws-sm://aws-refs-wrong/{src}/db",
+      502,
+      "reference_failed",
+      "credential",
+    ],
+    [
+      "an AWS secret that is not there",
+      "aws-sm://aws-refs/{src}/gone",
+      502,
+      "reference_failed",
+      "not_found",
+    ],
+    [
+      "a connection that is not there",
+      "vault://nope/{src}/db#f",
+      422,
+      "reference_invalid",
+      "unknown_connection",
+    ],
+    [
+      "a connection of another organization",
+      "vault://o2-only/{src}/db#f",
+      422,
+      "reference_invalid",
+      "unknown_connection",
+    ],
+    [
+      "a connection that does not allow references",
+      "vault://vault/{src}/db#f",
+      422,
+      "reference_invalid",
+      "not_enabled",
+    ],
+    [
+      "a connection of a kind that holds no secrets",
+      "vault://gl/{src}/db#f",
+      422,
+      "reference_invalid",
+      "wrong_connection",
+    ],
+    [
+      "a reference that is not one",
+      "vault://vault-refs/{src}",
+      422,
+      "reference_invalid",
+      "malformed",
+    ],
+  ];
+  for (const [what, template, status, code, reason] of failing) {
+    test(`${what} fails the whole plan, in fixed words, and stores nothing`, async () => {
+      const { w, target } = await make();
+      const src = source();
+      vault.seed(`${VAULT_PREFIX}/${src}/db`, { f: "present" });
+      vault.seed(`other/${src}/db`, { f: "present" });
+      aws.seedSecret(`${src}/db`, "present");
+      await w.put("FINE", "plain", `vault://vault-refs/${src}/db#f`);
+      await w.put("BROKEN", "plain", template.replace("{src}", src));
+      const before = await runs();
+      const res = await w.plan(target);
+      expect([res.status, res.json.code]).toEqual([status, code]);
+      expect(res.json.detail).toContain(`BROKEN ${REFERENCE_WHY[reason]}`);
+      // the variable that was fine is not named, and nothing of the stores is
+      expect(res.json.detail).not.toContain("FINE");
+      for (const leaked of [src, "present", VAULT_SECRET_ID, EXTERNAL_ID]) {
+        expect(res.text).not.toContain(leaked);
+      }
+      expect(await runs()).toBe(before);
+      expect(vault.live.size).toBe(0);
+    });
+  }
+
+  test("more different references than one plan reads is refused before any store is asked", async () => {
+    const { w, target } = await make();
+    const src = source();
+    for (let i = 0; i < 51; i++) await w.put(`K${i}`, "plain", `vault://vault-refs/${src}/s${i}#f`);
+    const [loggedIn, read] = [vault.logins, gets().length];
+    const res = await w.plan(target);
+    expect([res.status, res.json.code]).toEqual([422, "reference_invalid"]);
+    expect([vault.logins, gets().length]).toEqual([loggedIn, read]);
+  });
+
+  test("a value that cannot be read when the apply runs fails the run and writes nothing", async () => {
+    const { w, target } = await make();
+    const src = source();
+    vault.seed(`${VAULT_PREFIX}/${src}/db`, { password: sekrit("ref-late") });
+    await w.put("DB_PASSWORD", "plain", `vault://vault-refs/${src}/db#password`);
+    await w.put("API_URL", "plain", "https://api.example.test");
+    const plan = await w.plan(target);
+    expect(plan.status).toBe(201);
+    vault.remove(`${VAULT_PREFIX}/${src}/db`, "destroy");
+    const run = await w.finished(target, (await w.apply(target, plan.json.id)).json.id);
+    expect(run.json.status).toBe("failed");
+    expect(run.json.error).toContain(`DB_PASSWORD ${REFERENCE_WHY.not_found}`);
+    expect(run.text).not.toContain(src);
+    expect(w.param("DB_PASSWORD")).toBeUndefined();
+    expect(w.param("API_URL")).toBeUndefined();
+    expect(vault.live.size).toBe(0);
   });
 });
 

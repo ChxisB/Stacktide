@@ -21,6 +21,6 @@ Done when: passes the conformance suite against `kind` or a fake API server; nam
 Do: KV v2 adapter with path mapping and version metadata.
 Done when: passes the conformance suite against a dev-mode server.
 
-### EXT-6 - External references  `[ ]` M - deps: EXT-1, VAR-3
+### EXT-6 - External references  `[x]` M - deps: EXT-1, VAR-3
 Do: `vault://` and `aws-sm://` style pointers resolved at read/sync time with caching limits; resolution failures fail the plan.
 Done when: tests cover resolution, missing path, permission denied, and that resolved values are never persisted.

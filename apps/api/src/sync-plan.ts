@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { DomainError, type Logger, resolveVariables } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import {
+  type ChainEntry,
   createSyncRun,
   type Db,
   type Executor,
@@ -41,6 +42,7 @@ import {
   openVaultConnection,
 } from "./connections";
 import { guardrailRefusal } from "./guardrails";
+import { type ReferenceDeps, resolveReferences, substitute } from "./references";
 
 /** A key that could not be resolved at a scope, and why. Names only, never a value. */
 export interface Unresolved {
@@ -65,26 +67,72 @@ export interface Desired {
 const sorted = <T>(rows: T[], by: (row: T) => string) =>
   rows.sort((a, b) => (by(a) < by(b) ? -1 : by(a) > by(b) ? 1 : 0));
 
+/** What a desired state is made of, read in one snapshot: the opened variables of the project and of each mapped environment. */
+interface Gathered {
+  base: ChainEntry[];
+  environments: {
+    slug: string;
+    scope: string;
+    /** Undefined for an environment that no longer exists. */
+    environmentId: string | undefined;
+    chain: ChainEntry[];
+  }[];
+}
+
+/** Everything `desiredState` reads from the database. Opens every secret of the project: the caller must have checked that it may. */
+async function gather(db: Executor, keys: KeyProvider, target: SyncTarget): Promise<Gathered> {
+  const { organizationId, projectId } = target;
+  const known = new Map(
+    (await listEnvironments(db, organizationId, projectId)).map((e) => [e.slug, e.id]),
+  );
+  const base = await openChain(db, keys, { organizationId, projectId });
+  const environments: Gathered["environments"] = [];
+  for (const [slug, scope] of Object.entries(target.environmentMapping).sort()) {
+    const environmentId = known.get(slug);
+    // shortcut: the shared levels are opened again for each environment; cache them if plans get slow
+    const chain = environmentId
+      ? await openChain(db, keys, { organizationId, projectId, environmentId })
+      : [];
+    environments.push({ slug, scope, environmentId, chain });
+  }
+  return { base, environments };
+}
+
+/**
+ * Which variables, versions and settings the state is made from. No value goes in, so what a reference
+ * points at is not part of it: a value that changes in its store between a plan and its apply is read
+ * again at the apply and written as it is then.
+ */
+function digestOf(target: SyncTarget, g: Gathered) {
+  const facts: unknown[] = [chainFacts(g.base)];
+  for (const { slug, scope, environmentId, chain } of g.environments) {
+    if (environmentId) facts.push([slug, scope, environmentId, chainFacts(chain)]);
+  }
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        target.type,
+        target.connectionId,
+        target.config,
+        // key order must not matter
+        Object.entries(target.environmentMapping).sort(),
+        target.unmanagedPolicy,
+        facts,
+      ]),
+    )
+    .digest("hex");
+}
+
 /**
  * What a sync target should hold for a project (SYNC-5). The project's variables, references filled
  * in, go to `*`; for each mapped environment, only what differs from that (a variable of its own, or
  * one that reads a value it overrides) goes to the environment's scope, where GitLab prefers it.
  * A key that cannot be resolved is not wanted anywhere it fails, and is reported, so a broken
- * reference never reads as "delete it". Opens every secret of the project: the caller must have
- * checked that it may.
+ * reference never reads as "delete it". `resolved` is what the external references of the winning
+ * variables came to (EXT-6).
  */
-export async function desiredState(
-  db: Executor,
-  keys: KeyProvider,
-  target: SyncTarget,
-): Promise<Desired> {
-  const { organizationId, projectId } = target;
-  const known = new Map(
-    (await listEnvironments(db, organizationId, projectId)).map((e) => [e.slug, e.id]),
-  );
-
-  const base = await openChain(db, keys, { organizationId, projectId });
-  const { variables, issues } = resolveVariables(base);
+function assemble(target: SyncTarget, g: Gathered, resolved: ReadonlyMap<string, string>): Desired {
+  const { variables, issues } = resolveVariables(substitute(g.base, resolved));
   const baseOf = new Map(variables.map((v) => [v.key, v]));
   const items: ItemInput[] = variables.map((v) => ({
     key: v.key,
@@ -98,19 +146,14 @@ export async function desiredState(
   const missingEnvironments: string[] = [];
   const leftAlone = new Set<string>();
   const resolvedInAnEnvironment = new Set<string>();
-  const facts: unknown[] = [chainFacts(base)];
 
-  for (const [slug, scope] of Object.entries(target.environmentMapping).sort()) {
-    const environmentId = known.get(slug);
+  for (const { slug, scope, environmentId, chain } of g.environments) {
     if (!environmentId) {
       missingEnvironments.push(slug);
       leftAlone.add(scope);
       continue;
     }
-    // shortcut: the shared levels are opened again for each environment; cache them if plans get slow
-    const chain = await openChain(db, keys, { organizationId, projectId, environmentId });
-    const there = resolveVariables(chain);
-    facts.push([slug, scope, environmentId, chainFacts(chain)]);
+    const there = resolveVariables(substitute(chain, resolved));
     for (const v of there.variables) {
       resolvedInAnEnvironment.add(v.key);
       const own = baseOf.get(v.key);
@@ -133,25 +176,12 @@ export async function desiredState(
     }
   }
 
-  const digest = createHash("sha256")
-    .update(
-      JSON.stringify([
-        target.type,
-        target.connectionId,
-        target.config,
-        // key order must not matter
-        Object.entries(target.environmentMapping).sort(),
-        target.unmanagedPolicy,
-        facts,
-      ]),
-    )
-    .digest("hex");
   return {
     items,
     unresolved: sorted(unresolved, (u) => JSON.stringify([u.key, u.scope])),
     missingEnvironments,
     leftAlone,
-    digest,
+    digest: digestOf(target, g),
   };
 }
 
@@ -169,12 +199,39 @@ export const untouchable = (d: Desired) => {
     refs.has(refId(item)) || d.leftAlone.has(item.scope);
 };
 
-/** `desiredState` in one snapshot, so the variables, the lines and the digest are of the same moment. */
-export const desiredSnapshot = (db: Db, keys: KeyProvider, target: SyncTarget) =>
-  db.transaction((tx) => desiredState(tx, keys, target), {
+/** The variables in one snapshot, so that they and the digest are of the same moment. */
+const snapshot = (db: Db, keys: KeyProvider, target: SyncTarget) =>
+  db.transaction((tx) => gather(tx, keys, target), {
     isolationLevel: "repeatable read",
     accessMode: "read only",
   });
+
+/**
+ * The digest of what a target should hold, without reading the stores that references point at: it does
+ * not depend on them. For the check that a plan is still true.
+ */
+export async function snapshotDigest(db: Db, keys: KeyProvider, target: SyncTarget) {
+  return digestOf(target, await snapshot(db, keys, target));
+}
+
+/**
+ * What a sync target should hold. The variables are read in one snapshot; the external references of
+ * the ones that win are read after it, so no store is waited for while a transaction is open. A
+ * reference that cannot be read fails the call (see `resolveReferences`). Opens every secret of the
+ * project and the connections its references name: the caller must have checked that it may.
+ */
+export async function desiredSnapshot(
+  deps: ReferenceDeps,
+  target: SyncTarget,
+  requestId: unknown,
+): Promise<Desired> {
+  const gathered = await snapshot(deps.db, deps.keys, target);
+  const resolved = await resolveReferences(deps, target.organizationId, requestId, [
+    gathered.base,
+    ...gathered.environments.map((e) => e.chain),
+  ]);
+  return assemble(target, gathered, resolved);
+}
 
 /**
  * The adapter for a target, reaching it with its connection's credential (opened here, held only by
@@ -302,7 +359,7 @@ export async function planTarget(
   try {
     // before any secret is opened: a target that cannot be planned costs nothing
     const config = adapter.validate(target.config);
-    const desired = await desiredSnapshot(deps.db, deps.keys, target);
+    const desired = await desiredSnapshot(deps, target, requestId);
     refuse(adapter, desired.items);
     const violations = checkItems(
       desired.items,

@@ -16,7 +16,7 @@ import {
 
 export const AWS_SM = "aws-sm";
 
-const SM = { service: "secretsmanager", target: "secretsmanager" };
+export const SM_API = { service: "secretsmanager", target: "secretsmanager" };
 /** The tag that says which layout a secret was made in, so a target never reads another layout's secrets as its own. */
 export const LAYOUT_TAG = "orch-layout";
 /** `orch-plain:KEY` marks a key that is not a secret. Secrets Manager encrypts everything, so being a secret is the default. */
@@ -155,7 +155,7 @@ export function awsSmAdapter(
     connect(config): Remote {
       const layout = config.layout ?? "per-key";
       const call = async (action: string, body: unknown) =>
-        awsJson(d, await session(), SM, config.region, action, body);
+        awsJson(d, await session(), SM_API, config.region, action, body);
       const nameOf = ({ key, scope }: ItemRef) => {
         if (layout === "per-scope") {
           return `${config.prefix}/${scope === ALL_SCOPES ? ALL_NAME : scope}`;
