@@ -85,6 +85,8 @@ interface Turn {
   deps: RunDeps & { config: MrPlanConfig };
   gitlab: Gitlab;
   ctx: JobContext;
+  /** Who the audit events are written as: the job, or the person whose command this is. */
+  actor: { kind: string; id: string };
   at: { organizationId: string; projectId: string; gitlabProjectId: number };
   iid: number;
 }
@@ -160,7 +162,7 @@ async function plan(c: Turn, tx: Tx, row: MergeRequestNote): Promise<number[]> {
     return [];
   }
 
-  const actor = { kind: "job", id: c.ctx.id };
+  const { actor } = c;
   const stale = await supersedeRuns(tx, at.organizationId, at.projectId, iid, sha);
   for (const runId of stale.runs) {
     await audit(
@@ -256,7 +258,7 @@ async function start(c: Turn, tx: Tx, mr: MergeRequest, sha: string): Promise<st
       });
       await audit(
         sp,
-        { actor: { kind: "job", id: c.ctx.id } },
+        { actor: c.actor },
         {
           action: "run.create",
           resourceType: "run",
@@ -293,6 +295,25 @@ async function start(c: Turn, tx: Tx, mr: MergeRequest, sha: string): Promise<st
 }
 
 /**
+ * Plans the merge request's newest commit if no run has (see `plan`) and stops the pipelines of the
+ * runs that replaced. The audit events are the job's unless `actor` says whose command it is.
+ */
+export async function planMergeRequest(
+  deps: RunDeps & { config: MrPlanConfig },
+  gitlab: Gitlab,
+  ctx: JobContext,
+  at: Turn["at"],
+  iid: number,
+  actor: Turn["actor"] = { kind: "job", id: ctx.id },
+) {
+  const turn: Turn = { deps, gitlab, ctx, actor, at, iid };
+  const stale = await withMergeRequest(deps.db, at.organizationId, at.projectId, iid, (tx, row) =>
+    plan(turn, tx, row),
+  );
+  await stop(gitlab, at.gitlabProjectId, stale, ctx.log);
+}
+
+/**
  * The `gitlab.event` consumer for merge requests (IAC-7). An event only says that a merge request
  * changed, so the job reads the merge request from GitLab, and plans its head commit if no run has:
  * a repeated or late event reads the same thing and finds the run made. Events other than opening,
@@ -318,15 +339,7 @@ export const mrPlanHandler =
     };
     try {
       const gitlab = await deps.gitlab(e.organizationId, e.connectionId);
-      const turn: Turn = { deps, gitlab, ctx, at, iid: e.iid };
-      const stale = await withMergeRequest(
-        deps.db,
-        at.organizationId,
-        at.projectId,
-        e.iid,
-        (tx, row) => plan(turn, tx, row),
-      );
-      await stop(gitlab, at.gitlabProjectId, stale, ctx.log);
+      await planMergeRequest(deps, gitlab, ctx, at, e.iid);
     } catch (error) {
       // a 404 may be the merge request, or the repository or branch it reads
       const why = hopeless(error, "the merge request or its repository");

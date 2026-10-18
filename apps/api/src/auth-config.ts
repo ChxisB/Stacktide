@@ -67,7 +67,11 @@ export function authFromEnv(c: z.output<typeof authEnv>): AuthDeps {
  * Roles from GitLab membership, or nothing (nobody holds a role) when no membership token is set.
  * The token needs `read_api` and must be a member, or an admin, of every linked group and project.
  */
-export function rolesFromEnv(c: z.output<typeof authEnv>, db: Db, logger: Logger) {
+export function rolesFromEnv(
+  c: Pick<z.output<typeof authEnv>, "GITLAB_URL" | "GITLAB_MEMBERSHIP_TOKEN">,
+  db: Db,
+  logger: Logger,
+) {
   const { GITLAB_URL: baseUrl, GITLAB_MEMBERSHIP_TOKEN: token } = c;
   if (!baseUrl || !token) return undefined;
   const gitlab = createGitlab({ baseUrl, auth: { type: "private-token", token } });

@@ -348,10 +348,18 @@ describe("events", () => {
       "note",
       {
         project_id: 5,
-        object_attributes: { id: 4, noteable_type: "MergeRequest", note: CANARY },
+        // the text and the author are read from GitLab by the job that handles the command (IAC-9), never taken from here
+        object_attributes: {
+          id: 4,
+          noteable_type: "MergeRequest",
+          action: "create",
+          author_id: 77,
+          note: CANARY,
+        },
+        user: { id: 77, username: "someone" },
         merge_request: { iid: 12 },
       },
-      { noteId: 4, noteableType: "MergeRequest", mrIid: 12 },
+      { noteId: 4, noteableType: "MergeRequest", action: "create", mrIid: 12 },
     ],
   ];
   for (const [header, event, body, picked] of cases) {

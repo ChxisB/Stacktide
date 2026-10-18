@@ -120,6 +120,31 @@ planned commit, so **a merge request can opt its own stacks in**: review `stack.
 An apply pipeline started by the platform needs the same `.gitlab-ci.yml` as a plan (above), and the
 runner needs the stack's cloud credentials, as for a plan (the platform holds none).
 
+## Commands in a merge request note
+
+Anyone who may comment can write one of these as a whole note, one line, lower case, single spaces:
+
+| Note | Does | Needs (GitLab role) |
+| --- | --- | --- |
+| `orch plan` | plans the merge request's newest commit if no run has (the same as an update event) | Developer |
+| `orch apply` | applies every planned stack of the newest run, as the apply route does | Maintainer |
+| `orch apply <stack>` | applies that stack only | Maintainer |
+
+The worker reads the note from GitLab (the event names it, nothing more), so the text and the author are
+GitLab's own. Roles come from the author's GitLab membership of the linked group and project, as
+everywhere else (`GITLAB_URL` and `GITLAB_MEMBERSHIP_TOKEN`, which **the worker needs too**; without
+them nobody holds a role and no command is answered). The commenter need not have signed in to the
+platform. The audit event (`run.create` or `run.apply`) names them as `gitlab_user` and the note's id.
+An apply still needs everything the route needs: an open, approved, mergeable request at the planned
+commit, planned stacks, a dependency applied. What refuses it is the reply, as a note.
+
+A note that is not exactly one command does nothing: `orch apply net app`, `ORCH APPLY`,
+`orch plan net`, a second line (which could be a GitLab quick action such as `/merge`). If it starts
+with `orch plan` or `orch apply` and a reader wrote it, the reply says it was not understood. Talk
+(`orch seems slow`) and notes that start with `/` are ignored. Only a note being written counts, not an
+edit of it, and notes GitLab wrote are never commands. The platform's replies never start with a command,
+so they cannot start one.
+
 ## What to know
 
 - **A merge request from a fork is not planned.** The plan runs in the project's CI with the project's

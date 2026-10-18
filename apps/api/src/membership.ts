@@ -46,7 +46,7 @@ export function gitlabRoles({
 }: MembershipOptions) {
   const cache = new Map<number, { until: number; roles: Promise<Roles> }>();
 
-  async function lookup(user: User): Promise<Roles> {
+  async function lookup(user: Pick<User, "gitlabId">): Promise<Roles> {
     const links = await gitlabLinks(db);
     const orgRoles: Record<string, OrgRole> = {};
     const projectRoles: Record<string, ProjectRole> = {};
@@ -65,7 +65,7 @@ export function gitlabRoles({
     return { orgRoles, projectRoles };
   }
 
-  return (user: User): Promise<Roles> => {
+  return (user: Pick<User, "gitlabId">): Promise<Roles> => {
     const at = now();
     const hit = cache.get(user.gitlabId);
     if (hit && hit.until > at) return hit.roles;

@@ -10,6 +10,8 @@ import {
   WEBHOOK_QUEUE,
 } from "@orch/db";
 import { z } from "zod";
+import { rolesFromEnv } from "./auth-config";
+import { mrCommandHandler } from "./mr-commands";
 import { mrPlanHandler } from "./mr-plan";
 import { pipelineEventHandler, workerGitlab } from "./pipeline-runs";
 import { mrApplyHandler } from "./run-apply";
@@ -34,6 +36,13 @@ const config = loadConfig(
     ORCH_API_URL: z.string().min(1).optional(),
     ORCH_CI_AUDIENCE: z.string().min(1).optional(),
     ORCH_HELPER_IMAGE: z.string().min(1).optional(),
+    /**
+     * `orch plan` / `orch apply` in a merge request note (IAC-9) are run as the person who wrote them, with
+     * the roles their GitLab membership gives: the API's two settings for that. Without them nobody holds a
+     * role, so no command is answered.
+     */
+    GITLAB_URL: z.url().optional(),
+    GITLAB_MEMBERSHIP_TOKEN: z.string().min(1).optional(),
     /** Terragrunt has no default image: the repository (no tag) the stack's version is a tag of. */
     ORCH_TERRAGRUNT_IMAGE: z.string().min(1).optional(),
     /** How often every sync target is checked for drift (SYNC-8); 0 switches the checks off. */
@@ -67,9 +76,10 @@ if (keys) {
   handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger });
   handlers[DRIFT_TICK_QUEUE] = driftTickHandler({ db });
   handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger });
-  // one queue, four consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
+  // one queue, five consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
   // belongs to (IAC-6); a merge request event plans the merge request (IAC-7), and its merge applies
-  // the stacks that opted in (IAC-8, which needs no setting of its own: no plan, no run to apply)
+  // the stacks that opted in (IAC-8, which needs no setting of its own: no plan, no run to apply); a
+  // note may be a command (IAC-9, which needs the roles source)
   const gitlab = { db, gitlab: workerGitlab({ db, keys, logger }) };
   const plans = [
     ["ORCH_API_URL", config.ORCH_API_URL],
@@ -88,12 +98,24 @@ if (keys) {
     runEventHandler(gitlab),
     mrApplyHandler({ ...gitlab, images }),
   ];
-  if (apiUrl !== undefined && audience !== undefined && helperImage !== undefined) {
-    // a trailing slash is the usual way to write an address; the generator wants none
-    const mr = { apiUrl: apiUrl.replace(/\/+$/, ""), audience, helperImage, images };
+  // a trailing slash is the usual way to write an address; the generator wants none
+  const mr =
+    apiUrl !== undefined && audience !== undefined && helperImage !== undefined
+      ? { apiUrl: apiUrl.replace(/\/+$/, ""), audience, helperImage, images }
+      : undefined;
+  if (mr) {
     consumers.push(mrPlanHandler({ ...gitlab, config: mr }));
     logger.info("merge request plans are on");
   } else logger.warn("merge requests will not be planned until these are set", { missing });
+  const roles = rolesFromEnv(config, db, logger);
+  if (roles) {
+    consumers.push(mrCommandHandler({ ...gitlab, roles, images, config: mr }));
+    logger.info("merge request commands are on");
+  } else {
+    logger.warn(
+      "merge request commands will not be answered until GITLAB_URL and GITLAB_MEMBERSHIP_TOKEN are set",
+    );
+  }
   handlers[WEBHOOK_QUEUE] = chain(...consumers);
   // the schedule lives in the database, so every worker states it; the same timing keeps its place
   // shortcut: workers started with different values take turns setting it; give it one owner when that matters.

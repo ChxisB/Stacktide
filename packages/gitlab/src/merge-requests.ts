@@ -40,8 +40,19 @@ const approvals = z
   .transform((a) => ({ approved: a.approved === true }));
 
 const note = z
-  .object({ id: z.number(), body: z.string(), system: z.boolean().optional() })
-  .transform((n) => ({ id: n.id, body: n.body, system: n.system ?? false }));
+  .object({
+    id: z.number(),
+    body: z.string(),
+    system: z.boolean().optional(),
+    author: z.object({ id: z.number() }).optional(),
+  })
+  .transform((n) => ({
+    id: n.id,
+    body: n.body,
+    system: n.system ?? false,
+    /** GitLab's id of whoever wrote it; null when GitLab does not say. */
+    authorId: n.author?.id ?? null,
+  }));
 export type Note = z.output<typeof note>;
 
 export interface CreateMergeRequest {
@@ -119,6 +130,10 @@ export function mergeRequestsApi(client: GitlabClient) {
           },
         });
         return decode(mergeRequest, raw, "merge request");
+      },
+      async getNote(project: ProjectRef, iid: number, noteId: number) {
+        const raw = await client.request("GET", `${mrPath(project, iid)}/notes/${noteId}`);
+        return decode(note, raw, "note");
       },
       async createNote(project: ProjectRef, iid: number, body: string) {
         const raw = await client.request("POST", `${mrPath(project, iid)}/notes`, {

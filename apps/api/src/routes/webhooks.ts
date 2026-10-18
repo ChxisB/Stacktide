@@ -57,6 +57,7 @@ const PICKS: Record<EventName, ReadonlyArray<readonly [string, readonly string[]
   note: [
     ["noteId", ["object_attributes", "id"]],
     ["noteableType", ["object_attributes", "noteable_type"]],
+    ["action", ["object_attributes", "action"]],
     ["mrIid", ["merge_request", "iid"]],
   ],
 };

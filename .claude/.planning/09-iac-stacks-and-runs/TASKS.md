@@ -32,7 +32,7 @@ Done when: tests show the note is updated not duplicated, stale pushes cancel su
 Do: preconditions (fresh head SHA, approved, mergeable, no active run, authorised), apply the saved plan artifact, apply on merge when `apply_on: merge`, record outcome. **First real apply is a human gate.**
 Done when: tests cover each failed precondition, double-apply prevention and a failed apply leaving the stack `failed` with the reason.
 
-### IAC-9 - MR note commands  `[ ]` S - deps: IAC-8, GL-8
+### IAC-9 - MR note commands  `[x]` S - deps: IAC-8, GL-8
 Do: parse `orch plan|apply [stack]` from note webhooks; authorise via AUTH roles; reply with a note.
 Done when: tests cover unknown stack, unauthorised user, ambiguous command text and quick-action-looking input.
 

@@ -575,6 +575,9 @@ export function gitlabContract(
         expect(note).toMatchObject({ body: "first", system: false });
         const edited = await t.api.mergeRequests.updateNote(t.project, mr.iid, note.id, "second");
         expect(edited).toMatchObject({ id: note.id, body: "second" });
+        const read = await t.api.mergeRequests.getNote(t.project, mr.iid, note.id);
+        expect(read).toMatchObject({ id: note.id, body: "second", system: false });
+        expect(typeof read.authorId).toBe("number");
         await t.api.mergeRequests.update(t.project, mr.iid, { state: "closed" });
       });
     });

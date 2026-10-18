@@ -43,6 +43,7 @@ interface Note {
   id: number;
   body: string;
   system: boolean;
+  author?: { id: number } | undefined;
 }
 interface Mr {
   id: number;
@@ -943,9 +944,13 @@ export function createMockGitlab(opts: MockOptions = {}) {
         }
         if (mrm[2] && !mrm[3] && req.method === "POST") {
           if (!body.body) return fail(400, "body is missing");
-          const n = { id: ++seq, body: String(body.body), system: false };
+          const n = { id: ++seq, body: String(body.body), system: false, author: tokenUser };
           mr.notes.push(n);
           return json(n, 201);
+        }
+        if (mrm[3] && req.method === "GET") {
+          const n = mr.notes.find((x) => x.id === Number(mrm[3]));
+          return n ? json(n) : fail(404, "404 Note Not Found");
         }
         if (mrm[3] && req.method === "PUT") {
           const n = mr.notes.find((x) => x.id === Number(mrm[3]));
@@ -1126,6 +1131,23 @@ export function createMockGitlab(opts: MockOptions = {}) {
       const mr = projects.find((p) => p.path === path)?.mrs.find((m) => m.iid === iid);
       if (!mr) throw new Error(`no merge request ${iid} in ${path}`);
       Object.assign(mr, patch);
+    },
+    /** A note written by someone else (a person, or GitLab itself when `system`; no `authorId` for one whose author GitLab does not say); returns its id. */
+    addMrNote(
+      path: string,
+      iid: number,
+      note: { body: string; authorId?: number | undefined; system?: boolean },
+    ) {
+      const mr = projects.find((p) => p.path === path)?.mrs.find((m) => m.iid === iid);
+      if (!mr) throw new Error(`no merge request ${iid} in ${path}`);
+      const n = {
+        id: ++seq,
+        body: note.body,
+        system: note.system ?? false,
+        ...(note.authorId === undefined ? {} : { author: { id: note.authorId } }),
+      };
+      mr.notes.push(n);
+      return n.id;
     },
     /** Deletes a note, as a person can: later updates of it get a 404. */
     deleteMrNote(path: string, iid: number, noteId: number) {

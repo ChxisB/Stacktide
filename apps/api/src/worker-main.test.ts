@@ -80,6 +80,36 @@ describe("worker entrypoint", () => {
     expect(await run({})).toContain("merge requests will not be planned");
   });
 
+  test("answers merge request commands only with the master keys and the membership settings, and never prints the token", async () => {
+    const keys = `k1:${Buffer.alloc(32, 7).toString("base64")}`;
+    const token = "glpat-membership-canary";
+    const run = async (env: Record<string, string>) => {
+      const child = start({ DATABASE_URL: t.url, ORCH_MASTER_KEYS: keys, ...env });
+      await Bun.sleep(500);
+      child.proc.kill("SIGTERM");
+      await child.proc.exited;
+      return await child.out;
+    };
+    const on = await run({
+      GITLAB_URL: "https://gitlab.example.com",
+      GITLAB_MEMBERSHIP_TOKEN: token,
+    });
+    expect(on).toContain("merge request commands are on");
+    expect(on).not.toContain(token);
+    // nobody holds a role without both, so nobody's command is answered
+    const partial: Record<string, string>[] = [
+      { GITLAB_URL: "https://gitlab.example.com" },
+      { GITLAB_MEMBERSHIP_TOKEN: token },
+      {},
+    ];
+    for (const env of partial) {
+      const out = await run(env);
+      expect(out).toContain("merge request commands will not be answered");
+      expect(out).not.toContain("merge request commands are on");
+      expect(out).not.toContain(token);
+    }
+  });
+
   test("the drift schedule is stated with keys, off at 0, and a value in between is refused", async () => {
     const keys = `k1:${Buffer.alloc(32, 7).toString("base64")}`;
     const run = async (extra: Record<string, string>) => {

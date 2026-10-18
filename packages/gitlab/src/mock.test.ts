@@ -121,6 +121,37 @@ describe("merge request notes", () => {
     expect(() => mock.mrNotes("g/p", 99)).toThrow("no merge request 99");
     mock.stop();
   });
+
+  test("a note reads back with its author: the token's for one it wrote, anyone's for one a test adds", async () => {
+    const { mock, api } = setup();
+    mock.addProject({ path: "g/p" });
+    await api.repository.createBranch("g/p", "feature", "main");
+    const mr = await api.mergeRequests.create("g/p", {
+      sourceBranch: "feature",
+      targetBranch: "main",
+      title: "t",
+    });
+    const own = await api.mergeRequests.createNote("g/p", mr.iid, "mine");
+    expect(own.authorId).toBe(mock.tokenUser.id);
+    const said = mock.addMrNote("g/p", mr.iid, { body: "orch plan", authorId: 42 });
+    const system = mock.addMrNote("g/p", mr.iid, { body: "merged", authorId: 1, system: true });
+    expect(await api.mergeRequests.getNote("g/p", mr.iid, said)).toEqual({
+      id: said,
+      body: "orch plan",
+      system: false,
+      authorId: 42,
+    });
+    expect((await api.mergeRequests.getNote("g/p", mr.iid, system)).system).toBe(true);
+    const unsigned = mock.addMrNote("g/p", mr.iid, { body: "x" });
+    expect((await api.mergeRequests.getNote("g/p", mr.iid, unsigned)).authorId).toBeNull();
+    // a system note is not one a person wrote: the test helper for reading notes leaves it out
+    expect(mock.mrNotes("g/p", mr.iid).map((n) => n.id)).toEqual([own.id, said, unsigned]);
+    mock.deleteMrNote("g/p", mr.iid, said);
+    await expect(api.mergeRequests.getNote("g/p", mr.iid, said).catch((e) => e.kind)).resolves.toBe(
+      "not_found",
+    );
+    mock.stop();
+  });
 });
 
 describe("merge request approval and merge status", () => {
