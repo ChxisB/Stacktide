@@ -3,6 +3,6 @@
   "compilerOptions": {
     "types": ["bun"]
   },
-  "include": ["apps", "packages"],
+  "include": ["apps", "packages", "scripts"],
   "exclude": ["apps/web", "**/node_modules"]
 }
