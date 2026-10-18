@@ -1,12 +1,14 @@
 # 13 Deploy and Operate - Tasks
 
-### OPS-1 - Container image  `[ ]` M - deps: API-3, API-6, FND-6
+### OPS-1 - Container image  `[!]` M - deps: API-3, API-6, FND-6
 Do: multi-stage Dockerfile (pinned Bun), non-root user, `HEALTHCHECK`, commands `api` / `worker` / `migrate`; CI builds it (no push yet).
 Done when: the image starts, `/health` is green and `migrate` is idempotent; image runs as non-root (tested).
+Blocked: nothing can be built or started here. The Docker VM has about 275 MB free and shares its disk with other projects' databases (a full disk already put Postgres into recovery once, in EXT-5), and the CI build job needs FND-6 (a real pipeline), which is itself `[!]`. Remaining: free disk space (`docker builder prune` is the user's call), write the multi-stage Dockerfile, a test that builds it, starts it and checks `/health`, `migrate` twice and `id -u != 0`, then the `.gitlab-ci.yml` build job (no push).
 
-### OPS-2 - Self-host compose and docs  `[ ]` M - deps: OPS-1
+### OPS-2 - Self-host compose and docs  `[!]` M - deps: OPS-1
 Do: `deploy/compose.yml` (api, worker, postgres, migrate), env reference table, first-run guide (GitLab OAuth app, master key generation).
 Done when: following the doc on a clean machine yields a working login (smoke script included).
+Blocked: needs OPS-1's image, and a working login needs a real GitLab OAuth application (a write to a real GitLab, a human gate). Remaining: compose file, env table, first-run guide and smoke script. `docs/runbook-keys-and-backup.md` (OPS-4) is already standalone and covers master key generation, backup, restore and rotation; link it from the guide.
 
 ### OPS-3 - Metrics  `[x]` M - deps: API-3, API-6
 Do: `/metrics` (auth-protected or internal-only) with the metrics in the SPEC; labels never contain ids of secrets or values.
@@ -20,10 +22,12 @@ Done when: an automated test restores into a fresh DB and decrypts a known secre
 Do: rate limiting (login, token create, reveal, webhooks), CORS allowlist, security headers, body limits, cookie flag assertions, `bun audit` job in CI.
 Done when: tests hit each limit and header; CI fails on a seeded vulnerable dependency. **Release gate for non-local exposure. `/security-review`.**
 
-### OPS-6 - Release pipeline  `[ ]` M - deps: OPS-1, CLI-7
+### OPS-6 - Release pipeline  `[!]` M - deps: OPS-1, CLI-7
 Do: tag-triggered pipeline: versioned image to the GitLab registry, CLI binaries, changelog from commit messages.
 Done when: a dry-run tag pipeline produces all artifacts. **Publishing is a human gate.**
+Blocked: needs OPS-1's image and a real pipeline (FND-6) to run a dry-run tag; publishing to the registry is a human gate. `.gitlab-ci.yml` already has the CLI `release` job from CLI-7. Remaining: the image job, the changelog-from-commits step (a script with a test is the part that needs no pipeline), and a dry-run tag that publishes nothing.
 
-### OPS-7 - Dogfood  `[ ]` M - deps: PIPE-6, SYNC-6, OPS-6
+### OPS-7 - Dogfood  `[!]` M - deps: PIPE-6, SYNC-6, OPS-6
 Do: import this repo into the platform, manage its pipeline and CI variables through it, document gaps found as new tasks.
 Done when: the repo's `.gitlab-ci.yml` is produced by PIPE and its CI variables by SYNC with an empty drift report.
+Blocked: needs OPS-6, a running instance and this repository on a real GitLab; the first PIPE apply (a merge request) and the first SYNC apply are the same not-done human gates as PIPE-6/PIPE-7/SYNC-6. Remaining: run it against a sandbox group, then write the gaps found as new tasks.

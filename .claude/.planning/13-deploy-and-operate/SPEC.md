@@ -1,5 +1,5 @@
 # 13 Deploy and Operate - Spec
-Prefix: OPS · Milestone: M2-M4 (OPS-1/2 in M2, OPS-5 before any non-local exposure) · Status: todo
+Prefix: OPS · Milestone: M2-M4 (OPS-1/2 in M2, OPS-5 before any non-local exposure) · Status: partial (OPS-3/4/5 done; OPS-1/2/6/7 blocked)
 
 ## Goal
 Run the platform for real: containerised, observable, hardened, backed up, and managing its own delivery.

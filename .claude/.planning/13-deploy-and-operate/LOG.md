@@ -79,3 +79,9 @@
   11. A database error ends the run without a summary of what moved (it is logged as "what moved stays moved, run it again"); `--status` shows the rest.
   12. Run on a local Postgres 18 only. Not run on a real deployment, a large database (the dump is read in one transaction; rewrap is paged by 100 with one statement per row), or against a provider other than the environment one.
 - Gate: `bun run check` green: 4113 pass + 2 skip + 0 fail (root), 241 pass (web). New dependencies: none.
+
+## 2026-10-18 OPS-1, OPS-2, OPS-6, OPS-7 blocked
+- **What:** marked `[!]` in TASKS.md with the remaining step on each task. No code written for them.
+- **Why:** OPS-1 needs a built and started image, and the Docker VM has about 275 MB free on a disk shared with other projects (Postgres went into recovery on it once, in EXT-5). I did not prune the shared build cache (20.7 GB reclaimable) without your say-so. OPS-2 needs OPS-1 and a real GitLab OAuth application. OPS-6 needs OPS-1, a real pipeline (FND-6 is `[!]`) and publishing, which is a human gate. OPS-7 needs OPS-6 and a real GitLab for the first PIPE and SYNC applies.
+- **Not drafted on purpose:** a Dockerfile or compose file that no build or start has run is a guess that looks finished. `docker buildx build --check` could lint a Dockerfile without disk, but it proves nothing about the task's "done when".
+- **Order when unblocked:** free disk -> OPS-1 -> OPS-2 (+ link the OPS-4 runbook) -> FND-6 -> OPS-6 dry run -> OPS-7.

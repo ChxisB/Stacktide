@@ -39,7 +39,7 @@ Status: `todo` / `building` / `done`. The factory updates this table.
 | 10 | [drift-and-policy](10-drift-and-policy/) | POL | M4 | 09 | done (first real drift check, policy evaluation and notification are human gates) |
 | 11 | [governance](11-governance/) | GOV | M4 | 01, 04, 05 | done (first real approval, gated apply and forwarding are human gates) |
 | 12 | [extra-sync-targets](12-extra-sync-targets/) | EXT | M5 | 05 | done (first real sync to AWS and Kubernetes, and ADR-0013's acceptance, are human gates) |
-| 13 | [deploy-and-operate](13-deploy-and-operate/) | OPS | M2-M4 | 01 | todo |
+| 13 | [deploy-and-operate](13-deploy-and-operate/) | OPS | M2-M4 | 01 | partial (OPS-3/4/5 done; OPS-1/2/6/7 blocked: no disk to build an image, no real pipeline or GitLab, publishing is a human gate) |
 
 ### Milestones
 - **M0 Foundation** - green empty monorepo, ADRs confirmed.
