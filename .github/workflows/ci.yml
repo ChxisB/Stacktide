@@ -38,6 +38,12 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
+      # packages/db/src/backup.test.ts runs deploy/backup.sh and restore.sh, and pg_dump refuses a server newer than
+      # itself: the runner ships the 16 client, the service is 18. (GitLab's oven/bun image has none: it skips there.)
+      - run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-18
+          pg_dump --version
       - run: bun run check
 
   # UI-9: the journey of a new team in Chromium, against the real API and a mock GitLab (apps/web/e2e).
