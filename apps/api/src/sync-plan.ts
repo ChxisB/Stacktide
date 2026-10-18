@@ -12,10 +12,14 @@ import {
 import { createGitlab } from "@orch/gitlab";
 import {
   ALL_SCOPES,
+  AWS_SSM,
+  awsSsmAdapter,
   checkItems,
+  GITLAB_VARIABLES,
   type GuardrailConfig,
   gitlabVariablesAdapter,
   type ItemInput,
+  isProtected,
   type PlanAction,
   plan,
   refId,
@@ -23,7 +27,7 @@ import {
   SyncError,
   type UnmanagedPolicy,
 } from "@orch/sync";
-import { openGitlabConnection } from "./connections";
+import { type CloudDeps, openAwsSession, openGitlabConnection } from "./connections";
 import { guardrailRefusal } from "./guardrails";
 
 /** A key that could not be resolved at a scope, and why. Names only, never a value. */
@@ -160,28 +164,43 @@ export const desiredSnapshot = (db: Db, keys: KeyProvider, target: SyncTarget) =
     accessMode: "read only",
   });
 
-/** The adapter for a target, reaching it with its connection's token (opened here, held only by the client). */
+/**
+ * The adapter for a target, reaching it with its connection's credential (opened here, held only by
+ * the client). The type decides which kind of connection it needs; the sync-targets route checked
+ * that when the target was made, and the connection's own type is checked again here.
+ *
+ * shortcut: a switch on the type, one case per kind of target; a registry only pays off with many.
+ */
 export async function openTarget(
-  deps: { db: Db; keys: KeyProvider; logger: Logger },
+  deps: { db: Db; keys: KeyProvider; logger: Logger; cloud?: CloudDeps | undefined },
   target: SyncTarget,
   requestId: unknown,
-) {
-  const { baseUrl, token } = await openGitlabConnection(
-    deps,
-    target.organizationId,
-    target.connectionId,
-    requestId,
-  );
-  // shortcut: one target type; a registry of builders replaces this when a second one comes
-  return gitlabVariablesAdapter(
-    createGitlab({
-      baseUrl,
-      auth: { type: "private-token", token },
-      timeoutMs: 15_000,
-      maxRetries: 1,
-      maxRetryDelayMs: 2_000,
-    }),
-  );
+): Promise<SyncAdapter<unknown>> {
+  const { organizationId, connectionId } = target;
+  switch (target.type) {
+    case GITLAB_VARIABLES: {
+      const { baseUrl, token } = await openGitlabConnection(
+        deps,
+        organizationId,
+        connectionId,
+        requestId,
+      );
+      return gitlabVariablesAdapter(
+        createGitlab({
+          baseUrl,
+          auth: { type: "private-token", token },
+          timeoutMs: 15_000,
+          maxRetries: 1,
+          maxRetryDelayMs: 2_000,
+        }),
+      );
+    }
+    case AWS_SSM: {
+      const { aws, session } = await openAwsSession(deps, organizationId, connectionId, requestId);
+      return awsSsmAdapter(session, aws);
+    }
+  }
+  throw new DomainError("target_type", 422, "This type of sync target cannot be used");
 }
 
 /** How long a plan can be applied for: long enough to read it, short enough that it is still true. */
@@ -231,7 +250,13 @@ export interface Planned {
  * `target_failed`, 422 `guardrail_violation`); a `CryptoError` when a stored secret cannot be opened.
  */
 export async function planTarget(
-  deps: { db: Db; keys: KeyProvider; logger: Logger; guardrails?: GuardrailConfig | undefined },
+  deps: {
+    db: Db;
+    keys: KeyProvider;
+    logger: Logger;
+    guardrails?: GuardrailConfig | undefined;
+    cloud?: CloudDeps | undefined;
+  },
   target: SyncTarget,
   requestId: unknown,
   /** What to do with what the target holds that nothing here wants; the target's own policy when left out. */
@@ -243,10 +268,9 @@ export async function planTarget(
     const config = adapter.validate(target.config);
     const desired = await desiredSnapshot(deps.db, deps.keys, target);
     refuse(adapter, desired.items);
-    // shortcut: one target type, whose config says whether it protects; a second type needs the adapter to say
     const violations = checkItems(
       desired.items,
-      { protected: config.protected === true },
+      { protected: isProtected(config) },
       deps.guardrails,
     );
     if (violations.length > 0) throw guardrailRefusal("The plan", violations);

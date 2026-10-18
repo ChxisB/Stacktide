@@ -11,7 +11,7 @@ import type { GuardrailConfig, PlanAction } from "@orch/sync";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
-import { noKeys } from "../connections";
+import { type CloudDeps, noKeys } from "../connections";
 import { guardPlugin } from "../guard";
 import { startApply } from "../sync-apply";
 import { ACTIONS, desiredSnapshot, planTarget, storePlan } from "../sync-plan";
@@ -113,7 +113,13 @@ export const syncRunRoutes = ({
   keys,
   logger,
   guardrails,
-}: RouteDeps & { keys?: KeyProvider; logger: Logger; guardrails?: GuardrailConfig | undefined }) =>
+  cloud,
+}: RouteDeps & {
+  keys?: KeyProvider;
+  logger: Logger;
+  guardrails?: GuardrailConfig | undefined;
+  cloud?: CloudDeps | undefined;
+}) =>
   new Elysia({
     prefix: "/organizations/:orgId/projects/:projectId/sync-targets/:targetId",
   })
@@ -127,9 +133,11 @@ export const syncRunRoutes = ({
         const target = await getSyncTarget(db, orgId, projectId, targetId);
         if (!target) throw notFound("Sync target");
 
-        const planned = await planTarget({ db, keys, logger, guardrails }, target, requestId).catch(
-          failing(logger)(set),
-        );
+        const planned = await planTarget(
+          { db, keys, logger, guardrails, cloud },
+          target,
+          requestId,
+        ).catch(failing(logger)(set));
         const run = await db.transaction(async (tx) => {
           const run = await storePlan(tx, target, planned);
           await audit(tx, {

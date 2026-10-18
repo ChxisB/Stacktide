@@ -21,6 +21,7 @@ import {
 import { type ItemInput, type PlanAction, type Remote, refId, SyncError } from "@orch/sync";
 import { z } from "zod";
 import { approvalRequired, protectedMappings } from "./apply-approval";
+import type { CloudDeps } from "./connections";
 import { desiredSnapshot, openTarget } from "./sync-plan";
 import type { JobContext, JobHandler } from "./worker";
 
@@ -131,7 +132,7 @@ function fatal(e: unknown): string | undefined {
  * them, and a line already `applied` is never written again.
  */
 async function applyLines(
-  deps: { db: Db; keys: KeyProvider; logger: Logger },
+  deps: { db: Db; keys: KeyProvider; logger: Logger; cloud?: CloudDeps | undefined },
   ctx: JobContext,
   run: SyncRun,
   target: SyncTarget,
@@ -229,7 +230,12 @@ async function end(
  * it writes are opened here, in this process, and never queued.
  */
 export const syncApplyHandler =
-  (deps: { db: Db; keys: KeyProvider; logger: Logger }): JobHandler =>
+  (deps: {
+    db: Db;
+    keys: KeyProvider;
+    logger: Logger;
+    cloud?: CloudDeps | undefined;
+  }): JobHandler =>
   async (ctx) => {
     const ids = payloadSchema.parse(ctx.payload);
     const { db } = deps;

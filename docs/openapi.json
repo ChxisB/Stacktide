@@ -17792,7 +17792,8 @@
                   "type": {
                     "type": "string",
                     "enum": [
-                      "gitlab-variables"
+                      "gitlab-variables",
+                      "aws-ssm"
                     ]
                   },
                   "connectionId": {

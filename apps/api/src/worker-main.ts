@@ -15,6 +15,7 @@ import {
   upsertSchedule,
   WEBHOOK_QUEUE,
 } from "@orch/db";
+import { awsEnv, awsFromEnv } from "@orch/sync";
 import { z } from "zod";
 import { auditForwardHandler } from "./audit-forward";
 import { auditPurgeHandler } from "./audit-purge";
@@ -35,68 +36,70 @@ import { toolImageEnv, toolImages } from "./tool-images";
 import { chain, createWorker, type JobHandler } from "./worker";
 
 const config = loadConfig(
-  z.object({
-    DATABASE_URL: z.string().min(1),
-    LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
-    WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
-    WORKER_POLL_MS: z.coerce.number().int().min(10).max(60_000).default(1_000),
-    ORCH_MASTER_KEYS: z.string().min(1).optional(),
-    /**
-     * Merge request plans (IAC-7) need these three: where CI jobs reach the API, the `aud` of the token
-     * they ask for (the API's own setting) and an image with `orch`, `curl` and `jq`. The pipeline
-     * generator checks their form; what it refuses is shown on the merge request.
-     */
-    ORCH_API_URL: z.string().min(1).optional(),
-    ORCH_CI_AUDIENCE: z.string().min(1).optional(),
-    ORCH_HELPER_IMAGE: z.string().min(1).optional(),
-    /** POL-3: the helper's tools and `conftest`, for the summary job of a stack that policy judges. Without it such a stack is not planned. */
-    ORCH_POLICY_IMAGE: z.string().min(1).optional(),
-    /**
-     * `orch plan` / `orch apply` in a merge request note (IAC-9) are run as the person who wrote them, with
-     * the roles their GitLab membership gives: the API's two settings for that. Without them nobody holds a
-     * role, so no command is answered.
-     */
-    GITLAB_URL: z.url().optional(),
-    GITLAB_MEMBERSHIP_TOKEN: z.string().min(1).optional(),
-    /** The image repository (no tag) per tool; Terragrunt has no default, and a stack with an `environment` needs one with `orch`. */
-    ...toolImageEnv,
-    ...guardrailEnv,
-    /** How often every sync target is checked for drift (SYNC-8); 0 switches the checks off. */
-    DRIFT_CHECK_SECONDS: z.coerce
-      .number()
-      .int()
-      .max(86_400)
-      .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
-      .default(900),
-    /** How often every project with stacks is looked at for a stack due its drift check (POL-1); 0 switches them off. */
-    STACK_DRIFT_CHECK_SECONDS: z.coerce
-      .number()
-      .int()
-      .max(86_400)
-      .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
-      .default(3600),
-    /** How often the audit events past their organization's retention are deleted (GOV-1); 0 switches the purge off. */
-    AUDIT_PURGE_SECONDS: z.coerce
-      .number()
-      .int()
-      .max(86_400)
-      .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
-      .default(3600),
-    /** How often change requests nobody decided in time are closed (GOV-2); 0 switches it off. */
-    CHANGE_REQUEST_EXPIRE_SECONDS: z.coerce
-      .number()
-      .int()
-      .max(86_400)
-      .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
-      .default(300),
-    /** How often the audit log is handed to the sinks that were told to take it (GOV-4); 0 switches forwarding off. */
-    AUDIT_FORWARD_SECONDS: z.coerce
-      .number()
-      .int()
-      .max(3600)
-      .refine((n) => n === 0 || n >= 10, "0 (off) or at least 10")
-      .default(30),
-  }),
+  z
+    .object({
+      DATABASE_URL: z.string().min(1),
+      LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+      WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(4),
+      WORKER_POLL_MS: z.coerce.number().int().min(10).max(60_000).default(1_000),
+      ORCH_MASTER_KEYS: z.string().min(1).optional(),
+      /**
+       * Merge request plans (IAC-7) need these three: where CI jobs reach the API, the `aud` of the token
+       * they ask for (the API's own setting) and an image with `orch`, `curl` and `jq`. The pipeline
+       * generator checks their form; what it refuses is shown on the merge request.
+       */
+      ORCH_API_URL: z.string().min(1).optional(),
+      ORCH_CI_AUDIENCE: z.string().min(1).optional(),
+      ORCH_HELPER_IMAGE: z.string().min(1).optional(),
+      /** POL-3: the helper's tools and `conftest`, for the summary job of a stack that policy judges. Without it such a stack is not planned. */
+      ORCH_POLICY_IMAGE: z.string().min(1).optional(),
+      /**
+       * `orch plan` / `orch apply` in a merge request note (IAC-9) are run as the person who wrote them, with
+       * the roles their GitLab membership gives: the API's two settings for that. Without them nobody holds a
+       * role, so no command is answered.
+       */
+      GITLAB_URL: z.url().optional(),
+      GITLAB_MEMBERSHIP_TOKEN: z.string().min(1).optional(),
+      /** The image repository (no tag) per tool; Terragrunt has no default, and a stack with an `environment` needs one with `orch`. */
+      ...toolImageEnv,
+      ...guardrailEnv,
+      /** How often every sync target is checked for drift (SYNC-8); 0 switches the checks off. */
+      DRIFT_CHECK_SECONDS: z.coerce
+        .number()
+        .int()
+        .max(86_400)
+        .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
+        .default(900),
+      /** How often every project with stacks is looked at for a stack due its drift check (POL-1); 0 switches them off. */
+      STACK_DRIFT_CHECK_SECONDS: z.coerce
+        .number()
+        .int()
+        .max(86_400)
+        .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
+        .default(3600),
+      /** How often the audit events past their organization's retention are deleted (GOV-1); 0 switches the purge off. */
+      AUDIT_PURGE_SECONDS: z.coerce
+        .number()
+        .int()
+        .max(86_400)
+        .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
+        .default(3600),
+      /** How often change requests nobody decided in time are closed (GOV-2); 0 switches it off. */
+      CHANGE_REQUEST_EXPIRE_SECONDS: z.coerce
+        .number()
+        .int()
+        .max(86_400)
+        .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
+        .default(300),
+      /** How often the audit log is handed to the sinks that were told to take it (GOV-4); 0 switches forwarding off. */
+      AUDIT_FORWARD_SECONDS: z.coerce
+        .number()
+        .int()
+        .max(3600)
+        .refine((n) => n === 0 || n >= 10, "0 (off) or at least 10")
+        .default(30),
+    })
+    .and(awsEnv),
 );
 const logger = createLogger({ level: config.LOG_LEVEL });
 
@@ -113,6 +116,8 @@ if (config.ORCH_MASTER_KEYS !== undefined) {
 const db = createDb(config.DATABASE_URL, config.WORKER_CONCURRENCY + 2);
 
 const guardrails = guardrailsOf(config);
+// the platform's own AWS identity, for the targets whose connection is a role to assume
+const cloud = { aws: () => awsFromEnv(config) };
 
 // Later features register their handlers here, keyed by queue.
 const handlers: Record<string, JobHandler> = {};
@@ -136,10 +141,10 @@ await upsertSchedule(db, {
 });
 // A job that opens secrets needs the master keys here too: without them its queue is not served and its jobs wait.
 if (keys) {
-  handlers[SYNC_APPLY] = syncApplyHandler({ db, keys, logger });
-  handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger, guardrails });
+  handlers[SYNC_APPLY] = syncApplyHandler({ db, keys, logger, cloud });
+  handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger, guardrails, cloud });
   handlers[DRIFT_TICK_QUEUE] = driftTickHandler({ db });
-  handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger, guardrails });
+  handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger, guardrails, cloud });
   // POL-2: the sink's address is sealed, so delivering needs the keys
   handlers[NOTIFY_QUEUE] = notifyDeliverHandler({ db, keys });
   // GOV-4: so is the collector's; off means off, with no handler for a job that is already waiting

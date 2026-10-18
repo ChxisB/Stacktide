@@ -5,6 +5,8 @@ import { createGitlab, GitlabError, type GitlabErrorKind } from "@orch/gitlab";
 import {
   AWS_ASSUME_ROLE,
   type AwsCreds,
+  type AwsDeps,
+  assumedSession,
   awsConfigSchema,
   type Check,
   checkAwsAssumeRole,
@@ -102,6 +104,19 @@ export const awsUnavailable = () =>
     "The platform has no AWS identity (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) to assume roles with",
   );
 
+/** A stored configuration the schema no longer accepts is the operator's to fix, not a 500. */
+const storedConfig = <T>(schema: z.ZodType<T>, stored: unknown): T => {
+  const parsed = schema.safeParse(stored);
+  if (!parsed.success) {
+    throw new DomainError(
+      "connection_config",
+      422,
+      "The stored configuration of this connection is not valid",
+    );
+  }
+  return parsed.data;
+};
+
 /** Checks a stored or about-to-be-stored connection of one of the non-GitLab types against its system. */
 export async function checkCloud(
   connection: { type: string; config: Record<string, unknown> },
@@ -109,18 +124,7 @@ export async function checkCloud(
   cloud: CloudDeps = {},
 ): Promise<Check> {
   const fetch = cloud.fetch ?? globalThis.fetch;
-  // a stored configuration the schema no longer accepts is the operator's to fix, not a 500
-  const config = <T>(schema: z.ZodType<T>) => {
-    const parsed = schema.safeParse(connection.config);
-    if (!parsed.success) {
-      throw new DomainError(
-        "connection_config",
-        422,
-        "The stored configuration of this connection is not valid",
-      );
-    }
-    return parsed.data;
-  };
+  const config = <T>(schema: z.ZodType<T>) => storedConfig(schema, connection.config);
   switch (connection.type) {
     case AWS_ASSUME_ROLE: {
       const base = cloud.aws?.();
@@ -194,4 +198,27 @@ export async function openGitlabConnection(
   }
   const { baseUrl } = z.object({ baseUrl: z.string() }).parse(opened.connection.config);
   return { connection: opened.connection, baseUrl, token: opened.token };
+}
+
+/**
+ * How to reach AWS as the role of an `aws_assume_role` connection: the credentials come from the
+ * platform's own identity assuming the role (with the connection's external ID), asked for when first
+ * needed and again before they lapse. Nothing is assumed here; the secret stays in the closure.
+ */
+export async function openAwsSession(
+  deps: { db: Db; keys?: KeyProvider; logger: Logger; cloud?: CloudDeps | undefined },
+  orgId: string,
+  connectionId: string,
+  requestId: unknown,
+): Promise<{ aws: AwsDeps; session: () => Promise<AwsCreds> }> {
+  const { connection, token } = await openAnyConnection(deps, orgId, connectionId, requestId);
+  // The type is free-form: another kind's secret must not be used as an external ID.
+  if (connection.type !== AWS_ASSUME_ROLE) {
+    throw new DomainError("connection_type", 422, "This is not an AWS connection");
+  }
+  const base = deps.cloud?.aws?.();
+  if (!base) throw awsUnavailable();
+  const role = storedConfig(awsConfigSchema, connection.config);
+  const aws: AwsDeps = { fetch: deps.cloud?.fetch ?? globalThis.fetch };
+  return { aws, session: assumedSession(aws, base, { ...role, externalId: token }) };
 }

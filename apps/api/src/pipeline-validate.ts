@@ -9,20 +9,22 @@ import {
 } from "@orch/pipelines";
 import {
   checkScope,
-  GITLAB_VARIABLES,
   type GuardrailConfig,
-  parseGitlabVariablesConfig,
+  isProtected,
   SyncError,
+  TARGET_TYPES,
+  type TargetType,
 } from "@orch/sync";
 
 const TARGETS_PAGE = 100;
+
+const isKnown = (type: string): type is TargetType => Object.hasOwn(TARGET_TYPES, type);
 
 /**
  * The guardrails the environments break (POL-4): an environment the project's targets sync to a
  * production scope, on a target that does not protect its variables. A pipeline runs on any branch
  * and reads what is not protected, so its production variables would be open to every one of them.
  * The pipeline does not say which variables are secrets, so only the rule that holds for all of them applies.
- * shortcut: one target type; a second type needs the adapter to say whether it protects.
  */
 async function guardrailViolations(
   db: Db,
@@ -40,10 +42,10 @@ async function guardrailViolations(
       limit: TARGETS_PAGE,
     });
     for (const target of page) {
-      if (target.type !== GITLAB_VARIABLES) continue;
+      if (!isKnown(target.type)) continue;
       let protectedTarget: boolean;
       try {
-        protectedTarget = parseGitlabVariablesConfig(target.config).protected === true;
+        protectedTarget = isProtected(TARGET_TYPES[target.type].validate(target.config));
       } catch (e) {
         // a target whose config is refused cannot sync anything, so it breaks nothing
         if (e instanceof SyncError) continue;

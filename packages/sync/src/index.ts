@@ -1,4 +1,6 @@
 export * from "./aws";
+export { AwsApiError, assumedSession } from "./aws-json";
+export * from "./aws-ssm";
 export * from "./errors";
 export * from "./fake";
 export * from "./gitlab-variables";

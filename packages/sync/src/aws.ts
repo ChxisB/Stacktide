@@ -1,6 +1,14 @@
 import { createHash, createHmac } from "node:crypto";
 import { z } from "zod";
-import { type Check, CloudError, type Fetch, failure, reasonOf, send } from "./http";
+import {
+  type Check,
+  type CheckReason,
+  CloudError,
+  type Fetch,
+  failure,
+  reasonOf,
+  send,
+} from "./http";
 
 /** The connection type, as `connections.type` stores it. */
 export const AWS_ASSUME_ROLE = "aws_assume_role";
@@ -131,16 +139,21 @@ export interface AwsDeps {
 }
 
 const CREDENTIAL_ERRORS =
-  /InvalidClientTokenId|SignatureDoesNotMatch|Expired|UnrecognizedClient|MissingAuthentication|IncompleteSignature/;
-const THROTTLED = /Throttl|RequestLimitExceeded|TooManyRequests/;
+  /InvalidClientTokenId|SignatureDoesNotMatch|InvalidSignature|Expired|UnrecognizedClient|MissingAuthentication|IncompleteSignature/;
+const THROTTLED = /Throttl|RequestLimitExceeded|TooManyRequests|TooManyUpdates/;
+// the JSON APIs answer a refusal with a 400, so the status alone would call it `invalid`
+const REFUSED = /AccessDenied|UnauthorizedOperation|NotAuthorized/;
 
-/** AWS names the failure in the body; the status alone cannot tell a bad key from a refused role. */
-function reasonOfAws(status: number, text: string) {
-  const code = /<Code>([A-Za-z]+)<\/Code>/.exec(text)?.[1] ?? "";
+/** AWS names the failure; the status alone cannot tell a bad key from a refused role. */
+export function reasonOfCode(status: number, code: string): CheckReason {
   if (CREDENTIAL_ERRORS.test(code)) return "unauthorized";
   if (THROTTLED.test(code)) return "rate_limited";
+  if (REFUSED.test(code)) return "forbidden";
   return reasonOf(status);
 }
+
+const reasonOfAws = (status: number, text: string) =>
+  reasonOfCode(status, /<Code>([A-Za-z]+)<\/Code>/.exec(text)?.[1] ?? "");
 
 /** One call of the STS query API, signed, and the text of a 200 answer. */
 async function sts(

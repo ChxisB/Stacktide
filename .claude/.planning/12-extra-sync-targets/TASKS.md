@@ -4,7 +4,7 @@
 Do: extend `connections` types (aws-assume-role, kubernetes, vault-approle) with validation and a connection test; write the ADR covering the invariant-3 exception and the runner-side alternative. **Human gate + `/security-review`.**
 Done when: ADR approved; tests prove secrets are encrypted at rest and never returned.
 
-### EXT-2 - AWS SSM Parameter Store adapter  `[ ]` M - deps: EXT-1, SYNC-1
+### EXT-2 - AWS SSM Parameter Store adapter  `[x]` M - deps: EXT-1, SYNC-1
 Do: adapter with path prefix mapping, SecureString for secrets, tags for ownership (so `prune` only touches managed parameters).
 Done when: passes the conformance suite (emulator or fake); prune never deletes unmanaged parameters.
 

@@ -341,6 +341,32 @@ describe("the guardrails (POL-4)", () => {
     expect(off.ok).toBe(true);
   });
 
+  test("a target of any type is judged by what its config says, an AWS one too", async () => {
+    const w = await world();
+    const connection = await createConnection(t.db, keys, {
+      organizationId: w.org.id,
+      type: "aws_assume_role",
+      name: "aws",
+      config: { roleArn: "arn:aws:iam::111122223333:role/orch", region: "eu-west-1" },
+      token: CANARY,
+    });
+    const ssm = (name: string, config: Record<string, unknown>) =>
+      createSyncTarget(t.db, {
+        organizationId: w.org.id,
+        projectId: w.project.id,
+        name,
+        type: "aws-ssm",
+        connectionId: connection.id,
+        config: { region: "eu-west-1", prefix: "/app", ...config },
+        environmentMapping: { prod: "production" },
+      });
+    await ssm("loose", {});
+    await ssm("tight", { protected: true });
+    expect((await check(w)).violations.map((v) => v.message)).toEqual([
+      'environment "prod" is synced to the production scope "production" by the target "loose", which does not protect its variables',
+    ]);
+  });
+
   test("a target whose config the adapter refuses breaks nothing", async () => {
     const w = await world();
     const bad = await w.target({ prod: "production" });

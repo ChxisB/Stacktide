@@ -11,6 +11,7 @@ import {
 import type { GuardrailConfig } from "@orch/sync";
 import { z } from "zod";
 import { protectedMappings } from "./apply-approval";
+import type { CloudDeps } from "./connections";
 import { startApply } from "./sync-apply";
 import { planTarget, storePlan } from "./sync-plan";
 import type { JobHandler } from "./worker";
@@ -43,6 +44,7 @@ export const syncAutoHandler =
     keys: KeyProvider;
     logger: Logger;
     guardrails?: GuardrailConfig | undefined;
+    cloud?: CloudDeps | undefined;
   }): JobHandler =>
   async (ctx) => {
     const ids = payloadSchema.parse(ctx.payload);
