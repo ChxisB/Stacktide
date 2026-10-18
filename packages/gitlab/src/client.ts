@@ -27,6 +27,47 @@ export interface ClientOptions {
 
 export type Query = Record<string, string | number | boolean | undefined>;
 
+/** What an instance last said about its rate limit (`RateLimit-*` headers). */
+export interface RateLimitSample {
+  /** `host[:port]` of the instance, never a path or credentials. */
+  host: string;
+  remaining: number;
+  /** Absent when the instance sent no `RateLimit-Limit`. */
+  limit?: number;
+  observedAt: Date;
+}
+
+/** Instances remembered: a base URL is an organization's to choose, so this is bounded. */
+export const MAX_RATE_LIMIT_HOSTS = 20;
+const samples = new Map<string, RateLimitSample>();
+
+/**
+ * The last rate-limit sample of every instance this process has talked to.
+ *
+ * shortcut: per process (the API's own calls; the worker's are in the worker), no per-token split;
+ * upgrade when a scraper needs the worker's view too.
+ */
+export const gitlabRateLimits = (): RateLimitSample[] => [...samples.values()];
+/** Test seam. */
+export const resetRateLimits = () => samples.clear();
+
+const count = (v: string | null) =>
+  v !== null && /^\d{1,15}$/.test(v.trim()) ? Number(v) : undefined;
+
+function noteRateLimit(host: string, headers: Headers) {
+  const remaining = count(headers.get("ratelimit-remaining"));
+  if (remaining === undefined || (!samples.has(host) && samples.size >= MAX_RATE_LIMIT_HOSTS)) {
+    return;
+  }
+  const limit = count(headers.get("ratelimit-limit"));
+  samples.set(host, {
+    host,
+    remaining,
+    ...(limit === undefined ? {} : { limit }),
+    observedAt: new Date(),
+  });
+}
+
 export interface RequestOptions {
   query?: Query;
   body?: unknown;
@@ -181,6 +222,7 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
           signal: AbortSignal.timeout(timeoutMs),
         });
         const text = await res.text();
+        noteRateLimit(base.host, res.headers);
         if (res.ok) return { status: res.status, headers: res.headers, text };
         const said =
           res.status >= 300 && res.status < 400

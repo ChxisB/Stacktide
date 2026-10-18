@@ -18,6 +18,12 @@
         "operationId": "getReady"
       }
     },
+    "/metrics": {
+      "get": {
+        "x-public": "scraped by Prometheus with the bearer token ORCH_METRICS_TOKEN; answers 404 without one",
+        "operationId": "getMetrics"
+      }
+    },
     "/auth/login": {
       "get": {
         "x-public": "starts the sign-in: the caller has no session yet",

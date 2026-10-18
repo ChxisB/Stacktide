@@ -8,7 +8,7 @@ Done when: the image starts, `/health` is green and `migrate` is idempotent; ima
 Do: `deploy/compose.yml` (api, worker, postgres, migrate), env reference table, first-run guide (GitLab OAuth app, master key generation).
 Done when: following the doc on a clean machine yields a working login (smoke script included).
 
-### OPS-3 - Metrics  `[ ]` M - deps: API-3, API-6
+### OPS-3 - Metrics  `[x]` M - deps: API-3, API-6
 Do: `/metrics` (auth-protected or internal-only) with the metrics in the SPEC; labels never contain ids of secrets or values.
 Done when: tests assert metric names/labels and a label-cardinality guard.
 

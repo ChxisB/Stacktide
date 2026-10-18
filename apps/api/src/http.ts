@@ -15,7 +15,16 @@ const SAFE_ID = /^[\w.-]{1,128}$/;
  * Request id, per-request logger, access log and the error -> problem+json mapping, applied to
  * every route (also those of mounted plugins).
  */
-export const http = (logger: Logger) => {
+export const http = (
+  logger: Logger,
+  /** Told about every finished request (see `requestMetrics`). */
+  observe?: (m: {
+    method: string;
+    route: string | undefined;
+    status: number;
+    seconds: number;
+  }) => void,
+) => {
   // Keyed by Request so even routing failures (unknown route) have an id and a logger.
   const states = new WeakMap<Request, RequestState>();
   const stateOf = (request: Request): RequestState => {
@@ -96,16 +105,19 @@ export const http = (logger: Logger) => {
           return;
         return problem(code, `http_${code}`, stateOf(request).id, "Request failed");
       })
-      .onAfterResponse({ as: "global" }, ({ request, set, response }) => {
+      .onAfterResponse({ as: "global" }, ({ request, set, response, route }) => {
         const { id, log, startedAt } = stateOf(request);
-        const status = response instanceof Response ? response.status : set.status;
+        const raw = response instanceof Response ? response.status : set.status;
+        const status = typeof raw === "number" ? raw : 200;
+        const elapsed = performance.now() - startedAt;
         log.info("request", {
           method: request.method,
           path: new URL(request.url).pathname,
-          status: typeof status === "number" ? status : 200,
-          duration_ms: Math.round(performance.now() - startedAt),
+          status,
+          duration_ms: Math.round(elapsed),
           request_id: id,
         });
+        observe?.({ method: request.method, route, status, seconds: elapsed / 1000 });
       })
   );
 };

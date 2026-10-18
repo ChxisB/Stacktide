@@ -16,6 +16,7 @@ export * from "./connections";
 export * from "./imports";
 export * from "./jobs";
 export * from "./merge-request-notes";
+export * from "./metrics";
 export * from "./notifications";
 export * from "./pg-error";
 export * from "./pipeline-configs";

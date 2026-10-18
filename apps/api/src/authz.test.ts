@@ -283,6 +283,7 @@ describe("coverage", () => {
       "GET /auth/login",
       "GET /auth/me",
       "GET /health",
+      "GET /metrics",
       "GET /ready",
       "POST /auth/ci/exchange",
       "POST /auth/cli/token",

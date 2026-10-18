@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createLogger } from "@orch/core";
-import { createGitlabClient, GitlabError, type GitlabErrorKind } from "./index";
+import {
+  createGitlabClient,
+  GitlabError,
+  type GitlabErrorKind,
+  gitlabRateLimits,
+  MAX_RATE_LIMIT_HOSTS,
+  resetRateLimits,
+} from "./index";
 
 const TOKEN = "glpat-SECRET-CANARY-1234567890";
 
@@ -503,5 +510,74 @@ describe("the token never leaks", () => {
     expect(retry).toMatchObject({ method: "GET", status: 503, attempt: 1 });
     expect(lines.join("\n")).not.toContain("private-name");
     expect(lines.join("\n")).not.toContain(TOKEN);
+  });
+});
+
+describe("rate limit samples", () => {
+  const limited = (remaining: string, limit?: string) => () =>
+    Response.json(
+      {},
+      {
+        headers: {
+          "ratelimit-remaining": remaining,
+          ...(limit ? { "ratelimit-limit": limit } : {}),
+        },
+      },
+    );
+  const hostOf = (url: string) => new URL(url).host;
+
+  test("remembers the last remaining and limit per instance, from successes and failures alike", async () => {
+    resetRateLimits();
+    const s = setup(
+      (_req, n) =>
+        n === 1
+          ? limited("17", "2000")()
+          : Response.json(
+              { message: "slow down" },
+              { status: 429, headers: { "ratelimit-remaining": "0", "ratelimit-limit": "2000" } },
+            ),
+      { maxRetries: 0 },
+    );
+    await s.client.request("GET", "/version");
+    expect(gitlabRateLimits()).toMatchObject([{ host: hostOf(s.url), remaining: 17, limit: 2000 }]);
+    await s.client.request("GET", "/version").catch(() => undefined);
+    expect(gitlabRateLimits()).toMatchObject([{ host: hostOf(s.url), remaining: 0, limit: 2000 }]);
+  });
+
+  test("ignores a header that is not a count, and keeps no limit when none is sent", async () => {
+    resetRateLimits();
+    const s = setup(limited("lots"));
+    await s.client.request("GET", "/version");
+    expect(gitlabRateLimits()).toEqual([]);
+    const t = setup(limited("5"));
+    await t.client.request("GET", "/version");
+    expect(gitlabRateLimits().map((r) => ({ ...r, observedAt: undefined }))).toEqual([
+      { host: hostOf(t.url), remaining: 5, observedAt: undefined },
+    ]);
+  });
+
+  test("holds at most MAX_RATE_LIMIT_HOSTS instances, and still updates the ones it has", async () => {
+    resetRateLimits();
+    // each answer says one less than the one before
+    const all = Array.from({ length: MAX_RATE_LIMIT_HOSTS + 3 }, () =>
+      setup((_req, n) => limited(String(100 - n))()),
+    );
+    for (const s of all) await s.client.request("GET", "/version");
+    expect(gitlabRateLimits()).toHaveLength(MAX_RATE_LIMIT_HOSTS);
+    const last = all.at(-1);
+    const first = all[0];
+    if (!first || !last) throw new Error("no instance");
+    expect(gitlabRateLimits().map((r) => r.host)).not.toContain(hostOf(last.url));
+    await first.client.request("GET", "/version");
+    expect(gitlabRateLimits().find((r) => r.host === hostOf(first.url))?.remaining).toBe(98);
+    expect(gitlabRateLimits()).toHaveLength(MAX_RATE_LIMIT_HOSTS);
+    resetRateLimits();
+  });
+
+  test("carries no path, query or token", async () => {
+    resetRateLimits();
+    const s = setup(limited("5", "10"));
+    await s.client.request("GET", "/projects/42/secret-thing", { query: { search: "leak" } });
+    expect(JSON.stringify(gitlabRateLimits())).not.toMatch(/secret-thing|leak|glpat/);
   });
 });

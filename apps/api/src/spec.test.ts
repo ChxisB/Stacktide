@@ -14,7 +14,7 @@ test("every API operation documents its guard, audit action and the problems it 
   const ops = Object.entries(spec.paths)
     .filter(
       ([path]) =>
-        !["/health", "/ready"].includes(path) &&
+        !["/health", "/ready", "/metrics"].includes(path) &&
         !path.startsWith("/auth/") &&
         !path.startsWith("/webhooks/"),
     )

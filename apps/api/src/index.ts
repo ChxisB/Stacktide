@@ -7,6 +7,7 @@ import { createApp } from "./app";
 import { accessEnv, authEnv, authFromEnv, ciFromEnv, rolesFromEnv } from "./auth-config";
 import { callerPrincipal } from "./credentials";
 import { guardrailEnv, guardrailsOf } from "./guardrails";
+import { metricsEnv } from "./metrics";
 import { devPrincipal } from "./principal";
 import { toolImageEnv, toolImages } from "./tool-images";
 
@@ -24,6 +25,7 @@ const config = loadConfig(
       // Image repository per tool, for the pipeline an apply starts (as the worker's).
       ...toolImageEnv,
       ...guardrailEnv,
+      ...metricsEnv,
     })
     .and(authEnv)
     .and(accessEnv)
@@ -80,6 +82,7 @@ const app = createApp({
   keys,
   images: toolImages(config),
   guardrails: guardrailsOf(config),
+  metrics: config.ORCH_METRICS_TOKEN ? { token: config.ORCH_METRICS_TOKEN } : undefined,
   cloud: { aws: () => awsFromEnv(config) },
   loopbackConnections: ["development", "test"].includes(config.NODE_ENV.toLowerCase()),
 }).listen({
