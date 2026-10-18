@@ -234,6 +234,7 @@ describe("coverage", () => {
       [`POST ${P}/:projectId/runs`]: "run.create",
       [`GET ${P}/:projectId/runs/:runId`]: "run.read",
       [`POST ${P}/:projectId/runs/:runId/plan-summary`]: "run.summary",
+      [`POST ${P}/:projectId/runs/:runId/apply`]: "run.apply",
       [`GET ${O}/:orgId/connections`]: "connection.read",
       [`POST ${O}/:orgId/connections`]: "connection.create",
       [`POST ${O}/:orgId/connections/:connectionId/test`]: "connection.test",
@@ -294,7 +295,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(93);
+    expect(routes.length).toBe(94);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

@@ -60,6 +60,8 @@ const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,254}$/;
 const AUDIENCE = /^[\x21-\x7e]{1,255}$/;
 
 const EXPIRE_IN = "1 week";
+/** How long a plan stays applicable: `EXPIRE_IN` in milliseconds. Its artifact is gone after that. */
+export const PLAN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 // GitLab's limit on `needs` entries per job.
 const MAX_NEEDS = 50;
 // shortcut: the plan wait for the state lock is fixed; upgrade when a stack needs another one.

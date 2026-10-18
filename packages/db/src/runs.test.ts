@@ -1,10 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { canTransition, RUN_STATES, type RunState } from "@orch/core";
+import { envKeyProvider } from "@orch/crypto";
 import { and, eq } from "drizzle-orm";
+import { createConnection, deleteConnection } from "./connections";
 import { pgConstraint } from "./pg-error";
+import { recordPipelineRun } from "./pipeline-runs";
 import { createOrganization, createProject, deleteProject } from "./repo";
 import {
+  applyPipelinesOfRun,
   attachRunPipeline,
+  connectionOfRun,
   createRun,
   getPlanResources,
   getRun,
@@ -747,5 +752,105 @@ describe("merge request runs", () => {
     await plan(w, stale.id, 701);
     expect(await planPipelinesOfRun(t.db, w.org.id, w.project.id, stale.id)).toEqual([701]);
     expect(await planPipelinesOfRun(t.db, w.org.id, w.project.id, crypto.randomUUID())).toEqual([]);
+  });
+});
+
+describe("the apply pipelines of a run", () => {
+  test("are only the ones that apply, oldest first, and only the run's own", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["a", "b"]));
+    const other = await createRun(t.db, input(w, ["a"]));
+    const attach = (runId: string, id: number, action: "plan" | "apply") =>
+      attachRunPipeline(t.db, {
+        organizationId: w.org.id,
+        projectId: w.project.id,
+        runId,
+        gitlabPipelineId: id,
+        action,
+      });
+    await attach(run.id, 802, "apply");
+    await attach(run.id, 800, "plan");
+    await attach(run.id, 801, "apply");
+    await attach(other.id, 803, "apply");
+    expect(await applyPipelinesOfRun(t.db, w.org.id, w.project.id, run.id)).toEqual([801, 802]);
+    expect(await applyPipelinesOfRun(t.db, w.org.id, w.project.id, other.id)).toEqual([803]);
+    expect(await applyPipelinesOfRun(t.db, w.org.id, w.project.id, crypto.randomUUID())).toEqual(
+      [],
+    );
+  });
+});
+
+describe("the connection of a run", () => {
+  const keys = envKeyProvider(`k1:${Buffer.alloc(32, 1).toString("base64")}`);
+  const read = (w: Awaited<ReturnType<typeof world>>, id: number, connectionId: string, at = 1) =>
+    recordPipelineRun(t.db, {
+      organizationId: w.org.id,
+      projectId: w.project.id,
+      connectionId,
+      gitlabPipelineId: id,
+      iid: id,
+      status: "success",
+      ref: "feature/net",
+      sha: SHA,
+      webUrl: `https://gitlab.example.com/p/-/pipelines/${id}`,
+      failureReason: null,
+      failedJob: null,
+      observedAt: new Date(at * 1000),
+    });
+  const connection = (w: Awaited<ReturnType<typeof world>>, name: string) =>
+    createConnection(t.db, keys, {
+      organizationId: w.org.id,
+      type: "gitlab",
+      name,
+      token: "glpat-SECRET-TOKEN-0123456789",
+    }).then((c) => c.id);
+
+  test("is the one that last read a pipeline of the run, and none before one was read", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["a"]));
+    expect(await connectionOfRun(t.db, w.org.id, w.project.id, run.id)).toBeUndefined();
+    await attachRunPipeline(t.db, {
+      organizationId: w.org.id,
+      projectId: w.project.id,
+      runId: run.id,
+      gitlabPipelineId: 900,
+      action: "plan",
+    });
+    // attached, but not read yet
+    expect(await connectionOfRun(t.db, w.org.id, w.project.id, run.id)).toBeUndefined();
+    const first = await connection(w, "first");
+    const second = await connection(w, "second");
+    await read(w, 900, first, 1);
+    expect(await connectionOfRun(t.db, w.org.id, w.project.id, run.id)).toBe(first);
+    // a later pipeline of the run read through another connection wins
+    await attachRunPipeline(t.db, {
+      organizationId: w.org.id,
+      projectId: w.project.id,
+      runId: run.id,
+      gitlabPipelineId: 901,
+      action: "apply",
+    });
+    await read(w, 901, second, 2);
+    expect(await connectionOfRun(t.db, w.org.id, w.project.id, run.id)).toBe(second);
+  });
+
+  test("is gone with the connection, and is never another project's or organization's", async () => {
+    const w = await world();
+    const other = await world();
+    const run = await createRun(t.db, input(w, ["a"]));
+    await attachRunPipeline(t.db, {
+      organizationId: w.org.id,
+      projectId: w.project.id,
+      runId: run.id,
+      gitlabPipelineId: 910,
+      action: "plan",
+    });
+    const only = await connection(w, "only");
+    await read(w, 910, only);
+    expect(await connectionOfRun(t.db, other.org.id, w.project.id, run.id)).toBeUndefined();
+    expect(await connectionOfRun(t.db, w.org.id, other.project.id, run.id)).toBeUndefined();
+    expect(await connectionOfRun(t.db, w.org.id, w.project.id, run.id)).toBe(only);
+    await deleteConnection(t.db, w.org.id, only);
+    expect(await connectionOfRun(t.db, w.org.id, w.project.id, run.id)).toBeUndefined();
   });
 });

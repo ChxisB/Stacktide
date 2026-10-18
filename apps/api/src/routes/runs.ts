@@ -1,6 +1,8 @@
 import { DomainError, type Logger, RUN_STATES } from "@orch/core";
+import type { KeyProvider } from "@orch/crypto";
 import {
   auditedStacks,
+  connectionOfRun,
   createRun,
   getProject,
   getRun,
@@ -10,10 +12,15 @@ import {
   type RunWithStacks,
   storePlanSummary,
 } from "@orch/db";
+import { GitlabError } from "@orch/gitlab";
+import type { Tool } from "@orch/iac";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
+import { noKeys, WHY } from "../connections";
 import { guardPlugin } from "../guard";
+import { applyRun } from "../run-apply";
+import { gitlabFor } from "./pipeline";
 import {
   iso,
   notFound,
@@ -127,6 +134,33 @@ const summaryBody = z.strictObject({
     .max(MAX_LISTED),
 });
 
+const applyBody = z.strictObject({
+  /** Names of stacks of the run; the stacks that are planned when left out. */
+  stacks: z
+    .array(z.string().min(1).max(63))
+    .min(1)
+    .max(MAX_RUN_STACKS)
+    .refine((names) => new Set(names).size === names.length, "a stack is named twice")
+    .optional(),
+});
+const sealed = { 500: z.any(), 502: z.any(), 503: z.any() } as const;
+
+/** What GitLab's refusal of the apply is to the caller: fixed words, never GitLab's own text. */
+const applyProblem = (e: unknown) => {
+  if (!(e instanceof GitlabError)) return e;
+  if (e.kind === "not_found") {
+    return new DomainError(
+      "gitlab_gone",
+      422,
+      "GitLab no longer has this merge request or its repository",
+    );
+  }
+  if (e.kind === "forbidden" || e.kind === "invalid") {
+    return new DomainError("gitlab_refused", 422, "GitLab refused the connection's request");
+  }
+  return new DomainError("gitlab_failed", 502, WHY[e.kind]);
+};
+
 // One message for every way the caller can fail to be the stack's summary job: which of them it was says too much.
 const notTheJob = () =>
   new DomainError("forbidden", 403, "Not allowed: only the summary job of this stack may post it");
@@ -138,7 +172,17 @@ const notTheJob = () =>
  * stack's counts and resource addresses to `/:runId/plan-summary` (`run.summary`): only the job that
  * ingest recorded as that stack's summary job, which a CI token's scope alone does not make it.
  */
-export const runRoutes = ({ db, principal, logger }: RouteDeps & { logger: Logger }) =>
+export const runRoutes = ({
+  db,
+  principal,
+  logger,
+  keys,
+  images,
+}: RouteDeps & {
+  logger: Logger;
+  keys?: KeyProvider;
+  images?: Partial<Record<Tool, string>> | undefined;
+}) =>
   new Elysia({ prefix: "/organizations/:orgId/projects/:projectId/runs" })
     .use(auditPlugin(principal))
     .use(guardPlugin)
@@ -291,5 +335,53 @@ export const runRoutes = ({ db, principal, logger }: RouteDeps & { logger: Logge
         response: { 204: z.undefined(), ...writeErrors, 413: problemSchema },
         audit: "run.summary",
         guard: "run.summary",
+      },
+    )
+    .post(
+      "/:runId/apply",
+      async ({ params: { orgId, projectId, runId }, body, audit, set }) => {
+        if (!keys) throw noKeys();
+        const project = await getProject(db, orgId, projectId);
+        if (!project) throw notFound("Project");
+        if (project.gitlabProjectId === null) {
+          throw new DomainError("not_linked", 422, "This project was not imported from GitLab");
+        }
+        const run = await getRun(db, orgId, projectId, runId);
+        if (!run) throw notFound("Run");
+        const connectionId = await connectionOfRun(db, orgId, projectId, runId);
+        if (connectionId === undefined) {
+          throw new DomainError(
+            "no_connection",
+            409,
+            "The connection that read this run's pipelines is not known",
+          );
+        }
+        try {
+          const gitlab = await gitlabFor(
+            { db, keys, logger },
+            orgId,
+            connectionId,
+            set.headers["x-request-id"],
+          );
+          await applyRun({ db, log: logger, images }, gitlab, {
+            at: { organizationId: orgId, projectId, gitlabProjectId: project.gitlabProjectId },
+            run,
+            stacks: body.stacks,
+            when: "command",
+            audit: (tx, event) => audit(tx, event),
+          });
+        } catch (error) {
+          throw applyProblem(error);
+        }
+        set.status = 202;
+        return dto((await getRun(db, orgId, projectId, runId)) ?? run);
+      },
+      {
+        params: params.extend({ runId: z.uuid() }),
+        body: applyBody,
+        parse: "json",
+        response: { 202: runSchema, ...writeErrors, ...sealed },
+        audit: "run.apply",
+        guard: "run.apply",
       },
     );

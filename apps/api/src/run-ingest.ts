@@ -7,6 +7,7 @@ import {
   type RunState,
 } from "@orch/core";
 import {
+  applyPipelinesOfRun,
   describeError,
   getRun,
   linkedProjects,
@@ -158,6 +159,13 @@ export const runEventHandler =
 
     const at = { organizationId: e.organizationId, projectId: project.id, runId: run.id };
     const byStack = jobsByStack(jobs);
+    // A stack with no job in an apply pipeline may be applying in another one of the run's. Only
+    // when this is the run's one apply pipeline does a missing job mean it never ran.
+    // shortcut: with several, a stack whose own pipeline made no job stays `applying` (and holds
+    // its mutex); upgrade by recording the pipeline that claimed each stack.
+    const alone =
+      action !== "apply" ||
+      (await applyPipelinesOfRun(deps.db, at.organizationId, at.projectId, at.runId)).length === 1;
     for (const stack of run.stacks) {
       const mine = byStack.get(stack.stack) ?? {};
       if (action === "plan") {
@@ -167,7 +175,7 @@ export const runEventHandler =
           summaryJobId: ids.summaryJobId === stack.summaryJobId ? undefined : ids.summaryJobId,
         });
       }
-      const outcome = outcomeFor(action, mine, status);
+      const outcome = outcomeFor(action, mine, status, alone);
       if (outcome) await walk(deps, at, stack, outcome, action === "plan" ? PLAN_FROM : APPLY_FROM);
     }
     ctx.log.debug("run event handled", { action, status, jobs: jobs.length });
@@ -215,7 +223,19 @@ async function readPipeline(gitlab: Gitlab, project: number, root: number) {
   return { status, jobs };
 }
 
-function outcomeFor(action: RunAction, mine: StackJobs, pipelineStatus: string) {
-  if (action === "apply") return mine.apply ? outcomeOfJob("apply", mine.apply.status) : undefined;
+function outcomeFor(
+  action: RunAction,
+  mine: StackJobs,
+  pipelineStatus: string,
+  alone: boolean,
+): Outcome | undefined {
+  if (action === "apply") {
+    if (mine.apply) return outcomeOfJob("apply", mine.apply.status);
+    if (!alone) return undefined;
+    // The pipeline ended with no job for the stack: whoever started the apply holds the stack's
+    // mutex until it ends, and an apply that has begun can only end applied or failed.
+    const missing = outcomeOfMissingJob(pipelineStatus);
+    return missing?.to === "canceled" ? { to: "failed", error: "the apply was canceled" } : missing;
+  }
   return mine.plan ? outcomeOfJob("plan", mine.plan.status) : outcomeOfMissingJob(pipelineStatus);
 }

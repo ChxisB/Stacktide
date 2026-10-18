@@ -12,6 +12,7 @@ import {
 import { z } from "zod";
 import { mrPlanHandler } from "./mr-plan";
 import { pipelineEventHandler, workerGitlab } from "./pipeline-runs";
+import { mrApplyHandler } from "./run-apply";
 import { runEventHandler } from "./run-ingest";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
 import { syncAutoHandler } from "./sync-auto";
@@ -66,8 +67,9 @@ if (keys) {
   handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger });
   handlers[DRIFT_TICK_QUEUE] = driftTickHandler({ db });
   handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger });
-  // one queue, three consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
-  // belongs to (IAC-6); a merge request event plans the merge request (IAC-7)
+  // one queue, four consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
+  // belongs to (IAC-6); a merge request event plans the merge request (IAC-7), and its merge applies
+  // the stacks that opted in (IAC-8, which needs no setting of its own: no plan, no run to apply)
   const gitlab = { db, gitlab: workerGitlab({ db, keys, logger }) };
   const plans = [
     ["ORCH_API_URL", config.ORCH_API_URL],
@@ -80,9 +82,13 @@ if (keys) {
     ORCH_CI_AUDIENCE: audience,
     ORCH_HELPER_IMAGE: helperImage,
   } = config;
-  const consumers = [pipelineEventHandler(gitlab), runEventHandler(gitlab)];
+  const images = config.ORCH_TERRAGRUNT_IMAGE ? { terragrunt: config.ORCH_TERRAGRUNT_IMAGE } : {};
+  const consumers = [
+    pipelineEventHandler(gitlab),
+    runEventHandler(gitlab),
+    mrApplyHandler({ ...gitlab, images }),
+  ];
   if (apiUrl !== undefined && audience !== undefined && helperImage !== undefined) {
-    const images = config.ORCH_TERRAGRUNT_IMAGE ? { terragrunt: config.ORCH_TERRAGRUNT_IMAGE } : {};
     // a trailing slash is the usual way to write an address; the generator wants none
     const mr = { apiUrl: apiUrl.replace(/\/+$/, ""), audience, helperImage, images };
     consumers.push(mrPlanHandler({ ...gitlab, config: mr }));

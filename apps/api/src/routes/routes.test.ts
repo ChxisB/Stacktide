@@ -568,6 +568,7 @@ describe("audit coverage", () => {
         "pipeline.retry",
         "run.create", // a run of IaC stacks
         "run.summary", // a plan job's counts for its stack
+        "run.apply", // the apply of a run's saved plans
         // the environment's resolved set with its values: a row for each secret revealed, and one for the request
         "variable.reveal",
         "variable.export",

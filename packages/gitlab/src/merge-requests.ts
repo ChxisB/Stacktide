@@ -15,6 +15,7 @@ const mergeRequest = z
     web_url: z.string(),
     draft: z.boolean().optional(),
     sha: z.string().nullish(),
+    detailed_merge_status: z.string().nullish(),
   })
   .transform((m) => ({
     id: m.id,
@@ -28,8 +29,15 @@ const mergeRequest = z
     draft: m.draft ?? false,
     /** Head commit of the source branch. */
     sha: m.sha ?? null,
+    /** GitLab's `detailed_merge_status` (`mergeable`, `not_approved`, `ci_still_running`, ...). */
+    mergeStatus: m.detailed_merge_status ?? null,
   }));
 export type MergeRequest = z.output<typeof mergeRequest>;
+
+// `approved` is what GitLab's approval rules say; a field it does not send is not an approval.
+const approvals = z
+  .object({ approved: z.boolean().optional() })
+  .transform((a) => ({ approved: a.approved === true }));
 
 const note = z
   .object({ id: z.number(), body: z.string(), system: z.boolean().optional() })
@@ -90,6 +98,14 @@ export function mergeRequestsApi(client: GitlabClient) {
           mergeRequest,
           await client.request("GET", mrPath(project, iid)),
           "merge request",
+        );
+      },
+      /** Whether the merge request's approval rules are met. */
+      async approvals(project: ProjectRef, iid: number) {
+        return decode(
+          approvals,
+          await client.request("GET", `${mrPath(project, iid)}/approvals`),
+          "merge request approvals",
         );
       },
       async update(project: ProjectRef, iid: number, input: UpdateMergeRequest) {

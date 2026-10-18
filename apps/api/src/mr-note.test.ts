@@ -172,8 +172,7 @@ async function world(withRun = true) {
     : undefined;
   const at = { organizationId: org, projectId: project.id, gitlabProjectId: gl.id };
   const notes = () => mock.mrNotes(path, mr.iid);
-  const refresh = (only?: string) =>
-    refreshNote({ db: t.db, gitlab: async () => api }, at, mr.iid, api, only);
+  const refresh = (only?: string) => refreshNote({ db: t.db }, at, mr.iid, api, only);
   return { api, gl, mr, project, run, at, notes, refresh };
 }
 

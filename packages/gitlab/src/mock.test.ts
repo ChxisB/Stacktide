@@ -123,6 +123,43 @@ describe("merge request notes", () => {
   });
 });
 
+describe("merge request approval and merge status", () => {
+  test("a merge request is not approved and is mergeable until a test says otherwise", async () => {
+    const { mock, api } = setup();
+    mock.addProject({ path: "g/p" });
+    await api.repository.createBranch("g/p", "feature", "main");
+    const mr = await api.mergeRequests.create("g/p", {
+      sourceBranch: "feature",
+      targetBranch: "main",
+      title: "t",
+    });
+    expect(mr.mergeStatus).toBe("mergeable");
+    expect(await api.mergeRequests.approvals("g/p", mr.iid)).toEqual({ approved: false });
+
+    mock.setMergeRequest("g/p", mr.iid, { approved: true, mergeStatus: "ci_still_running" });
+    expect(await api.mergeRequests.approvals("g/p", mr.iid)).toEqual({ approved: true });
+    expect((await api.mergeRequests.get("g/p", mr.iid)).mergeStatus).toBe("ci_still_running");
+    // the approval state is not a field of the merge request itself
+    expect(JSON.stringify(await api.mergeRequests.get("g/p", mr.iid))).not.toContain("approved");
+
+    mock.setMergeRequest("g/p", mr.iid, { state: "merged" });
+    expect((await api.mergeRequests.get("g/p", mr.iid)).state).toBe("merged");
+    expect(() => mock.setMergeRequest("g/p", 99, { approved: true })).toThrow(
+      "no merge request 99",
+    );
+    mock.stop();
+  });
+
+  test("approvals of a merge request that is not there are a 404", async () => {
+    const { mock, api } = setup();
+    mock.addProject({ path: "g/p" });
+    await expect(api.mergeRequests.approvals("g/p", 5).catch((e) => e.kind)).resolves.toBe(
+      "not_found",
+    );
+    mock.stop();
+  });
+});
+
 describe("pipelines", () => {
   const CI = 'build:\n  stage: build\n  script:\n    - "true"\ntest:\n  script:\n    - "true"\n';
   const ready = (opts: Parameters<typeof setup>[0] = {}) => {

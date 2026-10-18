@@ -1,7 +1,7 @@
 import { canTransition, isFinishedRun, type RunAction, type RunState } from "@orch/core";
-import { and, desc, eq, getTableColumns, inArray, lt, ne } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNotNull, lt, ne } from "drizzle-orm";
 import type { Executor } from "./repo";
-import { runPipelines, runStacks, runs } from "./schema";
+import { pipelineRuns, runPipelines, runStacks, runs } from "./schema";
 
 // What the plan would do can be 500 resources long and is read by `getPlanResources` only: every
 // other read of a stack leaves it out.
@@ -162,6 +162,41 @@ export interface NewRunPipeline {
  */
 export async function attachRunPipeline(db: Executor, input: NewRunPipeline): Promise<void> {
   await db.insert(runPipelines).values(input);
+}
+
+/**
+ * The connection that last read one of the run's pipelines: the one that has reached its project in
+ * GitLab, for whoever must talk to GitLab about the run. None before a pipeline was read, or once
+ * that connection is deleted.
+ */
+export async function connectionOfRun(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  runId: string,
+): Promise<string | undefined> {
+  const [row] = await db
+    .select({ connectionId: pipelineRuns.connectionId })
+    .from(runPipelines)
+    .innerJoin(
+      pipelineRuns,
+      and(
+        eq(pipelineRuns.projectId, runPipelines.projectId),
+        eq(pipelineRuns.gitlabPipelineId, runPipelines.gitlabPipelineId),
+      ),
+    )
+    .where(
+      and(
+        eq(runPipelines.organizationId, organizationId),
+        eq(runPipelines.projectId, projectId),
+        eq(runPipelines.runId, runId),
+        eq(pipelineRuns.organizationId, organizationId),
+        isNotNull(pipelineRuns.connectionId),
+      ),
+    )
+    .orderBy(desc(pipelineRuns.observedAt), desc(pipelineRuns.gitlabPipelineId))
+    .limit(1);
+  return row?.connectionId ?? undefined;
 }
 
 /** The run a GitLab pipeline belongs to and what the pipeline does, if it is a run's. */
@@ -344,13 +379,13 @@ export async function supersedeRuns(
   });
 }
 
-/** GitLab's ids of the pipelines that plan a run, oldest first. */
-export async function planPipelinesOfRun(
+const pipelinesOfRun = async (
   db: Executor,
   organizationId: string,
   projectId: string,
   runId: string,
-): Promise<number[]> {
+  action: RunAction,
+): Promise<number[]> => {
   const rows = await db
     .select({ id: runPipelines.gitlabPipelineId })
     .from(runPipelines)
@@ -359,9 +394,25 @@ export async function planPipelinesOfRun(
         eq(runPipelines.organizationId, organizationId),
         eq(runPipelines.projectId, projectId),
         eq(runPipelines.runId, runId),
-        eq(runPipelines.action, "plan"),
+        eq(runPipelines.action, action),
       ),
     )
     .orderBy(runPipelines.gitlabPipelineId);
   return rows.map((r) => r.id);
-}
+};
+
+/** GitLab's ids of the pipelines that plan a run, oldest first. */
+export const planPipelinesOfRun = (
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  runId: string,
+) => pipelinesOfRun(db, organizationId, projectId, runId, "plan");
+
+/** GitLab's ids of the pipelines that apply a run's plans, oldest first. */
+export const applyPipelinesOfRun = (
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  runId: string,
+) => pipelinesOfRun(db, organizationId, projectId, runId, "apply");

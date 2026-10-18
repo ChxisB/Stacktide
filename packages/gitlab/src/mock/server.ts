@@ -53,6 +53,10 @@ interface Mr {
   source_branch: string;
   target_branch: string;
   notes: Note[];
+  /** What the approval rules say; a test sets it. */
+  approved: boolean;
+  /** GitLab's `detailed_merge_status`; a test sets it. */
+  mergeStatus: string;
 }
 interface MockJob {
   id: number;
@@ -910,9 +914,18 @@ export function createMockGitlab(opts: MockOptions = {}) {
           source_branch: src,
           target_branch: tgt,
           notes: [],
+          approved: false,
+          mergeStatus: "mergeable",
         };
         proj.mrs.push(mr);
         return json(mrJson(mr), 201);
+      }
+
+      const approvals = /^\/merge_requests\/(\d+)\/approvals$/.exec(sub);
+      if (approvals && req.method === "GET") {
+        const mr = proj.mrs.find((x) => x.iid === Number(approvals[1]));
+        if (!mr) return fail(404, "404 Merge Request Not Found");
+        return json({ approved: mr.approved });
       }
 
       const mrm = /^\/merge_requests\/(\d+)(\/notes(?:\/(\d+))?)?$/.exec(sub);
@@ -943,9 +956,10 @@ export function createMockGitlab(opts: MockOptions = {}) {
       }
 
       function mrJson(mr: Mr) {
-        const { notes: _notes, ...rest } = mr;
+        const { notes: _notes, approved: _approved, mergeStatus, ...rest } = mr;
         return {
           ...rest,
+          detailed_merge_status: mergeStatus,
           web_url: `${origin}/${proj?.path}/-/merge_requests/${mr.iid}`,
           draft: false,
           sha: proj?.branches.get(mr.source_branch)?.head ?? null,
@@ -1102,6 +1116,16 @@ export function createMockGitlab(opts: MockOptions = {}) {
       const mr = projects.find((p) => p.path === path)?.mrs.find((m) => m.iid === iid);
       if (!mr) throw new Error(`no merge request ${iid} in ${path}`);
       return mr.notes.filter((n) => !n.system).map((n) => ({ id: n.id, body: n.body }));
+    },
+    /** What a person or GitLab's rules do to a merge request: approve it, merge it, change its merge status. */
+    setMergeRequest(
+      path: string,
+      iid: number,
+      patch: { approved?: boolean; mergeStatus?: string; state?: Mr["state"] },
+    ) {
+      const mr = projects.find((p) => p.path === path)?.mrs.find((m) => m.iid === iid);
+      if (!mr) throw new Error(`no merge request ${iid} in ${path}`);
+      Object.assign(mr, patch);
     },
     /** Deletes a note, as a person can: later updates of it get a 404. */
     deleteMrNote(path: string, iid: number, noteId: number) {

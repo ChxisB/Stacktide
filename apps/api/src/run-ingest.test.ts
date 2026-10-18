@@ -570,6 +570,56 @@ describe("an apply pipeline's events", () => {
     expect((await w.read()).stacks.map((s) => s.error)).toEqual([null, null, null]);
   });
 
+  test("a pipeline that ended without the stack's apply job fails the stack, so its mutex is not held for good", async () => {
+    const w = await world(["a", "b"], "apply", GENERATE);
+    await setApplying(w, "a", "b");
+    await w.deliver();
+    // still going: the job may yet be there
+    expect(await w.states()).toEqual({ a: "applying", b: "applying" });
+    mock.setPipelineStatus(w.pipelineId, "failed");
+    await w.deliver();
+    const got = (await w.read()).stacks.map((s) => [s.stack, s.status, s.error]);
+    expect(got).toEqual([
+      ["a", "failed", "no job ran for this stack"],
+      ["b", "failed", "no job ran for this stack"],
+    ]);
+  });
+
+  test("a stack with no job in this pipeline is left to the run's other apply pipeline", async () => {
+    // `a` is applied by the first pipeline's child, `b` by the second's
+    const w = await world(["a", "b"], "apply", GENERATE);
+    const first = mock.addDownstream(w.pipelineId, "orch", ["apply:a"]);
+    await setApplying(w, "a", "b");
+    const second = (await client().pipelines.trigger(w.gl.id, "main")).id;
+    await attachRunPipeline(t.db, {
+      organizationId: o1,
+      projectId: w.project.id,
+      runId: w.run.id,
+      gitlabPipelineId: second,
+      action: "apply",
+    });
+    const secondChild = mock.addDownstream(second, "orch", ["apply:b"]);
+    mock.setJobStatus(secondChild, "apply:b", "success");
+    mock.setPipelineStatus(second, "success");
+    await w.deliver({ pipelineId: second });
+    // the second pipeline ended: `a` is not its stack, and the first still runs it
+    expect(await w.states()).toEqual({ a: "applying", b: "applied" });
+    mock.setJobStatus(first, "apply:a", "success");
+    mock.setPipelineStatus(w.pipelineId, "success");
+    await w.deliver();
+    expect(await w.states()).toEqual({ a: "applied", b: "applied" });
+  });
+
+  test("a canceled pipeline without the apply job fails the stack too: an apply that has begun cannot be canceled", async () => {
+    const w = await world(["a"], "apply", GENERATE);
+    await setApplying(w, "a");
+    mock.setPipelineStatus(w.pipelineId, "canceled");
+    await w.deliver();
+    expect((await w.read()).stacks.map((s) => [s.status, s.error])).toEqual([
+      ["failed", "the apply was canceled"],
+    ]);
+  });
+
   test("a plan pipeline's late event leaves an applying stack alone, even when its plan job failed", async () => {
     const w = await world(["a"]);
     await setApplying(w, "a");

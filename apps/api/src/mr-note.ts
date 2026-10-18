@@ -112,7 +112,7 @@ export async function writeNote(
 
 /** `writeNote` for a caller that does not hold the row yet. */
 export const refreshNote = (
-  deps: RunDeps,
+  deps: Pick<RunDeps, "db">,
   at: { organizationId: string; projectId: string; gitlabProjectId: number },
   iid: number,
   gitlab: Gitlab,

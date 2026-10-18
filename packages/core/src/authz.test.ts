@@ -103,6 +103,7 @@ const allowed: Record<string, string[]> = {
   "run.read": REPORTER_UP,
   "run.create": DEVELOPER_UP,
   "run.summary": REPORTER_UP,
+  "run.apply": MAINTAINER_UP,
 };
 
 describe("role x action", () => {

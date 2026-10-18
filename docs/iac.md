@@ -1,4 +1,4 @@
-# Planning Terraform stacks on merge requests
+# Planning and applying Terraform stacks on merge requests
 
 When a merge request is opened, reopened or gets a new commit, the platform works out which stacks the
 change touches (and which stacks depend on them), starts a pipeline that plans them, and keeps **one note**
@@ -20,7 +20,9 @@ the job.
   - `ORCH_TERRAGRUNT_IMAGE` (only for Terragrunt stacks): an image repository without a tag; the stack's
     `version` is the tag. Terraform and OpenTofu have defaults.
 
-  Without the first three the worker logs which are missing and plans nothing.
+  Without the first three the worker logs which are missing and plans nothing. The API needs
+  `ORCH_TERRAGRUNT_IMAGE` too (the same value) to start the apply of a Terragrunt stack, and
+  `ORCH_MASTER_KEYS` (it opens the connection's token).
 - Every stack that is planned has a `version` in its `stack.yml`.
 
 ## `.gitlab-ci.yml`
@@ -64,12 +66,59 @@ plan pipeline runs the project's whole pipeline too.
   trusted) and its head commit is planned if no run has planned it. A repeated or late event finds the run
   made and does nothing. A new commit **replaces** the old run: its pipeline and child pipelines are
   stopped (best effort) and the same note now shows the new run.
-- **Closed, merged, approved, commented:** ignored here. Applying belongs to the apply flow (IAC-8).
+- **Merged:** the stacks of the merge request's newest run that opted in with `apply_on: merge` are
+  applied (see Applying). Nothing else happens on a merge.
+- **Closed, approved, commented:** ignored.
 - **Pipeline events (also those of the child pipeline):** each stack moves along its plan job, and the note
   is written again.
 - A commit that touches no stack, a stack file that does not parse, dependencies that cannot be ordered,
   a pipeline GitLab refuses, and more than 100 affected stacks are each said in the note, with nothing
   started.
+
+## Applying
+
+`POST /organizations/:orgId/projects/:projectId/runs/:runId/apply` (action `run.apply`, a **maintainer**;
+body `{"stacks": ["net"]}`; **the stacks that are planned** when left out, the rest left as they are) applies
+the plans a run saved. It
+answers `202` with the run, its stacks now `applying`; the pipeline's events then move each stack to
+`applied` or `failed` (see "What happens on each event"). A stack applies **the plan its own plan job
+saved**: the apply job downloads that job's `plan.tfplan` with the job token, runs `init` and then
+`apply plan.tfplan`, so what was reviewed in the note is what runs.
+
+The request is refused (409, or 422 for a bad request, with a code that says why) unless:
+
+- the run has a merge request (`no_merge_request`), and the merge request is at the commit that was
+  planned (`stale_plan`: plan it again after a push);
+- the merge request is **open, approved and mergeable** (`not_approved`, `not_mergeable`; GitLab's own
+  `detailed_merge_status`, so a failing pipeline, an open discussion or a conflict count), or **already
+  merged into the project's default branch** (`not_open`, `not_default_branch`). A merged request runs
+  on the default branch, an open one on its own branch;
+- each stack named is `planned` (`not_planned`; so is the request when none is planned), has a recorded plan job (`no_plan`), and its plan is less than
+  a week old (`plan_expired`: the artifact expires after a week, counted from when the stack became
+  planned);
+- each stack it depends on is applied or applied in the same request (`dependency_not_applied`);
+- no other run is applying the same stack of the project (`apply_in_progress`: a unique index, so no
+  caller can get past it).
+
+The stacks are claimed (`planned` to `applying`) and the pipeline is started in **one transaction**: a
+pipeline GitLab refuses (`gitlab_refused`) leaves every stack `planned`, and a second request for the same
+stacks finds them taken. The audit event `run.apply` holds the ref, commit, merge request, `when`, the
+pipeline id and its commit (`pipelineSha`, which for a merged request is the target branch's head, not
+the planned commit) and the names of the stacks (at most 20, with a count), never a plan.
+
+### Applying on merge
+
+A stack's `stack.yml` may say `apply_on: merge` (the default is `command`). When GitLab reports a merge
+request merged, the worker applies the stacks of its newest run that opted in and are not yet applied,
+with no person asked: **the merge is the decision**, so protect the target branch and require approvals
+there. A merge request that no stack opted in gets nothing, not even a note. One that cannot be applied (the run planned another commit, a stack is still planning,
+a plan expired, a dependency is not applied) gets a line in the note: *Not applied on merge: ...*; the
+others of the run stay `planned`, to be applied with the route. The opt-in is read from the code at the
+planned commit, so **a merge request can opt its own stacks in**: review `stack.yml` like code that runs
+`apply`.
+
+An apply pipeline started by the platform needs the same `.gitlab-ci.yml` as a plan (above), and the
+runner needs the stack's cloud credentials, as for a plan (the platform holds none).
 
 ## What to know
 
@@ -77,8 +126,13 @@ plan pipeline runs the project's whole pipeline too.
   credentials; whoever wrote the commit would choose what runs. The note says so.
 - **Whoever can push a branch controls `.gitlab-ci.yml` on it**, so controls what the plan pipeline
   runs. Planning is read-only by design, but the job can read what the runner can: give the plan jobs
-  credentials that read state and nothing else. The apply flow must also require an approved merge
-  request, a head commit that matches the plan, and a protected CI file.
+  credentials that read state and nothing else. The apply requires an approved merge request and a head
+  commit that matches the plan, but it **does not check that the CI file is protected**: an author can
+  change `.gitlab-ci.yml` on the branch, and the apply of an open request runs on that branch with the
+  apply credentials. Prefer `apply_on: merge` (the default branch's CI file) for stacks that matter, and
+  give apply credentials only to protected branches or environments.
+- A stack is `applied` when the pipeline's job named `apply:<stack>` succeeded. A job an author names
+  that way counts as one.
 - The generated plan jobs save `plan.tfplan` and `plan.json` as artifacts. A plan holds the values of
   secrets, so the artifacts are limited to developers (`access: developer`, which needs a recent GitLab: believed 16.11) and
   expire after a week.

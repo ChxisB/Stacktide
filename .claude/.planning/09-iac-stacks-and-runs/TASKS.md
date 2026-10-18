@@ -28,7 +28,7 @@ Done when: tests cover out-of-order and duplicate events, a mismatched ci princi
 Do: on MR open/update create a plan run, trigger the generated pipeline, and create-or-update **one** MR note with a per-stack table (status, counts, job links).
 Done when: tests show the note is updated not duplicated, stale pushes cancel superseded runs, and no plan contents beyond counts and resource addresses are posted.
 
-### IAC-8 - Apply flow  `[ ]` M - deps: IAC-7, AUTH-3
+### IAC-8 - Apply flow  `[x]` M - deps: IAC-7, AUTH-3
 Do: preconditions (fresh head SHA, approved, mergeable, no active run, authorised), apply the saved plan artifact, apply on merge when `apply_on: merge`, record outcome. **First real apply is a human gate.**
 Done when: tests cover each failed precondition, double-apply prevention and a failed apply leaving the stack `failed` with the reason.
 

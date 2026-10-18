@@ -18,6 +18,8 @@ const config = loadConfig(
       NODE_ENV: z.string().default("development"),
       // Master keys for secrets at rest ("k2:<base64>,k1:<base64>", see packages/crypto).
       ORCH_MASTER_KEYS: z.string().min(1).optional(),
+      // Image repository of Terragrunt stacks, for the pipeline an apply starts (as the worker's).
+      ORCH_TERRAGRUNT_IMAGE: z.string().min(1).optional(),
     })
     .and(authEnv)
     .and(accessEnv),
@@ -71,6 +73,7 @@ const app = createApp({
   auth: authFromEnv(config),
   ci: ciFromEnv(config),
   keys,
+  images: config.ORCH_TERRAGRUNT_IMAGE ? { terragrunt: config.ORCH_TERRAGRUNT_IMAGE } : undefined,
   loopbackConnections: ["development", "test"].includes(config.NODE_ENV.toLowerCase()),
 }).listen({
   hostname: config.HOST,

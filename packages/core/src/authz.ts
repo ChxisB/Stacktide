@@ -86,6 +86,8 @@ export const RULES = {
   "run.create": { project: "developer" },
   // The plan summary a plan job posts for its own stack (counts and addresses). A reporter-level rule, as the CI token is a reporter: the route further requires that the caller is the CI job recorded for that stack's summary.
   "run.summary": { project: "reporter" },
+  // Applying a saved plan changes real infrastructure with the credentials of the project's runners: a maintainer, as for retrying a pipeline, and not a developer, who may start a plan. Merging is a separate decision, made in GitLab.
+  "run.apply": { project: "maintainer" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

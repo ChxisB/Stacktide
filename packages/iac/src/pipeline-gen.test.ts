@@ -9,6 +9,7 @@ import {
   type ApplyInput,
   GenerateError,
   generatePipeline,
+  PLAN_RETENTION_MS,
   type PlanInput,
   SUMMARY_FILTER,
 } from "./pipeline-gen";
@@ -120,6 +121,8 @@ describe("a plan pipeline", () => {
       expire_in: "1 week",
       access: "developer",
     });
+    // the apply flow refuses a plan older than this: it is the artifact's `expire_in`, in milliseconds
+    expect(PLAN_RETENTION_MS).toBe(7 * 24 * 3600 * 1000);
     expect(job.script).toEqual([
       "cd stacks/db",
       "terraform init -input=false",

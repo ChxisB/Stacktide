@@ -1,6 +1,7 @@
 import { DomainError, type Logger } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import type { Db } from "@orch/db";
+import type { Tool } from "@orch/iac";
 import type { Template } from "@orch/pipelines";
 import { Elysia } from "elysia";
 import { auditPlugin } from "./audit";
@@ -45,6 +46,8 @@ export interface AppDeps {
   loopbackConnections?: boolean;
   /** The pipeline templates to offer. Left out, the shipped catalog. */
   templates?: readonly Template[];
+  /** Image repository per tool that has no default (Terragrunt), for the pipelines an apply starts. */
+  images?: Partial<Record<Tool, string>> | undefined;
 }
 
 // Registered by the OpenAPI plugin, which cannot carry route options. The document describes the

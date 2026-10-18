@@ -4,6 +4,7 @@ import {
   audit,
   auditedStacks,
   createRun,
+  type Db,
   describeError,
   getProject,
   latestRunOfMergeRequest,
@@ -57,7 +58,8 @@ export interface MrPlanConfig {
   images?: Partial<Record<Tool, string>>;
 }
 
-const mrEvent = z.looseObject({
+/** What a `gitlab.event` job says of a merge request: only which one changed, never what it holds. */
+export const mrEvent = z.looseObject({
   event: z.literal("merge_request"),
   organizationId: z.uuid(),
   connectionId: z.uuid(),
@@ -65,6 +67,16 @@ const mrEvent = z.looseObject({
   iid: z.number().int().positive(),
   action: z.string(),
 });
+
+/**
+ * The platform's project a merge request event is about, if it is one whose merge requests are
+ * planned and applied: linked to GitLab and seen to hold Terraform (or Terragrunt) at the import.
+ */
+export async function plannedProject(db: Db, organizationId: string, gitlabProjectId: number) {
+  const [linked] = await linkedProjects(db, organizationId, [gitlabProjectId]);
+  const project = linked && (await getProject(db, organizationId, linked.id));
+  return project?.detectedTypes.some((d) => PLANNED.has(d.tag)) ? project : undefined;
+}
 
 /** GitLab would not start the pipeline: what a person must fix, not something a retry changes. */
 class Refused extends Error {}
@@ -297,9 +309,8 @@ export const mrPlanHandler =
     const parsed = mrEvent.safeParse(ctx.payload);
     if (!parsed.success || !ACTIONS.has(parsed.data.action)) return;
     const e = parsed.data;
-    const [linked] = await linkedProjects(deps.db, e.organizationId, [e.projectId]);
-    const project = linked && (await getProject(deps.db, e.organizationId, linked.id));
-    if (!project?.detectedTypes.some((d) => PLANNED.has(d.tag))) return;
+    const project = await plannedProject(deps.db, e.organizationId, e.projectId);
+    if (!project) return;
     const at = {
       organizationId: e.organizationId,
       projectId: project.id,
