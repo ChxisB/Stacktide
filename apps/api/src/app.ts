@@ -10,6 +10,7 @@ import { guardPlugin, unguardedRoutes } from "./guard";
 import { http } from "./http";
 import { openapiPlugin } from "./openapi";
 import type { PrincipalResolver } from "./principal";
+import { auditLogRoutes } from "./routes/audit-log";
 import { type AuthDeps, authRoutes } from "./routes/auth";
 import { type CiDeps, ciRoutes } from "./routes/ci";
 import { cliRoutes } from "./routes/cli";
@@ -123,6 +124,7 @@ export function createApp(deps: AppDeps) {
     .use(notificationSinkRoutes(deps))
     .use(notificationSubscriptionRoutes(deps))
     .use(policySetRoutes(deps))
+    .use(auditLogRoutes(deps))
     .use(syncRunRoutes(deps))
     .use(pipelineRoutes(deps))
     .use(pipelineFleetRoutes(deps))

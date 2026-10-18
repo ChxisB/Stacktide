@@ -59,7 +59,7 @@ const invalidCursor = () => new DomainError("invalid_cursor", 400, "The cursor i
 export const encodeCursor = (key: unknown[]) =>
   Buffer.from(JSON.stringify(key)).toString("base64url");
 
-function decodeCursor<K>(cursor: string, schema: z.ZodType<K>): K {
+export function decodeCursor<K>(cursor: string, schema: z.ZodType<K>): K {
   try {
     const parsed = schema.safeParse(JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")));
     if (parsed.success) return parsed.data;

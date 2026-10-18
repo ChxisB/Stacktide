@@ -114,6 +114,11 @@ const allowed: Record<string, string[]> = {
   "policy.set.read": ORG_ALL,
   "policy.set.create": ["org admin", "org owner"],
   "policy.set.delete": ["org admin", "org owner"],
+  "audit.read": ["org admin", "org owner"],
+  "audit.export": ["org admin", "org owner"],
+  "audit.retention.read": ["org admin", "org owner"],
+  // deleting events is the owner's choice alone
+  "audit.retention.update": ["org owner"],
 };
 
 describe("role x action", () => {

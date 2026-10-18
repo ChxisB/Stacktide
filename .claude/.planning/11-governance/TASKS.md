@@ -1,6 +1,6 @@
 # 11 Governance - Tasks
 
-### GOV-1 - Audit query, export, retention  `[ ]` M - deps: API-8, AUTH-3
+### GOV-1 - Audit query, export, retention  `[x]` M - deps: API-8, AUTH-3
 Do: filtered, cursor-paginated audit API; JSON/CSV export (audited); retention setting with a safe purge job.
 Done when: tests cover filters, permission checks, export content free of values, and purge respecting retention only.
 

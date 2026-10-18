@@ -98,6 +98,11 @@ export const RULES = {
   "policy.set.read": { org: "viewer" },
   "policy.set.create": { org: "admin" },
   "policy.set.delete": { org: "admin" },
+  // The audit log (GOV-1) shows who did what in the organization: org admins, as for the other things that show how it is run. Exporting hands the whole log out and is audited, so it is an action of its own that a token is given by name. The retention is the one way events are ever deleted: only an owner chooses how long they are kept.
+  "audit.read": { org: "admin" },
+  "audit.export": { org: "admin" },
+  "audit.retention.read": { org: "admin" },
+  "audit.retention.update": { org: "owner" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

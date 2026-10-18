@@ -576,6 +576,8 @@ describe("audit coverage", () => {
         "run.policy", // a plan job's policy verdict for its stack
         "policy.set.create", // a policy set an organization judges plans by
         "policy.set.delete",
+        "audit.export", // the audit log handed out: with the filters and how many rows
+        "audit.retention.update", // how long the events are kept
         "stack.drift", // the same request, when the plan was a drift check and the stack's state changed
         "run.apply", // the apply of a run's saved plans
         // the environment's resolved set with its values: a row for each secret revealed, and one for the request

@@ -1,6 +1,7 @@
 import { createLogger, loadConfig } from "@orch/core";
 import { envKeyProvider, type KeyProvider } from "@orch/crypto";
 import {
+  AUDIT_PURGE_QUEUE,
   AUTO_SYNC_QUEUE,
   createDb,
   DRIFT_CHECK_QUEUE,
@@ -13,6 +14,7 @@ import {
   WEBHOOK_QUEUE,
 } from "@orch/db";
 import { z } from "zod";
+import { auditPurgeHandler } from "./audit-purge";
 import { rolesFromEnv } from "./auth-config";
 import { guardrailEnv, guardrailsOf } from "./guardrails";
 import { mrCommandHandler } from "./mr-commands";
@@ -69,6 +71,13 @@ const config = loadConfig(
       .max(86_400)
       .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
       .default(3600),
+    /** How often the audit events past their organization's retention are deleted (GOV-1); 0 switches the purge off. */
+    AUDIT_PURGE_SECONDS: z.coerce
+      .number()
+      .int()
+      .max(86_400)
+      .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
+      .default(3600),
   }),
 );
 const logger = createLogger({ level: config.LOG_LEVEL });
@@ -89,6 +98,14 @@ const guardrails = guardrailsOf(config);
 
 // Later features register their handlers here, keyed by queue.
 const handlers: Record<string, JobHandler> = {};
+// The purge reads no secret, so it needs no keys. Which events it may delete is each organization's setting. Off means off: no schedule and no handler for a job that is already waiting.
+if (config.AUDIT_PURGE_SECONDS > 0) handlers[AUDIT_PURGE_QUEUE] = auditPurgeHandler({ db });
+await upsertSchedule(db, {
+  name: "audit.purge",
+  intervalSeconds: config.AUDIT_PURGE_SECONDS || 3600,
+  queue: AUDIT_PURGE_QUEUE,
+  enabled: config.AUDIT_PURGE_SECONDS > 0,
+});
 // A job that opens secrets needs the master keys here too: without them its queue is not served and its jobs wait.
 if (keys) {
   handlers[SYNC_APPLY] = syncApplyHandler({ db, keys, logger });

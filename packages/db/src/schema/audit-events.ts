@@ -24,6 +24,8 @@ export const auditEvents = pgTable(
   },
   (t) => [
     index("audit_events_org_at_idx").on(t.organizationId, t.at),
+    // The audit API pages newest first by id (GOV-1).
+    index("audit_events_org_id_idx").on(t.organizationId, t.id),
     index("audit_events_resource_idx").on(t.resourceType, t.resourceId),
   ],
 );

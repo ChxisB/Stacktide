@@ -47,11 +47,12 @@ describe("worker entrypoint", () => {
     };
     const withKeys = await run({ ORCH_MASTER_KEYS: keys });
     expect(withKeys).toContain(
-      '"queues":["sync.apply","sync.auto","sync.drift.tick","sync.drift","notify.deliver","gitlab.event"]',
+      '"queues":["audit.purge","sync.apply","sync.auto","sync.drift.tick","sync.drift","notify.deliver","gitlab.event"]',
     );
     expect(withKeys).not.toContain(keys);
     const without = await run({});
-    expect(without).toContain('"queues":[]');
+    // the audit purge reads no secret: it is served without keys
+    expect(without).toContain('"queues":["audit.purge"]');
     expect(without).toContain("ORCH_MASTER_KEYS is not set");
   });
 
@@ -134,6 +135,36 @@ describe("worker entrypoint", () => {
     const child = start({ DATABASE_URL: t.url, DRIFT_CHECK_SECONDS: "30" });
     expect(await child.proc.exited).not.toBe(0);
     expect(await child.err).toContain("DRIFT_CHECK_SECONDS");
+  });
+
+  test("the audit purge is scheduled without keys, off at 0, and a value in between is refused", async () => {
+    const run = async (extra: Record<string, string>) => {
+      const child = start({ DATABASE_URL: t.url, ...extra });
+      await Bun.sleep(500);
+      child.proc.kill("SIGTERM");
+      await child.proc.exited;
+    };
+    const purge = async () =>
+      (await t.db.select().from(schedules)).find((s) => s.name === "audit.purge");
+    await run({});
+    expect(await purge()).toMatchObject({
+      intervalSeconds: 3600,
+      queue: "audit.purge",
+      enabled: true,
+    });
+    await run({ AUDIT_PURGE_SECONDS: "120" });
+    expect(await purge()).toMatchObject({ intervalSeconds: 120, enabled: true });
+    await run({ AUDIT_PURGE_SECONDS: "0" });
+    expect((await purge())?.enabled).toBe(false);
+    const off = start({ DATABASE_URL: t.url, AUDIT_PURGE_SECONDS: "0" });
+    await Bun.sleep(500);
+    off.proc.kill("SIGTERM");
+    await off.proc.exited;
+    expect(await off.out).toContain('"queues":[]');
+
+    const child = start({ DATABASE_URL: t.url, AUDIT_PURGE_SECONDS: "30" });
+    expect(await child.proc.exited).not.toBe(0);
+    expect(await child.err).toContain("AUDIT_PURGE_SECONDS");
   });
 
   test("keys that do not parse stop the start", async () => {
