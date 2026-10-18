@@ -252,6 +252,9 @@ describe("coverage", () => {
       [`GET ${O}/:orgId/notification-sinks`]: "notification.sink.read",
       [`POST ${O}/:orgId/notification-sinks`]: "notification.sink.create",
       [`DELETE ${O}/:orgId/notification-sinks/:sinkId`]: "notification.sink.delete",
+      [`GET ${O}/:orgId/notification-sinks/:sinkId/audit-forwarding`]: "audit.forwarding.read",
+      [`PUT ${O}/:orgId/notification-sinks/:sinkId/audit-forwarding`]: "audit.forwarding.update",
+      [`DELETE ${O}/:orgId/notification-sinks/:sinkId/audit-forwarding`]: "audit.forwarding.update",
       [`GET ${O}/:orgId/audit-events`]: "audit.read",
       [`GET ${O}/:orgId/audit-events/export`]: "audit.export",
       [`GET ${O}/:orgId/audit-retention`]: "audit.retention.read",
@@ -316,7 +319,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(114);
+    expect(routes.length).toBe(117);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

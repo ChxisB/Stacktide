@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { createLogger } from "@orch/core";
+import { createLogger, type SinkKind } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
   claim,
@@ -17,6 +17,7 @@ import {
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { eq, sql } from "drizzle-orm";
 import {
+  bareHost,
   newWebhookSecret,
   notifyDeliverHandler,
   publicAddress,
@@ -711,5 +712,66 @@ describe("what leaves", () => {
         "status",
       ].sort(),
     );
+  });
+});
+
+describe("the collectors' addresses (GOV-4)", () => {
+  const refused = (kind: SinkKind, url: string) => {
+    try {
+      sinkUrl(kind, url);
+    } catch (e) {
+      if (e instanceof SinkUrlError) return e.message;
+      throw e;
+    }
+    return undefined;
+  };
+
+  test("a syslog address is tls:// with a public host; the port is kept, and the host is lower-cased", () => {
+    expect(sinkUrl("syslog", "tls://logs.example.com:6514").port).toBe("6514");
+    // the URL keeps the case of a host it does not know the scheme of; the name that is resolved and checked does not
+    expect(bareHost(sinkUrl("syslog", "tls://Logs.Example.com"))).toBe("logs.example.com");
+    expect(sinkUrl("syslog", "tls://93.184.216.34:443").port).toBe("443");
+  });
+
+  test.each([
+    ["https", "https://logs.example.com:6514"],
+    ["plain tcp", "tcp://logs.example.com:514"],
+    ["credentials", "tls://user:pw@logs.example.com:6514"],
+    ["localhost", "tls://localhost:6514"],
+    ["a name without a dot", "tls://syslog:6514"],
+    ["a private address", "tls://10.1.2.3:6514"],
+    ["the metadata address", "tls://169.254.169.254:6514"],
+    ["loopback in IPv6", "tls://[::1]:6514"],
+    ["a name under .internal", "tls://logs.internal:6514"],
+    ["a name under .internal in capitals", "tls://LOGS.INTERNAL:6514"],
+  ])("syslog: %s is refused, and the message does not quote the address", (_why, url) => {
+    const why = refused("syslog", url);
+    expect(why).toBeString();
+    expect(why).not.toContain("pw@");
+  });
+
+  test("the other kinds stay https-only, and tls:// is for syslog alone", () => {
+    for (const kind of ["webhook", "datadog", "splunk"] as const) {
+      expect(refused(kind, "tls://logs.example.com:6514")).toBeString();
+      expect(refused(kind, "https://logs.example.com/in")).toBeUndefined();
+      expect(refused(kind, "http://logs.example.com/in")).toBeString();
+      expect(refused(kind, "https://10.0.0.5/in")).toBeString();
+    }
+  });
+
+  test("a sink made for the audit log is not a destination for notifications", async () => {
+    const w = await world();
+    const syslog = await createSink(t.db, keys, {
+      organizationId: w.org.id,
+      kind: "syslog",
+      name: `l${++n}`,
+      host: "logs.example.com:6514",
+      secret: sealSink({ url: "tls://logs.example.com:6514" }),
+    });
+    const f = fakeFetch();
+    await expect(handler(f)(ctxOf({ ...(await payloadOf(w)), sinkId: syslog.id }))).rejects.toThrow(
+      "sink cannot take notifications",
+    );
+    expect(f.sent).toEqual([]);
   });
 });

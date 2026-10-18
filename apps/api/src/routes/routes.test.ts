@@ -562,6 +562,8 @@ describe("audit coverage", () => {
         // where notifications go, and what a project asks of it
         "notification.sink.create",
         "notification.sink.delete",
+        "audit.forwarding.update",
+        "audit.forwarding.delete",
         "notification.subscription.update",
         "notification.subscription.delete",
         "sync_run.plan",

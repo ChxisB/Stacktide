@@ -119,6 +119,8 @@ const allowed: Record<string, string[]> = {
   "audit.retention.read": ["org admin", "org owner"],
   // deleting events is the owner's choice alone
   "audit.retention.update": ["org owner"],
+  "audit.forwarding.read": ["org admin", "org owner"],
+  "audit.forwarding.update": ["org admin", "org owner"],
   // lifting protection is the admins' (the maintainers who approve must not be the ones to lift it)
   "environment.protect": ["org admin", "org owner"],
   "change_request.read": REPORTER_UP,

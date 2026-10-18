@@ -47,7 +47,7 @@ describe("worker entrypoint", () => {
     };
     const withKeys = await run({ ORCH_MASTER_KEYS: keys });
     expect(withKeys).toContain(
-      '"queues":["audit.purge","change_request.expire","sync.apply","sync.auto","sync.drift.tick","sync.drift","notify.deliver","gitlab.event"]',
+      '"queues":["audit.purge","change_request.expire","sync.apply","sync.auto","sync.drift.tick","sync.drift","notify.deliver","audit.forward","gitlab.event"]',
     );
     expect(withKeys).not.toContain(keys);
     const without = await run({});
@@ -169,6 +169,35 @@ describe("worker entrypoint", () => {
     const child = start({ DATABASE_URL: t.url, AUDIT_PURGE_SECONDS: "30" });
     expect(await child.proc.exited).not.toBe(0);
     expect(await child.err).toContain("AUDIT_PURGE_SECONDS");
+  });
+
+  test("audit forwarding is scheduled and served only with keys, off at 0, and a value in between is refused", async () => {
+    const keys = `k1:${Buffer.alloc(32, 7).toString("base64")}`;
+    const run = async (extra: Record<string, string>) => {
+      const child = start({ DATABASE_URL: t.url, ORCH_MASTER_KEYS: keys, ...extra });
+      await Bun.sleep(500);
+      child.proc.kill("SIGTERM");
+      await child.proc.exited;
+      return await child.out;
+    };
+    const forward = async () =>
+      (await t.db.select().from(schedules)).find((s) => s.name === "audit.forward");
+    await run({});
+    expect(await forward()).toMatchObject({
+      intervalSeconds: 30,
+      queue: "audit.forward",
+      enabled: true,
+    });
+    await run({ AUDIT_FORWARD_SECONDS: "120" });
+    expect(await forward()).toMatchObject({ intervalSeconds: 120, enabled: true });
+    const off = await run({ AUDIT_FORWARD_SECONDS: "0" });
+    // switched off, the schedule keeps a valid interval
+    expect(await forward()).toMatchObject({ enabled: false, intervalSeconds: 30 });
+    expect(off).not.toContain("audit.forward");
+
+    const child = start({ DATABASE_URL: t.url, AUDIT_FORWARD_SECONDS: "5" });
+    expect(await child.proc.exited).not.toBe(0);
+    expect(await child.err).toContain("AUDIT_FORWARD_SECONDS");
   });
 
   test("the expiry of change requests is scheduled without keys, off at 0, and a value in between is refused", async () => {

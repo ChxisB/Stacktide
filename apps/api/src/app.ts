@@ -18,7 +18,11 @@ import { cliRoutes } from "./routes/cli";
 import { connectionRoutes } from "./routes/connections";
 import { environmentRoutes } from "./routes/environments";
 import { importRoutes } from "./routes/imports";
-import { notificationSinkRoutes, notificationSubscriptionRoutes } from "./routes/notifications";
+import {
+  auditForwardingRoutes,
+  notificationSinkRoutes,
+  notificationSubscriptionRoutes,
+} from "./routes/notifications";
 import { organizationRoutes } from "./routes/organizations";
 import { pipelineRoutes } from "./routes/pipeline";
 import { pipelineFleetRoutes } from "./routes/pipeline-fleet";
@@ -125,6 +129,7 @@ export function createApp(deps: AppDeps) {
     .use(syncTargetRoutes(deps))
     .use(notificationSinkRoutes(deps))
     .use(notificationSubscriptionRoutes(deps))
+    .use(auditForwardingRoutes(deps))
     .use(policySetRoutes(deps))
     .use(auditLogRoutes(deps))
     .use(syncRunRoutes(deps))

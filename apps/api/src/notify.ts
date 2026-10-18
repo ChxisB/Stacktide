@@ -1,9 +1,9 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { NOTIFICATION_EVENTS, type SinkKind } from "@orch/core";
+import { NOTIFICATION_EVENTS, type SinkKind, takesNotifications } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
-import { type Db, openSink } from "@orch/db";
+import { type Db, ForwardFailure, openSink } from "@orch/db";
 import { z } from "zod";
 import type { JobHandler } from "./worker";
 
@@ -11,6 +11,9 @@ import type { JobHandler } from "./worker";
 export class SinkUrlError extends Error {
   override readonly name = "SinkUrlError";
 }
+
+/** Why a sink could not be reached, as a fixed sentence that is safe to store and show: it carries no address, no credential and nothing the sink said but its status. */
+export class SinkFailure extends ForwardFailure {}
 
 const MAX_URL = 2000;
 
@@ -54,12 +57,16 @@ export function publicAddress(ip: string): boolean {
   );
 }
 
-const bareHost = (u: URL) => u.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
+export const bareHost = (u: URL) =>
+  u.hostname
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "")
+    .toLowerCase();
 
 /**
- * The address of a sink, checked: https, no credentials in it, a public host, and for Slack a
- * hooks.slack.com/services address. This is what can be known without asking DNS; delivery also
- * checks what the name resolves to.
+ * The address of a sink, checked: https (tls:// for syslog), no credentials in it, a public host, and
+ * for Slack a hooks.slack.com/services address. This is what can be known without asking DNS;
+ * delivery also checks what the name resolves to.
  */
 export function sinkUrl(kind: SinkKind, raw: string): URL {
   if (raw.length > MAX_URL) throw new SinkUrlError("The address is too long");
@@ -69,7 +76,9 @@ export function sinkUrl(kind: SinkKind, raw: string): URL {
   } catch {
     throw new SinkUrlError("The address is not a URL");
   }
-  if (u.protocol !== "https:") throw new SinkUrlError("The address must use https");
+  if (u.protocol !== (kind === "syslog" ? "tls:" : "https:")) {
+    throw new SinkUrlError(`The address must use ${kind === "syslog" ? "tls" : "https"}`);
+  }
   if (u.username !== "" || u.password !== "") {
     throw new SinkUrlError("The address must not carry a user name or password");
   }
@@ -145,6 +154,74 @@ export interface NotifyDeps {
   timeoutMs?: number;
 }
 
+/** A sink opened: its kind, where it delivers to, and the secret or credential sealed with it. */
+export async function openSealed(
+  db: Db,
+  keys: KeyProvider,
+  organizationId: string,
+  sinkId: string,
+) {
+  const opened = await openSink(db, keys, organizationId, sinkId);
+  if (!opened) return undefined;
+  const sealed = sealedShape.safeParse(safeJson(opened.secret));
+  if (!sealed.success) throw new SinkFailure("sink is not readable");
+  return { kind: opened.sink.kind, ...sealed.data };
+}
+
+/**
+ * Where a sink delivers to, checked: the address is allowed and every address its name resolves to
+ * is public. Throws a `SinkFailure` otherwise.
+ */
+export async function checkTarget(
+  kind: SinkKind,
+  raw: string,
+  resolve: (host: string) => Promise<string[]> = resolveAll,
+) {
+  let target: URL;
+  try {
+    target = sinkUrl(kind, raw);
+  } catch {
+    throw new SinkFailure("sink address is not allowed");
+  }
+  const host = bareHost(target);
+  let addresses = [host];
+  if (!isIP(host)) {
+    try {
+      addresses = await resolve(host);
+    } catch {
+      throw new SinkFailure("sink could not be reached");
+    }
+  }
+  if (addresses.length === 0 || !addresses.every(publicAddress)) {
+    throw new SinkFailure("sink address is not allowed");
+  }
+  return { target, addresses };
+}
+
+/** POSTs to a checked address and returns the status of a 2xx answer; anything else is a `SinkFailure`. */
+export async function post(
+  d: Pick<NotifyDeps, "fetch" | "timeoutMs">,
+  target: URL,
+  o: { headers: Record<string, string>; body: string; signal: AbortSignal },
+) {
+  let res: Response;
+  try {
+    res = await (d.fetch ?? fetch)(target.href, {
+      method: "POST",
+      headers: o.headers,
+      body: o.body,
+      // a redirect could lead somewhere the checks above did not look at
+      redirect: "manual",
+      signal: AbortSignal.any([o.signal, AbortSignal.timeout(d.timeoutMs ?? 10_000)]),
+    });
+  } catch {
+    throw new SinkFailure("sink could not be reached");
+  }
+  await res.body?.cancel().catch(() => undefined);
+  if (!res.ok) throw new SinkFailure(`sink answered ${res.status}`);
+  return res.status;
+}
+
 /**
  * Delivers one notification (POL-2): reads the sink's address (and a webhook's secret) from the
  * vault, checks that it still points at the public internet, and posts. Resolve is delivery, throw
@@ -161,33 +238,17 @@ export const notifyDeliverHandler =
     const parsed = notificationShape.safeParse(ctx.payload);
     if (!parsed.success) throw new Error("job is not a notification");
     const n = parsed.data;
-    const opened = await openSink(d.db, d.keys, n.organizationId, n.sinkId);
-    if (!opened) {
+    const sink = await openSealed(d.db, d.keys, n.organizationId, n.sinkId);
+    if (!sink) {
       ctx.log.info("sink is gone; nothing to deliver", { sink_id: n.sinkId });
       return;
     }
-    const sealed = sealedShape.safeParse(safeJson(opened.secret));
-    if (!sealed.success) throw new Error("sink is not readable");
-    const { kind } = opened.sink;
-
-    let target: URL;
-    try {
-      target = sinkUrl(kind, sealed.data.url);
-    } catch {
-      throw new Error("sink address is not allowed");
+    const { kind } = sink;
+    // a sink made for the audit log has no business here
+    if (!takesNotifications(kind)) {
+      throw new SinkFailure("sink cannot take notifications");
     }
-    const host = bareHost(target);
-    let addresses = [host];
-    if (!isIP(host)) {
-      try {
-        addresses = await (d.resolve ?? resolveAll)(host);
-      } catch {
-        throw new Error("sink could not be reached");
-      }
-    }
-    if (addresses.length === 0 || !addresses.every(publicAddress)) {
-      throw new Error("sink address is not allowed");
-    }
+    const { target } = await checkTarget(kind, sink.url, d.resolve);
 
     const headers: Record<string, string> = {
       "content-type": "application/json",
@@ -196,34 +257,21 @@ export const notifyDeliverHandler =
     let body: string;
     if (kind === "slack") body = JSON.stringify(slackMessage(n));
     else {
-      if (sealed.data.secret === undefined) throw new Error("sink is not readable");
+      if (sink.secret === undefined) throw new SinkFailure("sink is not readable");
       body = JSON.stringify(webhookBody(ctx.id, n));
       const timestamp = String(Math.floor((d.now?.() ?? new Date()).getTime() / 1000));
       headers["x-orch-event"] = n.event;
       headers["x-orch-delivery"] = ctx.id;
       headers["x-orch-timestamp"] = timestamp;
-      headers["x-orch-signature"] = `v1=${createHmac("sha256", sealed.data.secret)
-        .update(`${timestamp}.${body}`)
-        .digest("hex")}`;
+      headers["x-orch-signature"] = signature(sink.secret, timestamp, body);
     }
-
-    let res: Response;
-    try {
-      res = await (d.fetch ?? fetch)(target.href, {
-        method: "POST",
-        headers,
-        body,
-        // a redirect could lead somewhere the checks above did not look at
-        redirect: "manual",
-        signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(d.timeoutMs ?? 10_000)]),
-      });
-    } catch {
-      throw new Error("sink could not be reached");
-    }
-    await res.body?.cancel().catch(() => undefined);
-    if (!res.ok) throw new Error(`sink answered ${res.status}`);
-    ctx.log.info("notification delivered", { sink_id: n.sinkId, status: res.status });
+    const status = await post(d, target, { headers, body, signal: ctx.signal });
+    ctx.log.info("notification delivered", { sink_id: n.sinkId, status });
   };
+
+/** The `x-orch-signature` of a webhook body: `v1=` and the HMAC-SHA256 of `${timestamp}.${body}` under the sink's secret. */
+export const signature = (secret: string, timestamp: string, body: string) =>
+  `v1=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
 
 function safeJson(text: string): unknown {
   try {

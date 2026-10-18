@@ -6,6 +6,7 @@ import { migrate } from "drizzle-orm/bun-sql/migrator";
 import * as schema from "./schema";
 
 export * from "./audit";
+export * from "./audit-forwarding";
 export * from "./audit-log";
 export * from "./auth";
 export * from "./auto-sync";

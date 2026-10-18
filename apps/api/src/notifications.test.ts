@@ -6,6 +6,8 @@ import {
   createOrganization,
   createProject,
   createSession,
+  ForwardFailure,
+  forwardStep,
   getSink,
   listSubscriptions,
   notificationSinks,
@@ -387,5 +389,233 @@ describe("who may", () => {
       expect(res.text).not.toContain("URLTOKEN123");
     }
     expect((await call("dave", "GET", subs())).status).toBe(404);
+  });
+});
+
+const DD = "https://http-intake.logs.datadoghq.com/api/v2/logs?token=DDURLCANARY";
+const SPLUNK = "https://splunk.example.com:8088/services/collector/event";
+const SYSLOG = "tls://logs.example.com:6514";
+const datadog = (over: object = {}) => ({
+  kind: "datadog",
+  name: `d${++n}`,
+  url: DD,
+  apiKey: "DDKEYCANARY",
+  ...over,
+});
+const splunk = (over: object = {}) => ({
+  kind: "splunk",
+  name: `p${++n}`,
+  url: SPLUNK,
+  token: "SPLUNKTOKENCANARY",
+  ...over,
+});
+const syslog = (over: object = {}) => ({ kind: "syslog", name: `l${++n}`, url: SYSLOG, ...over });
+
+describe("collector sinks (GOV-4)", () => {
+  test("a Datadog, Splunk or syslog sink is stored sealed with its credential, and neither is ever shown", async () => {
+    for (const [body, secret] of [
+      [datadog(), "DDKEYCANARY"],
+      [splunk(), "SPLUNKTOKENCANARY"],
+      [syslog(), undefined],
+    ] as const) {
+      const res = await call("alice", "POST", sinks(), body);
+      expect([body.kind, res.status]).toEqual([body.kind, 201]);
+      expect(Object.keys(res.json).sort()).toEqual([
+        "createdAt",
+        "host",
+        "id",
+        "kind",
+        "name",
+        "organizationId",
+        "updatedAt",
+      ]);
+      expect(res.text).not.toContain("CANARY");
+      const opened = await openSink(t.db, keys, o1, res.json.id);
+      expect(JSON.parse(opened?.secret ?? "{}")).toEqual({
+        url: body.url,
+        ...(secret === undefined ? {} : { secret }),
+      });
+      const list = await call("alice", "GET", sinks());
+      expect(list.text).not.toContain("CANARY");
+      const [event] = await t.db
+        .select()
+        .from(auditEvents)
+        .where(eq(auditEvents.resourceId, res.json.id));
+      expect(event?.action).toBe("notification.sink.create");
+      expect(JSON.stringify(event)).not.toContain("CANARY");
+    }
+    expect((await call("alice", "POST", sinks(), syslog({ name: "tls" }))).json.host).toBe(
+      "logs.example.com:6514",
+    );
+  });
+
+  test("refuses a credential or an address the kind cannot have, without echoing either", async () => {
+    const bad = [
+      datadog({ apiKey: undefined }),
+      datadog({ apiKey: "" }),
+      datadog({ apiKey: "has a space CANARYKEY" }),
+      datadog({ apiKey: "k".repeat(501) }),
+      datadog({ token: "x" }),
+      datadog({ url: "http://http-intake.logs.datadoghq.com/api/v2/logs" }),
+      splunk({ token: undefined }),
+      splunk({ apiKey: "x" }),
+      splunk({ url: "https://10.0.0.5:8088/services/collector/event" }),
+      syslog({ url: "https://logs.example.com:6514" }),
+      syslog({ url: "tls://10.0.0.5:6514" }),
+      syslog({ url: "tls://localhost:6514" }),
+      syslog({ url: "tls://user:CANARYPASS@logs.example.com:6514" }),
+      syslog({ apiKey: "x" }),
+      hook({ url: "tls://logs.example.com:6514" }),
+    ];
+    for (const body of bad) {
+      const res = await call("alice", "POST", sinks(), body);
+      expect([body, res.status, res.json.code]).toEqual([body, 422, "validation_failed"]);
+      expect(res.text).not.toContain("CANARY");
+    }
+  });
+
+  test("a webhook still has its signing secret made and shown once", async () => {
+    const res = await create();
+    expect(res.secret).toMatch(/^whsec_/);
+  });
+
+  test("a project cannot ask a collector for its notifications; a webhook can be both", async () => {
+    const col = (await create(syslog())).id;
+    const both = (await create(hook())).id;
+    const refused = await call("alice", "PUT", `${subs()}/${col}`, { events: ["stack.drift"] });
+    expect([refused.status, refused.json.code]).toEqual([409, "sink_kind_not_for_notifications"]);
+    expect(await listSubscriptions(t.db, o1, p1, { limit: 100 })).toEqual(
+      expect.not.arrayContaining([expect.objectContaining({ sinkId: col })]),
+    );
+    expect(
+      (await call("alice", "PUT", `${subs()}/${both}`, { events: ["stack.drift"] })).status,
+    ).toBe(200);
+  });
+});
+
+describe("audit forwarding (GOV-4)", () => {
+  const fwd = (id: string, org = o1) => `${sinks(org)}/${id}/audit-forwarding`;
+  const NIL = "00000000-0000-0000-0000-000000000000";
+
+  test("starts from now by default, from the start of the log when asked, and keeps its place when told again", async () => {
+    const a = (await create(syslog())).id;
+    const b = (await create(datadog())).id;
+    expect((await call("alice", "GET", fwd(a))).status).toBe(404);
+
+    const first = await call("alice", "PUT", fwd(a), {});
+    expect(first.status).toBe(201);
+    expect(first.json).toMatchObject({
+      sinkId: a,
+      deliveredAt: null,
+      failures: 0,
+      lastError: null,
+    });
+    expect(first.json.cursor).not.toBe(NIL);
+    expect(Object.keys(first.json).sort()).toEqual([
+      "createdAt",
+      "cursor",
+      "deliveredAt",
+      "failures",
+      "lastError",
+      "nextAttemptAt",
+      "sinkId",
+      "updatedAt",
+    ]);
+    const again = await call("alice", "PUT", fwd(a), { from: "start" });
+    expect([again.status, again.json.cursor]).toEqual([200, first.json.cursor]);
+
+    const whole = await call("alice", "PUT", fwd(b), { from: "start" });
+    expect([whole.status, whole.json.cursor]).toEqual([201, NIL]);
+    expect((await call("alice", "GET", fwd(b))).json).toEqual(whole.json);
+
+    expect((await call("alice", "PUT", fwd(a), { from: "yesterday" })).status).toBe(422);
+    expect((await call("alice", "PUT", fwd(a), { from: "now", sink: "x" })).status).toBe(422);
+  });
+
+  test("starting it again says it was already there and is audited as not new", async () => {
+    const id = (await create(syslog())).id;
+    expect((await call("alice", "PUT", fwd(id), {})).status).toBe(201);
+    expect((await call("alice", "PUT", fwd(id), { from: "start" })).status).toBe(200);
+    const updates = (await auditsOf("audit.forwarding.update")).filter((e) => e.resourceId === id);
+    const meta = updates.map((e) => e.metadata as { created: boolean; from?: string });
+    // the second ask changed nothing, so it does not claim the start it asked for
+    expect(meta.find((m) => m.created)?.from).toBe("now");
+    expect(meta.find((m) => !m.created)).not.toHaveProperty("from");
+    expect(meta).toHaveLength(2);
+  });
+
+  test("shows how it is doing: the cursor, the failures and a fixed sentence, never an address", async () => {
+    const id = (await create(splunk())).id;
+    await call("alice", "PUT", fwd(id), { from: "start" });
+    const step = await forwardStep(t.db, {
+      sinkId: id,
+      now: new Date(Date.now() + 60_000),
+      send: async () => {
+        throw new ForwardFailure("sink answered 500");
+      },
+    });
+    expect(step).toEqual({ result: "failed" });
+    const res = await call("alice", "GET", fwd(id));
+    expect(res.json).toMatchObject({ failures: 1, lastError: "sink answered 500", cursor: NIL });
+    expect(res.text).not.toContain("CANARY");
+  });
+
+  test("a sink of a kind that cannot take the audit log, a sink that is not there and another organization's sink are refused", async () => {
+    const chat = (await create(slack())).id;
+    const refused = await call("alice", "PUT", fwd(chat), {});
+    expect([refused.status, refused.json.code]).toEqual([409, "sink_kind_not_for_audit"]);
+    expect((await call("alice", "GET", fwd(chat))).status).toBe(404);
+    expect((await call("alice", "PUT", fwd(crypto.randomUUID()), {})).status).toBe(404);
+    const theirs = await call("dave", "POST", sinks(o2), syslog());
+    expect(theirs.status).toBe(201);
+    // org one's admin reaches for org two's sink through org one's path
+    expect((await call("alice", "PUT", fwd(theirs.json.id), {})).status).toBe(404);
+    expect((await call("alice", "PUT", fwd(theirs.json.id, o2), {})).status).toBe(404);
+  });
+
+  test("stopping says it was there once, keeps the sink, and both ways are audited without the address", async () => {
+    const id = (await create(syslog())).id;
+    await call("alice", "PUT", fwd(id), { from: "start" });
+    expect((await call("alice", "DELETE", fwd(id))).status).toBe(204);
+    expect((await call("alice", "DELETE", fwd(id))).status).toBe(404);
+    expect((await call("alice", "GET", fwd(id))).status).toBe(404);
+    expect((await getSink(t.db, o1, id))?.id).toBe(id);
+    const updates = (await auditsOf("audit.forwarding.update")).filter((e) => e.resourceId === id);
+    const stops = (await auditsOf("audit.forwarding.delete")).filter((e) => e.resourceId === id);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.metadata).toEqual({
+      kind: "syslog",
+      name: expect.any(String),
+      host: "logs.example.com:6514",
+      from: "start",
+      created: true,
+    });
+    expect(stops).toHaveLength(1);
+    expect(JSON.stringify([updates, stops])).not.toContain("tls://");
+  });
+
+  test("deleting the sink ends its forwarding", async () => {
+    const id = (await create(syslog())).id;
+    await call("alice", "PUT", fwd(id), {});
+    expect((await call("alice", "DELETE", `${sinks()}/${id}`)).status).toBe(204);
+    expect((await call("alice", "GET", fwd(id))).status).toBe(404);
+  });
+
+  test("only an organization admin may read or change it; strangers see nothing", async () => {
+    const id = (await create(syslog())).id;
+    await call("alice", "PUT", fwd(id), {});
+    const calls: [string, unknown?][] = [["GET"], ["PUT", {}], ["DELETE"]];
+    for (const [method, body] of calls) {
+      for (const [who, status] of [
+        [undefined, 401],
+        ["bob", 403],
+        ["carol", 403],
+        ["dave", 404],
+      ] as const) {
+        const res = await call(who, method, fwd(id), body);
+        expect([method, who, res.status]).toEqual([method, who, status]);
+      }
+    }
+    expect((await call("alice", "GET", fwd(id))).status).toBe(200);
   });
 });

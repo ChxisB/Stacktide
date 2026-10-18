@@ -12,6 +12,6 @@ Done when: tests cover the full state machine, self-approval rejection, expiry a
 Do: protected-environment sync apply and IaC apply require an approved change request; auto-sync stays manual there.
 Done when: tests show apply is rejected without approval and succeeds with it for both paths.
 
-### GOV-4 - Audit forwarding  `[ ]` M - deps: GOV-1, POL-2
+### GOV-4 - Audit forwarding  `[x]` M - deps: GOV-1, POL-2
 Do: configurable sinks (webhook, syslog, Datadog/Splunk HTTP collectors) with at-least-once delivery and cursor tracking.
 Done when: tests cover retry, resume after downtime and no duplicate-free assumption (consumers dedupe by event id).

@@ -1,8 +1,18 @@
-import { NOTIFICATION_EVENTS, SINK_KINDS, type SinkKind } from "@orch/core";
+import {
+  DomainError,
+  NOTIFICATION_EVENTS,
+  SINK_KINDS,
+  type SinkKind,
+  takesAudit,
+  takesNotifications,
+} from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import {
   createSink,
   deleteSink,
+  disableForwarding,
+  enableForwarding,
+  getForwarding,
   getOrganization,
   getProject,
   getSink,
@@ -73,9 +83,24 @@ const address = (k: SinkKind) =>
       }
     });
 
+/** Goes into a header, so printable ASCII without spaces; a refusal says so and does not quote it. */
+const credential = z
+  .string()
+  .max(500)
+  .regex(/^[!-~]+$/, "must be printable characters without spaces");
+
 const create = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("webhook"), name, url: address("webhook") }),
   z.strictObject({ kind: z.literal("slack"), name, url: address("slack") }),
+  // the collectors of the audit log (GOV-4); the credential is sealed with the address and never shown again
+  z.strictObject({ kind: z.literal("syslog"), name, url: address("syslog") }),
+  z.strictObject({
+    kind: z.literal("datadog"),
+    name,
+    url: address("datadog"),
+    apiKey: credential,
+  }),
+  z.strictObject({ kind: z.literal("splunk"), name, url: address("splunk"), token: credential }),
 ]);
 
 const created = sinkSchema.extend({
@@ -138,7 +163,10 @@ export const notificationSinkRoutes = ({
       async ({ params: { orgId }, body, audit, set }) => {
         if (!keys) throw noKeys();
         if (!(await getOrganization(db, orgId))) throw notFound("Organization");
-        const secret = body.kind === "webhook" ? newWebhookSecret() : undefined;
+        // a webhook's secret is made here and shown once; a collector's credential came with the request
+        const generated = body.kind === "webhook" ? newWebhookSecret() : undefined;
+        const secret =
+          body.kind === "datadog" ? body.apiKey : body.kind === "splunk" ? body.token : generated;
         const sink = await db
           .transaction(async (tx) => {
             const s = await createSink(tx, keys, {
@@ -160,7 +188,7 @@ export const notificationSinkRoutes = ({
         set.status = 201;
         // the signing secret is in this answer and nowhere else
         set.headers["cache-control"] = "no-store";
-        return { ...sinkDto(sink), ...(secret === undefined ? {} : { secret }) };
+        return { ...sinkDto(sink), ...(generated === undefined ? {} : { secret: generated }) };
       },
       {
         params: orgParams,
@@ -247,7 +275,15 @@ export const notificationSubscriptionRoutes = ({ db, principal }: RouteDeps) =>
         await db
           .transaction(async (tx) => {
             if (!(await getProject(tx, orgId, projectId))) throw notFound("Project");
-            if (!(await getSink(tx, orgId, sinkId))) throw notFound("Notification sink");
+            const sink = await getSink(tx, orgId, sinkId);
+            if (!sink) throw notFound("Notification sink");
+            if (!takesNotifications(sink.kind)) {
+              throw new DomainError(
+                "sink_kind_not_for_notifications",
+                409,
+                "This kind of sink takes the audit log, not notifications",
+              );
+            }
             await setSubscriptions(tx, { organizationId: orgId, projectId, sinkId, events });
             await audit(
               tx,
@@ -301,5 +337,119 @@ export const notificationSubscriptionRoutes = ({ db, principal }: RouteDeps) =>
         audit: "notification.subscription.delete",
         // A project's say in a sink is the organization's to give and take (no separate action).
         guard: "notification.subscription.update",
+      },
+    );
+
+const forwardingSchema = z.object({
+  sinkId: z.uuid(),
+  /** The id of the last event handed over; every event with a higher id is still to come. */
+  cursor: z.string(),
+  deliveredAt: z.iso.datetime().nullable(),
+  failures: z.number().int().min(0),
+  /** Why the last try failed: a fixed sentence, never what the sink said. */
+  lastError: z.string().nullable(),
+  nextAttemptAt: z.iso.datetime(),
+  ...stamps,
+});
+const forwardingDto = (f: NonNullable<Awaited<ReturnType<typeof getForwarding>>>) => ({
+  sinkId: f.sinkId,
+  cursor: f.cursor,
+  deliveredAt: f.deliveredAt ? iso(f.deliveredAt) : null,
+  failures: f.failures,
+  lastError: f.lastError,
+  nextAttemptAt: iso(f.nextAttemptAt),
+  createdAt: iso(f.createdAt),
+  updatedAt: iso(f.updatedAt),
+});
+const forwardStart = z.strictObject({
+  /** Where a new forwarding begins: after what is written from now on, or at the start of the log still kept. */
+  from: z.enum(["now", "start"]).default("now"),
+});
+
+/**
+ * Sending an organization's audit log to one of its collectors (GOV-4). A sink of a kind that takes
+ * the audit log is told to start; from then on the worker hands it every event, in id order, at least
+ * once. The state shown is the cursor and the last failure, never an address or a credential.
+ * Org admins only.
+ */
+export const auditForwardingRoutes = ({ db, principal }: RouteDeps) =>
+  new Elysia({ prefix: "/organizations/:orgId/notification-sinks/:sinkId/audit-forwarding" })
+    .use(auditPlugin(principal))
+    .use(guardPlugin)
+    .get(
+      "",
+      async ({ params: { orgId, sinkId } }) => {
+        const f = await getForwarding(db, orgId, sinkId);
+        if (!f) throw notFound("Audit forwarding");
+        return forwardingDto(f);
+      },
+      {
+        params: sinkParams,
+        response: { 200: forwardingSchema, ...readErrors },
+        guard: "audit.forwarding.read",
+      },
+    )
+    .put(
+      "",
+      async ({ params: { orgId, sinkId }, body, audit, set }) => {
+        const { forwarding, created } = await db
+          .transaction(async (tx) => {
+            const s = await getSink(tx, orgId, sinkId);
+            if (!s) throw notFound("Notification sink");
+            if (!takesAudit(s.kind)) {
+              throw new DomainError(
+                "sink_kind_not_for_audit",
+                409,
+                "This kind of sink cannot take the audit log",
+              );
+            }
+            const r = await enableForwarding(tx, {
+              organizationId: orgId,
+              sinkId,
+              from: body.from,
+              now: new Date(),
+            });
+            await audit(
+              tx,
+              auditedSink("audit.forwarding.update", s, {
+                ...sinkFacts(s),
+                // an existing forwarding keeps its place, so what was asked for is not what happened
+                ...(r.created ? { from: body.from } : {}),
+                created: r.created,
+              }),
+            );
+            return r;
+          })
+          // the sink went between the check and the write
+          .catch(mapDbError({ audit_forwards_sink_org_fk: notFound("Notification sink") }));
+        set.status = created ? 201 : 200;
+        return forwardingDto(forwarding);
+      },
+      {
+        params: sinkParams,
+        body: forwardStart,
+        parse: "json",
+        response: { 200: forwardingSchema, 201: forwardingSchema, ...writeErrors },
+        audit: "audit.forwarding.update",
+        guard: "audit.forwarding.update",
+      },
+    )
+    .delete(
+      "",
+      async ({ params: { orgId, sinkId }, audit, set }) => {
+        await db.transaction(async (tx) => {
+          const s = await getSink(tx, orgId, sinkId);
+          if (!s || !(await disableForwarding(tx, orgId, sinkId))) {
+            throw notFound("Audit forwarding");
+          }
+          await audit(tx, auditedSink("audit.forwarding.delete", s, sinkFacts(s)));
+        });
+        set.status = 204;
+      },
+      {
+        params: sinkParams,
+        response: deleteResponses,
+        audit: "audit.forwarding.delete",
+        guard: "audit.forwarding.update",
       },
     );

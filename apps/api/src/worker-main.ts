@@ -1,6 +1,7 @@
 import { createLogger, loadConfig } from "@orch/core";
 import { envKeyProvider, type KeyProvider } from "@orch/crypto";
 import {
+  AUDIT_FORWARD_QUEUE,
   AUDIT_PURGE_QUEUE,
   AUTO_SYNC_QUEUE,
   CHANGE_REQUEST_EXPIRE_QUEUE,
@@ -15,6 +16,7 @@ import {
   WEBHOOK_QUEUE,
 } from "@orch/db";
 import { z } from "zod";
+import { auditForwardHandler } from "./audit-forward";
 import { auditPurgeHandler } from "./audit-purge";
 import { rolesFromEnv } from "./auth-config";
 import { changeRequestExpireHandler } from "./change-request-expire";
@@ -87,6 +89,13 @@ const config = loadConfig(
       .max(86_400)
       .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
       .default(300),
+    /** How often the audit log is handed to the sinks that were told to take it (GOV-4); 0 switches forwarding off. */
+    AUDIT_FORWARD_SECONDS: z.coerce
+      .number()
+      .int()
+      .max(3600)
+      .refine((n) => n === 0 || n >= 10, "0 (off) or at least 10")
+      .default(30),
   }),
 );
 const logger = createLogger({ level: config.LOG_LEVEL });
@@ -133,6 +142,16 @@ if (keys) {
   handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger, guardrails });
   // POL-2: the sink's address is sealed, so delivering needs the keys
   handlers[NOTIFY_QUEUE] = notifyDeliverHandler({ db, keys });
+  // GOV-4: so is the collector's; off means off, with no handler for a job that is already waiting
+  if (config.AUDIT_FORWARD_SECONDS > 0) {
+    handlers[AUDIT_FORWARD_QUEUE] = auditForwardHandler({ db, keys });
+  }
+  await upsertSchedule(db, {
+    name: "audit.forward",
+    intervalSeconds: config.AUDIT_FORWARD_SECONDS || 30,
+    queue: AUDIT_FORWARD_QUEUE,
+    enabled: config.AUDIT_FORWARD_SECONDS > 0,
+  });
   // one queue, five consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
   // belongs to (IAC-6); a merge request event plans the merge request (IAC-7), and its merge applies
   // the stacks that opted in (IAC-8, which needs no setting of its own: no plan, no run to apply); a

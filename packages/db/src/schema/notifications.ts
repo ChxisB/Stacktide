@@ -4,9 +4,11 @@ import {
   customType,
   foreignKey,
   index,
+  integer,
   pgTable,
   primaryKey,
   text,
+  timestamp,
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -46,7 +48,10 @@ export const notificationSinks = pgTable(
     unique("notification_sinks_org_name_key").on(t.organizationId, t.name),
     // Target of the composite foreign key that keeps a subscription in its sink's organization.
     unique("notification_sinks_id_org_key").on(t.id, t.organizationId),
-    check("notification_sinks_kind_check", sql`${t.kind} in ('webhook', 'slack')`),
+    check(
+      "notification_sinks_kind_check",
+      sql`${t.kind} in ('webhook', 'slack', 'syslog', 'datadog', 'splunk')`,
+    ),
   ],
 );
 
@@ -79,5 +84,36 @@ export const notificationSubscriptions = pgTable(
       foreignColumns: [projects.id, projects.organizationId],
     }).onDelete("cascade"),
     check("notification_subscriptions_event_check", sql`${t.event} in ('stack.drift')`),
+  ],
+);
+
+/**
+ * A sink that is sent the organization's audit log (GOV-4), and how far it has got. `cursor` is the id
+ * of the last event handed over: events are sent in id order, and a batch moves it only after the sink
+ * took the batch, so a failure or a crash sends the batch again (at least once; receivers dedupe by
+ * event id). `failures`/`last_error` (a fixed sentence, never an address) and `next_attempt_at` are the
+ * backoff of an unreachable sink; `delivered_at` is the last batch that went through.
+ */
+export const auditForwards = pgTable(
+  "audit_forwards",
+  {
+    sinkId: uuid().primaryKey(),
+    organizationId: uuid().notNull(),
+    cursor: uuid().notNull(),
+    deliveredAt: timestamp({ withTimezone: true }),
+    failures: integer().notNull().default(0),
+    lastError: text(),
+    nextAttemptAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    ...timestamps(),
+  },
+  (t) => [
+    // CASCADE: forwarding is configuration of the sink and goes with it.
+    foreignKey({
+      name: "audit_forwards_sink_org_fk",
+      columns: [t.sinkId, t.organizationId],
+      foreignColumns: [notificationSinks.id, notificationSinks.organizationId],
+    }).onDelete("cascade"),
+    index("audit_forwards_due_idx").on(t.nextAttemptAt),
+    check("audit_forwards_failures_check", sql`${t.failures} >= 0`),
   ],
 );
