@@ -145,6 +145,19 @@ with `orch plan` or `orch apply` and a reader wrote it, the reply says it was no
 edit of it, and notes GitLab wrote are never commands. The platform's replies never start with a command,
 so they cannot start one.
 
+## State
+
+A stack that declares `backend "http" {}` keeps its state in GitLab's own Terraform state, with nothing to
+configure: each generated job sets the backend's `TF_HTTP_*` variables for the stack (address, lock and
+unlock addresses, `gitlab-ci-token` and `$CI_JOB_TOKEN`, all as references GitLab fills in; the job's own
+token, never a stored one). The state is **named after the stack** (`name` in `stack.yml`), so renaming a
+stack starts it a new, empty state. A stack that declares another backend (`s3`, `gcs`, ...) or none gets
+none of this: its own backend block and the runner's credentials reach it. (A project's own `TF_HTTP_*`
+CI variables are believed to win over the generated ones, as GitLab's variable precedence puts project
+variables above a job's; not verified here.) Terragrunt stacks (whose backend the platform does not read) get the settings, so their
+`remote_state` should be `backend = "http"` with `config = {}`. The job's user needs the role GitLab asks
+to lock and write state (Maintainer).
+
 ## What to know
 
 - **A merge request from a fork is not planned.** The plan runs in the project's CI with the project's

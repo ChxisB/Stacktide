@@ -36,7 +36,7 @@ Done when: tests cover each failed precondition, double-apply prevention and a f
 Do: parse `orch plan|apply [stack]` from note webhooks; authorise via AUTH roles; reply with a note.
 Done when: tests cover unknown stack, unauthorised user, ambiguous command text and quick-action-looking input.
 
-### IAC-10 - State backend wiring  `[ ]` S - deps: IAC-4
+### IAC-10 - State backend wiring  `[x]` S - deps: IAC-4
 Do: inject GitLab-managed state env into generated jobs (state name per stack); passthrough for a custom backend declared in the marker.
 Done when: generated jobs init against a fake HTTP backend in a test, with lock/unlock hit.
 

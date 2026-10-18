@@ -14,6 +14,15 @@ plan:net:
     entrypoint:
       - ""
   resource_group: stack-net
+  variables:
+    TF_HTTP_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/net
+    TF_HTTP_LOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/net/lock
+    TF_HTTP_LOCK_METHOD: POST
+    TF_HTTP_UNLOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/net/lock
+    TF_HTTP_UNLOCK_METHOD: DELETE
+    TF_HTTP_USERNAME: gitlab-ci-token
+    TF_HTTP_PASSWORD: $CI_JOB_TOKEN
+    TF_HTTP_RETRY_WAIT_MIN: "5"
   needs: []
   interruptible: true
   artifacts:
@@ -53,6 +62,15 @@ plan:db:
     entrypoint:
       - ""
   resource_group: stack-db
+  variables:
+    TF_HTTP_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/db
+    TF_HTTP_LOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/db/lock
+    TF_HTTP_LOCK_METHOD: POST
+    TF_HTTP_UNLOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/db/lock
+    TF_HTTP_UNLOCK_METHOD: DELETE
+    TF_HTTP_USERNAME: gitlab-ci-token
+    TF_HTTP_PASSWORD: $CI_JOB_TOKEN
+    TF_HTTP_RETRY_WAIT_MIN: "5"
   needs:
     - job: plan:net
       artifacts: false
@@ -94,6 +112,15 @@ plan:queue:
     entrypoint:
       - ""
   resource_group: stack-queue
+  variables:
+    TF_HTTP_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/queue
+    TF_HTTP_LOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/queue/lock
+    TF_HTTP_LOCK_METHOD: POST
+    TF_HTTP_UNLOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/queue/lock
+    TF_HTTP_UNLOCK_METHOD: DELETE
+    TF_HTTP_USERNAME: gitlab-ci-token
+    TF_HTTP_PASSWORD: $CI_JOB_TOKEN
+    TF_HTTP_RETRY_WAIT_MIN: "5"
   needs:
     - job: plan:net
       artifacts: false
@@ -135,6 +162,15 @@ plan:app:
     entrypoint:
       - ""
   resource_group: stack-app
+  variables:
+    TF_HTTP_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/app
+    TF_HTTP_LOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/app/lock
+    TF_HTTP_LOCK_METHOD: POST
+    TF_HTTP_UNLOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/app/lock
+    TF_HTTP_UNLOCK_METHOD: DELETE
+    TF_HTTP_USERNAME: gitlab-ci-token
+    TF_HTTP_PASSWORD: $CI_JOB_TOKEN
+    TF_HTTP_RETRY_WAIT_MIN: "5"
   needs:
     - job: plan:db
       artifacts: false
@@ -185,6 +221,15 @@ apply:net:
     entrypoint:
       - ""
   resource_group: stack-net
+  variables:
+    TF_HTTP_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/net
+    TF_HTTP_LOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/net/lock
+    TF_HTTP_LOCK_METHOD: POST
+    TF_HTTP_UNLOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/net/lock
+    TF_HTTP_UNLOCK_METHOD: DELETE
+    TF_HTTP_USERNAME: gitlab-ci-token
+    TF_HTTP_PASSWORD: $CI_JOB_TOKEN
+    TF_HTTP_RETRY_WAIT_MIN: "5"
   needs: []
   script:
     - cd stacks/net
@@ -198,6 +243,15 @@ apply:db:
     entrypoint:
       - ""
   resource_group: stack-db
+  variables:
+    TF_HTTP_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/db
+    TF_HTTP_LOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/db/lock
+    TF_HTTP_LOCK_METHOD: POST
+    TF_HTTP_UNLOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/db/lock
+    TF_HTTP_UNLOCK_METHOD: DELETE
+    TF_HTTP_USERNAME: gitlab-ci-token
+    TF_HTTP_PASSWORD: $CI_JOB_TOKEN
+    TF_HTTP_RETRY_WAIT_MIN: "5"
   needs:
     - job: apply:net
       artifacts: false
@@ -213,6 +267,15 @@ apply:queue:
     entrypoint:
       - ""
   resource_group: stack-queue
+  variables:
+    TF_HTTP_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/queue
+    TF_HTTP_LOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/queue/lock
+    TF_HTTP_LOCK_METHOD: POST
+    TF_HTTP_UNLOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/queue/lock
+    TF_HTTP_UNLOCK_METHOD: DELETE
+    TF_HTTP_USERNAME: gitlab-ci-token
+    TF_HTTP_PASSWORD: $CI_JOB_TOKEN
+    TF_HTTP_RETRY_WAIT_MIN: "5"
   needs:
     - job: apply:net
       artifacts: false
@@ -228,6 +291,15 @@ apply:app:
     entrypoint:
       - ""
   resource_group: stack-app
+  variables:
+    TF_HTTP_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/app
+    TF_HTTP_LOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/app/lock
+    TF_HTTP_LOCK_METHOD: POST
+    TF_HTTP_UNLOCK_ADDRESS: $CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/app/lock
+    TF_HTTP_UNLOCK_METHOD: DELETE
+    TF_HTTP_USERNAME: gitlab-ci-token
+    TF_HTTP_PASSWORD: $CI_JOB_TOKEN
+    TF_HTTP_RETRY_WAIT_MIN: "5"
   needs:
     - job: apply:db
       artifacts: false

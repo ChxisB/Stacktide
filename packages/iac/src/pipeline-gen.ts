@@ -83,6 +83,25 @@ export const SUMMARY_FILTER = [
   `resources: ($c | map({address, actions: .change.actions}) | .[:${MAX_LISTED}])}`,
 ].join(" ");
 
+/**
+ * GitLab-managed state (D9) as the Terraform `http` backend reads it: the state is named after the
+ * stack (a closed character set, so a safe path segment), locking is GitLab's POST/DELETE rather
+ * than the backend's LOCK/UNLOCK, and the password is the job's own token by reference, never a value.
+ */
+const stateVariables = (name: string) => {
+  const address = `$CI_API_V4_URL/projects/$CI_PROJECT_ID/terraform/state/${name}`;
+  return {
+    TF_HTTP_ADDRESS: address,
+    TF_HTTP_LOCK_ADDRESS: `${address}/lock`,
+    TF_HTTP_LOCK_METHOD: "POST",
+    TF_HTTP_UNLOCK_ADDRESS: `${address}/lock`,
+    TF_HTTP_UNLOCK_METHOD: "DELETE",
+    TF_HTTP_USERNAME: "gitlab-ci-token",
+    TF_HTTP_PASSWORD: "$CI_JOB_TOKEN",
+    TF_HTTP_RETRY_WAIT_MIN: "5",
+  };
+};
+
 // names that come from a user are shown quoted and cut short
 const quoted = (s: string) => JSON.stringify(s.length > 64 ? `${s.slice(0, 64)}…` : s);
 const inDir = (dir: string, file: string) => (dir === "." ? file : `${dir}/${file}`);
@@ -92,6 +111,8 @@ const inDir = (dir: string, file: string) => (dir === "." ? file : `${dir}/${fil
  * selected stacks it depends on (through stacks that are not selected too), in the stack's own
  * `resource_group` so that two runs never touch a stack together.
  *
+ * - every tool job gets the settings of the stack's GitLab-managed state, unless the stack declares
+ *   another backend or none (see `stateVariables`).
  * - `plan` saves the plan and its JSON as artifacts and, in a later job that holds the platform's
  *   `id_token` and nothing of the cloud's, posts the counts to the platform.
  * - `apply` fetches the plan the given job saved and applies exactly that.
@@ -199,6 +220,12 @@ export function generatePipeline(input: GenerateInput): string {
       stage: stageOf.get(name),
       image: { name: `${repoOf.get(name)}:${s.version}`, entrypoint: [""] },
       resource_group: `stack-${name}`,
+      // only where the stack uses them: `http`, or Terragrunt, whose backend is not read here. A
+      // backend of its own is passed through (its code and the runner's credentials reach it) and a
+      // stack with none has local state, which these would not change.
+      ...(s.backend === "http" || s.backend === "unchecked"
+        ? { variables: stateVariables(name) }
+        : {}),
       needs: needsOf(name).map((n) => ({ job: `${action}:${n}`, artifacts: false })),
       ...tokens,
       ...extra,
