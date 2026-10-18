@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { apply, bump, bumpOf, notes, parse, plan } from "./version";
+
+const SCRIPT = fileURLToPath(new URL("./version.ts", import.meta.url));
 
 const changes = (...messages: string[]) =>
   messages.map((m, i) => parse(`${i}`.padStart(7, "a"), m)).filter((c) => c !== undefined);
@@ -128,6 +131,34 @@ describe("plan and apply on a real repository", () => {
     await r.git("tag", "v1.0.0-rc.1");
     await r.commit("fix: bug");
     await expect(plan(r.dir, "2026-10-18")).rejects.toThrow("not a version");
+  });
+
+  test("a shallow clone or a directory that is not a repository is refused, not read as no release yet", async () => {
+    const r = await repo();
+    await r.commit("feat: first");
+    await r.git("tag", "v0.1.0");
+    await r.commit("fix: bug");
+    const shallow = join(root, "shallow");
+    await Bun.$`git clone --quiet --depth 1 file://${r.dir} ${shallow}`.quiet();
+    await expect(plan(shallow, "2026-10-18")).rejects.toThrow("shallow");
+    const bare = join(root, "not-a-repo");
+    await mkdir(bare);
+    await expect(plan(bare, "2026-10-18")).rejects.toThrow("git failed");
+  });
+
+  test("the command: --apply alone writes no notes file, and --notes needs a file", async () => {
+    const r = await repo();
+    await writeFile(join(r.dir, "apps/cli/package.json"), '{ "version": "0.0.0" }\n');
+    await writeFile(join(r.dir, "bun.lock"), '"name": "@orch/cli",\n      "version": "0.0.0",\n');
+    await r.commit("feat: first");
+    const run = (...args: string[]) =>
+      Bun.$`${process.execPath} ${SCRIPT} ${args}`.cwd(r.dir).quiet().nothrow();
+    const applied = await run("--apply");
+    expect(applied.text().trim()).toBe("0.1.0");
+    expect(await readdir(r.dir)).not.toContain("--apply");
+    expect(await readFile(join(r.dir, "apps/cli/package.json"), "utf8")).toContain('"0.1.0"');
+    expect((await run("--notes")).exitCode).not.toBe(0);
+    expect((await run("--notes", "--apply")).exitCode).not.toBe(0);
   });
 
   test("apply sets the version in package.json and bun.lock and prepends the changelog", async () => {

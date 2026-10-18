@@ -79,14 +79,32 @@ export function notes(version: string, date: string, changes: Change[]) {
 
 /** What the commits since the last release tag make of the next release. */
 export async function plan(cwd: string, date: string) {
-  const git = async (...args: string[]) =>
-    (await Bun.$`git ${args}`.cwd(cwd).quiet().nothrow().text()).trim();
-  const last = await git("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*.[0-9]*.[0-9]*");
+  const git = async (...args: string[]) => {
+    const run = await Bun.$`git ${args}`.cwd(cwd).quiet().nothrow();
+    return { ok: run.exitCode === 0, out: run.text().trim(), err: run.stderr.toString().trim() };
+  };
+  // a shallow clone hides the tags and commits the rules read: refusing beats proposing a wrong low version
+  const shallow = await git("rev-parse", "--is-shallow-repository");
+  if (!shallow.ok) throw new Error(`git failed in ${cwd}: ${shallow.err}`);
+  if (shallow.out === "true")
+    throw new Error("this is a shallow clone: fetch the full history and the tags first");
+  const described = await git(
+    "describe",
+    "--tags",
+    "--abbrev=0",
+    "--match",
+    "v[0-9]*.[0-9]*.[0-9]*",
+  );
+  // only "no tag yet" means a first release; any other failure (ownership, a broken repository) must not look like it
+  if (!described.ok && !/No names found|No tags can describe/.test(described.err))
+    throw new Error(`git describe failed: ${described.err}`);
+  const last = described.ok ? described.out : "";
   const from = last ? last.slice(1) : "0.0.0";
   // a tag that is not major.minor.patch (v1.0.0-rc.1) stops here: guessing past it would pick a wrong number
   bump(from, "patch");
-  const log = await git("log", last ? `${last}..HEAD` : "HEAD", "--format=%H%x1f%B%x1e");
-  const changes = log
+  const history = await git("log", last ? `${last}..HEAD` : "HEAD", "--format=%H%x1f%B%x1e");
+  if (!history.ok) throw new Error(`git log failed: ${history.err}`);
+  const changes = history.out
     .split("\x1e")
     .map((entry) => entry.trim().split("\x1f"))
     .flatMap(([hash = "", message = ""]) => (hash ? (parse(hash, message) ?? []) : []));
@@ -115,8 +133,9 @@ export async function apply(root: string, version: string, text: string) {
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  const file = args[args.indexOf("--notes") + 1];
-  if (args.includes("--notes") && !file) throw new Error("--notes needs a file");
+  const at = args.indexOf("--notes");
+  const file = at < 0 ? undefined : args[at + 1];
+  if (at >= 0 && (!file || file.startsWith("--"))) throw new Error("--notes needs a file");
   const next = await plan(process.cwd(), new Date().toISOString().slice(0, 10));
   if (next) {
     if (file) await writeFile(file, next.notes);
