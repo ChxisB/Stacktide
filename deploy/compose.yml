@@ -1,0 +1,76 @@
+# Self-host stack: postgres, a one-shot migrate, the api, the worker and the web page (docs/self-host.md).
+#   cp deploy/.env.example deploy/.env      # then fill it in
+#   docker compose -f deploy/compose.yml up -d
+# The image is pulled; `--build` builds it from this checkout instead. Only the web page publishes a port, on
+# loopback: put a TLS reverse proxy in front of it (and set ORCH_TRUSTED_PROXY_HOPS=2).
+name: stacktide
+
+x-image: &image
+  image: ${ORCH_IMAGE:-ghcr.io/chxisb/stacktide:latest}
+  build:
+    context: ..
+  restart: unless-stopped
+
+# api, worker and migrate read the settings; the web page needs none of them (the master keys stay out of it)
+x-orch: &orch
+  <<: *image
+  env_file: ${ORCH_ENV_FILE:-.env}
+  environment:
+    DATABASE_URL: postgres://orch:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@db:5432/orch
+
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: orch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_DB: orch
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      # over TCP: while the image initialises, only the unix socket answers
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U orch -d orch"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  migrate:
+    <<: *orch
+    command: migrate
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    <<: *orch
+    command: api
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  worker:
+    <<: *orch
+    command: worker
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      disable: true # it serves nothing; the image's check is the api's
+
+  web:
+    <<: *image
+    command: web
+    environment:
+      ORCH_API_URL: http://api:3000
+      WEB_PORT: "3001"
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3001}:3001"
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "bun", "-e", "process.exit((await fetch('http://127.0.0.1:3001/health')).ok ? 0 : 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+volumes:
+  pgdata:
