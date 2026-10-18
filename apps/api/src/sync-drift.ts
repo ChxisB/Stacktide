@@ -10,6 +10,7 @@ import {
   queueTargetSync,
   recordDrift,
 } from "@orch/db";
+import type { GuardrailConfig } from "@orch/sync";
 import { z } from "zod";
 import { countActions, planTarget } from "./sync-plan";
 import type { JobHandler } from "./worker";
@@ -39,7 +40,12 @@ export const driftTickHandler =
  * tries again, so the queue does not retry. Needs the master keys of its own.
  */
 export const driftCheckHandler =
-  (deps: { db: Db; keys: KeyProvider; logger: Logger }): JobHandler =>
+  (deps: {
+    db: Db;
+    keys: KeyProvider;
+    logger: Logger;
+    guardrails?: GuardrailConfig | undefined;
+  }): JobHandler =>
   async (ctx) => {
     const ids = payloadSchema.parse(ctx.payload);
     const { db } = deps;

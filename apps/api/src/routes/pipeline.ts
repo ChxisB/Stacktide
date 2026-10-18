@@ -18,6 +18,7 @@ import {
   recommend,
   type Template,
 } from "@orch/pipelines";
+import type { GuardrailConfig } from "@orch/sync";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
@@ -67,7 +68,7 @@ const configDto = (c: PipelineConfig): z.infer<typeof configSchema> => ({
 });
 
 const validationSchema = z.object({
-  /** False for lint errors or a missing variable; warnings alone leave it true. */
+  /** False for lint errors, a missing variable or a guardrail; warnings alone leave it true. */
   ok: z.boolean(),
   lint: z.object({
     valid: z.boolean(),
@@ -78,6 +79,8 @@ const validationSchema = z.object({
   missingVariables: z.array(
     z.object({ environment: z.string().nullable(), keys: z.array(z.string()) }),
   ),
+  /** The guardrails the pipeline breaks (POL-4); it is not proposed while there are any. */
+  violations: z.array(z.object({ rule: z.string(), message: z.string() })),
 });
 const existingSchema = z.enum(["none", "identical", "generated", "hand-written"]);
 
@@ -204,7 +207,13 @@ export const pipelineRoutes = ({
   keys,
   logger,
   templates: given,
-}: RouteDeps & { keys?: KeyProvider; logger: Logger; templates?: readonly Template[] }) => {
+  guardrails,
+}: RouteDeps & {
+  keys?: KeyProvider;
+  logger: Logger;
+  templates?: readonly Template[];
+  guardrails?: GuardrailConfig | undefined;
+}) => {
   const templates = catalogOf(given);
   const reach = async (
     orgId: string,
@@ -214,6 +223,7 @@ export const pipelineRoutes = ({
     db,
     catalog: await templates(),
     gitlab: () => gitlabFor({ db, keys, logger }, orgId, connectionId, requestId),
+    guardrails,
   });
   const wanted = (b: z.infer<typeof request>) => {
     const { connectionId, ...rest } = b;

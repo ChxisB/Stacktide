@@ -12,6 +12,8 @@ import {
 import { createGitlab } from "@orch/gitlab";
 import {
   ALL_SCOPES,
+  checkItems,
+  type GuardrailConfig,
   gitlabVariablesAdapter,
   type ItemInput,
   type PlanAction,
@@ -22,6 +24,7 @@ import {
   type UnmanagedPolicy,
 } from "@orch/sync";
 import { openGitlabConnection } from "./connections";
+import { guardrailRefusal } from "./guardrails";
 
 /** A key that could not be resolved at a scope, and why. Names only, never a value. */
 export interface Unresolved {
@@ -225,10 +228,10 @@ export interface Planned {
  * What the project's variables would change on a target: reads the target and compares, writes
  * nothing. Opens every secret of the project and the connection's token, so the caller must have
  * checked that it may. A `DomainError` for what is wrong with the target (422 `plan_invalid`, 502
- * `target_failed`); a `CryptoError` when a stored secret cannot be opened.
+ * `target_failed`, 422 `guardrail_violation`); a `CryptoError` when a stored secret cannot be opened.
  */
 export async function planTarget(
-  deps: { db: Db; keys: KeyProvider; logger: Logger },
+  deps: { db: Db; keys: KeyProvider; logger: Logger; guardrails?: GuardrailConfig | undefined },
   target: SyncTarget,
   requestId: unknown,
   /** What to do with what the target holds that nothing here wants; the target's own policy when left out. */
@@ -240,6 +243,13 @@ export async function planTarget(
     const config = adapter.validate(target.config);
     const desired = await desiredSnapshot(deps.db, deps.keys, target);
     refuse(adapter, desired.items);
+    // shortcut: one target type, whose config says whether it protects; a second type needs the adapter to say
+    const violations = checkItems(
+      desired.items,
+      { protected: config.protected === true },
+      deps.guardrails,
+    );
+    if (violations.length > 0) throw guardrailRefusal("The plan", violations);
     const skip = untouchable(desired);
     const actual = (await adapter.connect(config).read()).filter((i) => !skip(i));
     const items = plan(desired.items, actual, { unmanaged });

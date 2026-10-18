@@ -1,7 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { DomainError } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
-import { createEnvironment, createOrganization, createProject, createVariable } from "@orch/db";
+import {
+  createConnection,
+  createEnvironment,
+  createOrganization,
+  createProject,
+  createSyncTarget,
+  createVariable,
+} from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { createGitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
@@ -219,6 +226,78 @@ describe("applyPipeline", () => {
     expect(e.message).toContain("script");
     expect(w.commits()).toBe(0);
     expect(await w.mrs()).toEqual([]);
+  });
+
+  describe("the guardrails (POL-4)", () => {
+    /** An environment `prod` that a target syncs to the production scope; `protect` is whether the target protects its variables. */
+    const production = async (w: Awaited<ReturnType<typeof world>>, protect: boolean) => {
+      await createEnvironment(t.db, {
+        organizationId: w.org.id,
+        projectId: w.project.id,
+        name: "prod",
+        slug: "prod",
+      });
+      const connection = await createConnection(t.db, keys, {
+        organizationId: w.org.id,
+        type: "gitlab",
+        name: "c",
+        token: "zz-not-a-token-0001",
+      });
+      await createSyncTarget(t.db, {
+        organizationId: w.org.id,
+        projectId: w.project.id,
+        name: "main",
+        type: "gitlab-variables",
+        connectionId: connection.id,
+        config: { project: "fx/p", protected: protect },
+        environmentMapping: { prod: "production" },
+      });
+    };
+
+    test("a production environment on a target that does not protect its variables is committed nowhere", async () => {
+      const w = await world();
+      await production(w, false);
+      const e = await failure(w.run(bun));
+      expect(e).toMatchObject({ code: "guardrail_violation", status: 422 });
+      expect(e.message).toContain("production-variable-protected");
+      expect(e.message).toContain('the target "main"');
+      expect(w.commits()).toBe(0);
+      expect(await w.mrs()).toEqual([]);
+    });
+
+    test("is shown by the preview, which refuses nothing", async () => {
+      const w = await world();
+      await production(w, false);
+      const p = await previewPipeline(w.deps, w.org.id, w.project.id, bun);
+      expect(p.validation.ok).toBe(false);
+      expect(p.validation.violations.map((v) => v.rule)).toEqual(["production-variable-protected"]);
+    });
+
+    test("a file already in place commits nothing, so it is not refused", async () => {
+      const text = render(catalog.find((c) => c.manifest.name === "bun-app") as Template);
+      const w = await world({ [PIPELINE_FILE]: text });
+      await production(w, false);
+      const r = await w.run(bun);
+      expect(r).toMatchObject({ outcome: "in_place", committed: false });
+      expect(r.validation.violations).toHaveLength(1);
+      expect(w.commits()).toBe(0);
+    });
+
+    test("goes through when the target protects them, or the rule is switched off", async () => {
+      const safe = await world();
+      await production(safe, true);
+      expect((await safe.run(bun)).outcome).toBe("opened");
+
+      const off = await world();
+      await production(off, false);
+      const deps = {
+        ...off.deps,
+        guardrails: { off: ["production-variable-protected" as const], production: ["production"] },
+      };
+      expect((await applyPipeline(deps, off.org.id, off.project.id, CONNECTION, bun)).outcome).toBe(
+        "opened",
+      );
+    });
   });
 
   test("required variables that are not set are listed in the merge request and do not stop it", async () => {

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { createApp } from "./app";
 import { accessEnv, authEnv, authFromEnv, ciFromEnv, rolesFromEnv } from "./auth-config";
 import { callerPrincipal } from "./credentials";
+import { guardrailEnv, guardrailsOf } from "./guardrails";
 import { devPrincipal } from "./principal";
 import { toolImageEnv, toolImages } from "./tool-images";
 
@@ -21,6 +22,7 @@ const config = loadConfig(
       ORCH_MASTER_KEYS: z.string().min(1).optional(),
       // Image repository per tool, for the pipeline an apply starts (as the worker's).
       ...toolImageEnv,
+      ...guardrailEnv,
     })
     .and(authEnv)
     .and(accessEnv),
@@ -75,6 +77,7 @@ const app = createApp({
   ci: ciFromEnv(config),
   keys,
   images: toolImages(config),
+  guardrails: guardrailsOf(config),
   loopbackConnections: ["development", "test"].includes(config.NODE_ENV.toLowerCase()),
 }).listen({
   hostname: config.HOST,

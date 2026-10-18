@@ -47,6 +47,7 @@ export interface Preview {
   validation: {
     lint: { valid: boolean; errors: string[]; warnings: string[] };
     missingVariables: { environment: string | null; keys: string[] }[];
+    violations: { rule: string; message: string }[];
   };
   current: string | null;
 }

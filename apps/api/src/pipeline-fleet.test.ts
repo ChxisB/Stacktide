@@ -3,8 +3,10 @@ import { createLogger, DomainError } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
   createConnection,
+  createEnvironment,
   createOrganization,
   createProject,
+  createSyncTarget,
   getPipelineConfig,
   type NewPipelineConfig,
   savePipelineConfig,
@@ -344,6 +346,92 @@ describe("upgradeFleet: the dry run", () => {
     expect(r.items[0]?.message).toContain("lint refuses");
     const writes = mock.requests.filter((q) => q.method !== "GET" && !q.path.endsWith("/ci/lint"));
     expect(writes).toEqual([]);
+  });
+});
+
+describe("upgradeFleet: the guardrails (POL-4)", () => {
+  /** The project gets an environment `prod`, which a target that does not protect its variables syncs to production. */
+  const exposeProduction = async (
+    w: Awaited<ReturnType<typeof world>>,
+    project: { id: string },
+  ) => {
+    await createEnvironment(t.db, {
+      organizationId: w.org.id,
+      projectId: project.id,
+      name: "prod",
+      slug: "prod",
+    });
+    await createSyncTarget(t.db, {
+      organizationId: w.org.id,
+      projectId: project.id,
+      name: "main",
+      type: "gitlab-variables",
+      connectionId: w.connection.id,
+      config: { project: "fx/p" },
+      environmentMapping: { prod: "production" },
+    });
+  };
+
+  test("a project that breaks one is blocked in the plan and in the apply, with nothing written; the others go on", async () => {
+    const w = await world(2);
+    const [open, fine] = w.projects;
+    if (!open || !fine) throw new Error("projects");
+    await exposeProduction(w, open);
+
+    const plan = await upgradeFleet(w.deps, w.org.id, w.request(), "plan");
+    expect(plan.items.map((i) => [i.projectId, i.status, i.code])).toEqual([
+      [open.id, "blocked", "guardrail_violation"],
+      [fine.id, "would_upgrade", null],
+    ]);
+    expect(plan.items.find((i) => i.projectId === open.id)?.message).toContain(
+      "production-variable-protected",
+    );
+
+    mock.requests.splice(0);
+    const done = await upgradeFleet(w.deps, w.org.id, w.request(), "apply");
+    expect(done.items.map((i) => [i.projectId, i.status, i.code])).toEqual([
+      [open.id, "blocked", "guardrail_violation"],
+      [fine.id, "upgraded", null],
+    ]);
+    expect(w.commits(open.remote.id)).toBe(0);
+    expect((await w.config(open.id))?.version).toBe("1.0.0");
+    expect((await w.config(fine.id))?.version).toBe("1.1.0");
+  });
+
+  test("a project whose default branch already has the new file is not blocked: nothing would be committed", async () => {
+    const w = await world(1);
+    const [p] = w.projects;
+    if (!p) throw new Error("project");
+    const remote = mock.addProject({
+      path: `fx/same${++n}`,
+      files: { [PIPELINE_FILE]: render(bunAt("1.1.0")) },
+    });
+    const same = await createProject(t.db, {
+      organizationId: w.org.id,
+      name: `same${n}`,
+      gitlabProjectId: remote.id,
+    });
+    await w.pin(p.id, { projectId: same.id, mrIid: null, mrUrl: null });
+    await exposeProduction(w, same);
+
+    const plan = await upgradeFleet(w.deps, w.org.id, w.request(), "plan");
+    expect(plan.items.find((i) => i.projectId === same.id)).toMatchObject({ status: "no_change" });
+    const done = await upgradeFleet(w.deps, w.org.id, w.request(), "apply");
+    expect(done.items.find((i) => i.projectId === same.id)).toMatchObject({ status: "upgraded" });
+    expect(w.commits(remote.id)).toBe(0);
+  });
+
+  test("the setting is the fleet's too: with the rule off the project is upgraded", async () => {
+    const w = await world(1);
+    const [open] = w.projects;
+    if (!open) throw new Error("projects");
+    await exposeProduction(w, open);
+    const deps: FleetDeps = {
+      ...w.deps,
+      guardrails: { off: ["production-variable-protected"], production: ["production"] },
+    };
+    const done = await upgradeFleet(deps, w.org.id, w.request(), "apply");
+    expect(done.items.map((i) => i.status)).toEqual(["upgraded"]);
   });
 });
 

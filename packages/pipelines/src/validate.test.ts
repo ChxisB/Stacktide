@@ -17,7 +17,24 @@ describe("validate", () => {
       ok: true,
       lint: { valid: true, errors: [], warnings: [] },
       missingVariables: [],
+      violations: [],
     });
+  });
+
+  test("a guardrail the caller found broken fails it and comes back as it was given", async () => {
+    const violations = [{ rule: "production-variable-protected", message: "the target is open" }];
+    const r = await validate({
+      manifest: needs(),
+      text: "x",
+      lint: fine,
+      variables: [],
+      violations,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.violations).toEqual(violations);
+    // lint and variables are fine: it is the guardrail alone that fails it
+    expect(r.lint.valid).toBe(true);
+    expect(r.missingVariables).toEqual([]);
   });
 
   test("lint errors fail it and come back as they are; the text is what was linted", async () => {

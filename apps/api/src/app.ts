@@ -3,6 +3,7 @@ import type { KeyProvider } from "@orch/crypto";
 import type { Db } from "@orch/db";
 import type { Tool } from "@orch/iac";
 import type { Template } from "@orch/pipelines";
+import type { GuardrailConfig } from "@orch/sync";
 import { Elysia } from "elysia";
 import { auditPlugin } from "./audit";
 import { guardPlugin, unguardedRoutes } from "./guard";
@@ -50,6 +51,8 @@ export interface AppDeps {
   templates?: readonly Template[];
   /** Image repository per tool that has no default (Terragrunt), for the pipelines an apply starts. */
   images?: Partial<Record<Tool, string>> | undefined;
+  /** The built-in guardrails (POL-4). Left out, every rule is on and production is `production` and `prod`. */
+  guardrails?: GuardrailConfig | undefined;
 }
 
 // Registered by the OpenAPI plugin, which cannot carry route options. The document describes the

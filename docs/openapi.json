@@ -23405,12 +23405,31 @@
                               "keys"
                             ]
                           }
+                        },
+                        "violations": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "rule": {
+                                "type": "string"
+                              },
+                              "message": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "rule",
+                              "message"
+                            ]
+                          }
                         }
                       },
                       "required": [
                         "ok",
                         "lint",
-                        "missingVariables"
+                        "missingVariables",
+                        "violations"
                       ]
                     },
                     "config": {
@@ -24198,12 +24217,31 @@
                               "keys"
                             ]
                           }
+                        },
+                        "violations": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "rule": {
+                                "type": "string"
+                              },
+                              "message": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "rule",
+                              "message"
+                            ]
+                          }
                         }
                       },
                       "required": [
                         "ok",
                         "lint",
-                        "missingVariables"
+                        "missingVariables",
+                        "violations"
                       ]
                     },
                     "current": {

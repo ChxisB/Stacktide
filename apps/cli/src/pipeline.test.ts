@@ -8,18 +8,20 @@ import { newApiToken } from "@orch/api/tokens";
 import { createLogger, type Subject } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
+  connections,
   createApiToken,
   createConnection,
   createEnvironment,
   createOrganization,
   createProject,
+  createSyncTarget,
   projects,
   upsertUser,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import { loadTemplates, type Template } from "@orch/pipelines";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { CliError, runCli } from "./cli";
 import { pipelineCommands } from "./pipeline";
 
@@ -195,6 +197,23 @@ async function world(
     name,
     label: `${orgSlug}/${name}`,
     args: ["--org", orgSlug, "--project", name],
+    /** A GitLab-variables target of the project, mapping its environments to GitLab scopes. */
+    target: async (mapping: Record<string, string>, config: Record<string, unknown>) => {
+      // the organization's own GitLab connection: a second one would make --connection necessary
+      const [connection] = await t.db
+        .select({ id: connections.id })
+        .from(connections)
+        .where(and(eq(connections.organizationId, ids[orgSlug]), eq(connections.name, "live")));
+      return createSyncTarget(t.db, {
+        organizationId: ids[orgSlug],
+        projectId: project.id,
+        name: "vars",
+        type: "gitlab-variables",
+        connectionId: connection?.id ?? "",
+        config,
+        environmentMapping: mapping,
+      });
+    },
     /** How many commits GitLab was asked to make on this project. */
     commits: () =>
       mock.requests.filter(
@@ -451,6 +470,27 @@ describe("setup", () => {
     expect(res.err).toHaveLength(1);
     expect(res.err[0]).toMatch(/^error: GitLab's lint refuses this pipeline: .+/);
     expect(res.out).toEqual([]);
+    expect(w.commits()).toBe(0);
+  });
+
+  test("a guardrail the pipeline breaks stops it before anything is asked or committed", async () => {
+    const w = await world({ environments: ["prod"] });
+    await w.target({ prod: "production" }, { project: "fx/live" });
+    const res = await orch(["pipeline", "setup", "bun-app", ...w.args]);
+    expect(res.code).toBe(1);
+    expect(res.err).toHaveLength(1);
+    expect(res.err[0]).toMatch(
+      /^error: the pipeline breaks a guardrail: production-variable-protected: .+/,
+    );
+    expect(res.out).toEqual([]);
+    expect(w.commits()).toBe(0);
+  });
+
+  test("the same target, protected, is no guardrail's business", async () => {
+    const w = await world({ environments: ["prod"] });
+    await w.target({ prod: "production" }, { project: "fx/live", protected: true });
+    const res = await orch(["pipeline", "setup", "bun-app", ...w.args, "--dry-run"]);
+    expect(res.code).toBe(0);
     expect(w.commits()).toBe(0);
   });
 });

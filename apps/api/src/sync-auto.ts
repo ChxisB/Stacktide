@@ -8,6 +8,7 @@ import {
   pgConstraint,
   queueTargetSync,
 } from "@orch/db";
+import type { GuardrailConfig } from "@orch/sync";
 import { z } from "zod";
 import { startApply } from "./sync-apply";
 import { planTarget, storePlan } from "./sync-plan";
@@ -36,7 +37,12 @@ const WRITES = new Set(["create", "update"]);
  * its own.
  */
 export const syncAutoHandler =
-  (deps: { db: Db; keys: KeyProvider; logger: Logger }): JobHandler =>
+  (deps: {
+    db: Db;
+    keys: KeyProvider;
+    logger: Logger;
+    guardrails?: GuardrailConfig | undefined;
+  }): JobHandler =>
   async (ctx) => {
     const ids = payloadSchema.parse(ctx.payload);
     const { db } = deps;

@@ -7,7 +7,7 @@ import {
   listSyncRunItems,
   type SyncRun,
 } from "@orch/db";
-import type { PlanAction } from "@orch/sync";
+import type { GuardrailConfig, PlanAction } from "@orch/sync";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
@@ -112,7 +112,8 @@ export const syncRunRoutes = ({
   principal,
   keys,
   logger,
-}: RouteDeps & { keys?: KeyProvider; logger: Logger }) =>
+  guardrails,
+}: RouteDeps & { keys?: KeyProvider; logger: Logger; guardrails?: GuardrailConfig | undefined }) =>
   new Elysia({
     prefix: "/organizations/:orgId/projects/:projectId/sync-targets/:targetId",
   })
@@ -126,7 +127,7 @@ export const syncRunRoutes = ({
         const target = await getSyncTarget(db, orgId, projectId, targetId);
         if (!target) throw notFound("Sync target");
 
-        const planned = await planTarget({ db, keys, logger }, target, requestId).catch(
+        const planned = await planTarget({ db, keys, logger, guardrails }, target, requestId).catch(
           failing(logger)(set),
         );
         const run = await db.transaction(async (tx) => {

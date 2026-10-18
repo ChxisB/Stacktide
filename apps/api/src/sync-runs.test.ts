@@ -31,6 +31,7 @@ import {
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { createGitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
+import type { GuardrailConfig } from "@orch/sync";
 import { asc, count, eq } from "drizzle-orm";
 import { createApp } from "./app";
 import { callerPrincipal } from "./credentials";
@@ -69,7 +70,7 @@ const people = {} as Record<
 >;
 type Who = keyof typeof people;
 
-const makeApp = (provider: typeof keys | undefined) =>
+const makeApp = (provider: typeof keys | undefined, guardrails?: GuardrailConfig) =>
   createApp({
     logger: createLogger({ level: "debug", write: (line) => lines.push(line) }),
     db: t.db,
@@ -79,6 +80,7 @@ const makeApp = (provider: typeof keys | undefined) =>
     }),
     ready: async () => {},
     keys: provider,
+    guardrails,
   });
 let app: ReturnType<typeof makeApp>;
 
@@ -176,6 +178,8 @@ async function world(
     connection?: string;
     mapping?: Record<string, string>;
     policy?: string;
+    /** Whether the target protects its variables; the guardrails (POL-4) refuse production on one that does not. */
+    protected?: boolean;
   } = {},
 ) {
   const org = over.org ?? o1;
@@ -202,7 +206,7 @@ async function world(
     name: "main",
     type: "gitlab-variables",
     connectionId: over.connection ?? (org === o1 ? conns.o1 : conns.o3),
-    config: { project: gl.path },
+    config: { project: gl.path, protected: over.protected ?? true },
     environmentMapping: over.mapping ?? { prod: "production" },
     ...(over.policy && { unmanagedPolicy: over.policy }),
   });
@@ -748,7 +752,7 @@ describe("the digest of what a plan was made from", () => {
     );
     await step("the policy changes", () => w.patchTarget({ unmanagedPolicy: "prune" }));
     await step("the target's config changes", () =>
-      w.patchTarget({ config: { project: w.of.project, protected: true } }),
+      w.patchTarget({ config: { project: w.of.project, protected: false } }),
     );
     await step("the connection changes", async () => {
       const other = await createConnection(t.db, keys, {
@@ -1360,10 +1364,16 @@ async function dueAuto(w: World) {
   return taken.filter((j) => j.payload.targetId === w.target);
 }
 /** Runs the auto-sync handler for the target's waiting job, as the worker would. */
-async function runAuto(w: World, provider = keys, over: Partial<JobContext> = {}, db = t.db) {
+async function runAuto(
+  w: World,
+  provider = keys,
+  over: Partial<JobContext> = {},
+  db = t.db,
+  guardrails?: GuardrailConfig,
+) {
   const [job] = await dueAuto(w);
   if (!job) throw new Error("no auto-sync job was waiting");
-  await syncAutoHandler({ db, keys: provider, logger })({
+  await syncAutoHandler({ db, keys: provider, logger, guardrails })({
     id: job.id,
     queue: AUTO_SYNC_QUEUE,
     payload: job.payload,
@@ -1917,6 +1927,153 @@ describe("drift detection (SYNC-8)", () => {
       lines.slice(mark),
     ]);
     for (const m of markers) expect(everything).not.toContain(m);
+  });
+});
+
+describe("the guardrails (POL-4)", () => {
+  const SECRET = "guardrail-secret-1";
+  /** A secret and a plain variable that reach production through the mapping. */
+  const reachProduction = async (w: World) => {
+    markers.push(SECRET);
+    await w.put("prod", "DB_PASSWORD", "secret", SECRET);
+    await w.put("prod", "REGION", "plain", "eu");
+  };
+  const brief = (res: { json: { items: { action: string; key: string; scope: string }[] } }) =>
+    res.json.items.map((i) => `${i.action} ${i.key} ${i.scope}`);
+
+  test("a target that does not protect its variables is refused production, naming each rule, key and scope and no value", async () => {
+    const w = await world({ protected: false });
+    await reachProduction(w);
+    await w.put("project", "EVERYWHERE", "plain", "x");
+    const res = await w.plan();
+    expect(res.status).toBe(422);
+    expect(res.json.code).toBe("guardrail_violation");
+    expect(res.json.detail).toContain('production-secret-protected: "DB_PASSWORD" (production)');
+    expect(res.json.detail).toContain('production-variable-protected: "REGION" (production)');
+    // a variable at every scope is not a variable that reaches production by name
+    expect(res.json.detail).not.toContain("EVERYWHERE");
+    expect(res.text).not.toContain(SECRET);
+    // not half a plan, and not an audit event for one
+    expect(await w.runs()).toEqual([]);
+    expect((await events("sync_run.plan")).filter((e) => e.projectId === w.project)).toEqual([]);
+  });
+
+  test("the same variables on a protected target are planned, and so are any other scope on an unprotected one", async () => {
+    const ok = await world({ protected: true });
+    await reachProduction(ok);
+    const planned = await ok.plan();
+    expect(planned.status).toBe(201);
+    expect(brief(planned)).toEqual(["create DB_PASSWORD production", "create REGION production"]);
+
+    const staging = await world({ protected: false, mapping: { stage: "staging" } });
+    markers.push(SECRET);
+    await staging.put("stage", "DB_PASSWORD", "secret", SECRET);
+    await staging.put("project", "EVERYWHERE", "plain", "x");
+    expect(brief(await staging.plan())).toEqual([
+      "create DB_PASSWORD staging",
+      "create EVERYWHERE *",
+    ]);
+  });
+
+  test("a target that is not marked either way is not protected", async () => {
+    const w = await world();
+    await reachProduction(w);
+    expect((await w.patchTarget({ config: { project: w.of.project } })).status).toBe(200);
+    expect((await w.plan()).json.code).toBe("guardrail_violation");
+    expect(
+      (await w.patchTarget({ config: { project: w.of.project, protected: true } })).status,
+    ).toBe(200);
+    expect((await w.plan()).status).toBe(201);
+  });
+
+  test("a rule that is switched off does nothing, and the other keeps working", async () => {
+    const w = await world({ protected: false });
+    await reachProduction(w);
+    const secretOff = makeApp(keys, {
+      off: ["production-secret-protected"],
+      production: ["production"],
+    });
+    const res = await w.plan("alice", secretOff);
+    expect(res.json.code).toBe("guardrail_violation");
+    expect(res.json.detail).not.toContain("production-secret-protected:");
+    expect(res.json.detail).toContain("production-variable-protected:");
+
+    const bothOff = makeApp(keys, {
+      off: ["production-secret-protected", "production-variable-protected"],
+      production: ["production"],
+    });
+    expect((await w.plan("alice", bothOff)).status).toBe(201);
+  });
+
+  test("which scopes are production is the setting's", async () => {
+    const w = await world({ protected: false });
+    await reachProduction(w);
+    const elsewhere = makeApp(keys, { off: [], production: ["live"] });
+    expect((await w.plan("alice", elsewhere)).status).toBe(201);
+    const here = makeApp(keys, { off: [], production: ["live", "production"] });
+    expect((await w.plan("alice", here)).json.code).toBe("guardrail_violation");
+  });
+
+  test("auto-sync does not write production to a target that does not protect it, and says why", async () => {
+    const w = await world({ protected: false });
+    await autoOn(w);
+    await reachProduction(w);
+    const mark = lines.length;
+    await runAuto(w);
+    expect(await w.runs()).toEqual([]);
+    expect(await onGitlab(w)).toEqual([]);
+    const said = lines.slice(mark).filter((l) => l.includes("auto-sync not planned"));
+    expect(said).toHaveLength(1);
+    expect(said.join("\n")).toContain("production-secret-protected");
+    expect(said.join("\n")).not.toContain(SECRET);
+  });
+
+  test("the setting is the worker's too: with the rules off, auto-sync writes production and the drift check looks at it", async () => {
+    const bothOff: GuardrailConfig = {
+      off: ["production-secret-protected", "production-variable-protected"],
+      production: ["production"],
+    };
+    const w = await world({ protected: false });
+    await autoOn(w);
+    await reachProduction(w);
+    await runAuto(w, keys, {}, t.db, bothOff);
+    const [run] = await w.runs();
+    if (!run) throw new Error("no run");
+    expect((await w.finished(run.id)).json.status).toBe("applied");
+    expect(await onGitlab(w)).toEqual(["DB_PASSWORD", "REGION"]);
+
+    await driftCheckHandler({ db: t.db, keys, logger, guardrails: bothOff })({
+      id: Bun.randomUUIDv7(),
+      queue: DRIFT_CHECK_QUEUE,
+      payload: { organizationId: w.org, projectId: w.project, targetId: w.target },
+      attempt: 1,
+      maxAttempts: 5,
+      log: logger,
+      signal: new AbortController().signal,
+    });
+    const drift = await call("alice", "GET", `${w.targets}/${w.target}/drift`);
+    // it was checked (the answer is not "unchecked"), and what auto-sync wrote is what the target holds
+    expect(drift.json.status).toBe("in_sync");
+  });
+
+  test("a drift check of such a target keeps its last result and says why", async () => {
+    const w = await world({ protected: false });
+    await reachProduction(w);
+    const mark = lines.length;
+    await driftCheckHandler({ db: t.db, keys, logger })({
+      id: Bun.randomUUIDv7(),
+      queue: DRIFT_CHECK_QUEUE,
+      payload: { organizationId: w.org, projectId: w.project, targetId: w.target },
+      attempt: 1,
+      maxAttempts: 5,
+      log: logger,
+      signal: new AbortController().signal,
+    });
+    const drift = await call("alice", "GET", `${w.targets}/${w.target}/drift`);
+    expect(drift.json.status).toBe("unchecked");
+    const said = lines.slice(mark).filter((l) => l.includes("drift not checked"));
+    expect(said).toHaveLength(1);
+    expect(said.join("\n")).toContain("production-secret-protected");
   });
 });
 

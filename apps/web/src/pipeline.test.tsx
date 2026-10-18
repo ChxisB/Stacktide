@@ -634,6 +634,35 @@ describe("the review", () => {
     await form();
   });
 
+  test("a guardrail the pipeline breaks is shown, and no merge request can be created while it stands", async () => {
+    const w = await world();
+    must(
+      await w.scope["sync-targets"].post({
+        name: "live",
+        type: "gitlab-variables",
+        connectionId: w.connection?.id ?? "",
+        config: { project: "fx/live", protected: false },
+        environmentMapping: { dev: "production" },
+      }),
+    );
+    const spy = via(w);
+    mountPage(spy.client);
+    const user = userEvent.setup();
+    await toParams(user, "web-app");
+    await team(user);
+    w.mark();
+    await preview(user);
+    const rules = screen.getByRole("region", { name: "Guardrails" });
+    expect(rules.textContent).toContain("production-variable-protected");
+    expect(rules.textContent).toContain("No merge request can be created");
+    const make = screen.getByRole("button", { name: "Create merge request" }) as HTMLButtonElement;
+    expect(make.disabled).toBe(true);
+    await user.click(make);
+    expect(spy.applies()).toEqual([]);
+    expect(w.writes()).toBe(0);
+    expect(await w.mrs()).toEqual([]);
+  });
+
   test("lint warnings are shown and do not block", async () => {
     const w = await world({ lintWarnings: ["heads up: nothing runs on tags"] });
     mountPage(w.client);

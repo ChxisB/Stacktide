@@ -51,6 +51,7 @@ interface Preview {
     ok: boolean;
     lint: { valid: boolean; errors: string[]; warnings: string[] };
     missingVariables: { environment: string | null; keys: string[] }[];
+    violations: { rule: string; message: string }[];
   };
 }
 
@@ -90,7 +91,7 @@ const OUTCOME: Record<string, string> = {
  * setup <template>` previews the pipeline, asks, and has the API open one merge request for it
  * (PIPE-6): nothing is committed to the default branch. `--dry-run` stops after the preview and
  * prints the file; `--yes` is for scripts. Missing variables and lint warnings are shown, and do not
- * stop it, as in the API; a pipeline GitLab's lint refuses does.
+ * stop it, as in the API; a pipeline GitLab's lint refuses, or one that breaks a guardrail (POL-4), does.
  */
 export function pipelineCommands(): Record<string, Command> {
   return {
@@ -189,6 +190,13 @@ export function pipelineCommands(): Record<string, Command> {
           const shown = lint.errors.slice(0, SHOWN).join("; ");
           throw new CliError(
             `GitLab's lint refuses this pipeline: ${shown}${lint.errors.length > SHOWN ? `; and ${lint.errors.length - SHOWN} more` : ""}`,
+          );
+        }
+        const { violations } = preview.validation;
+        if (violations.length > 0) {
+          const shown = violations.slice(0, SHOWN).map((v) => `${v.rule}: ${v.message}`);
+          throw new CliError(
+            `the pipeline breaks a guardrail: ${shown.join("; ")}${violations.length > SHOWN ? `; and ${violations.length - SHOWN} more` : ""}`,
           );
         }
         for (const line of previewLines(project.label, preview)) ctx.io.err(line);

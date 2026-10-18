@@ -192,7 +192,8 @@ async function world(over: { policy?: string; second?: string | boolean } = {}) 
       name: targetName,
       type: "gitlab-variables",
       connectionId: ids.connection,
-      config: { project: gl.path },
+      // production is guarded (POL-4): a target that holds it says it protects its variables
+      config: { project: gl.path, protected: true },
       environmentMapping: { prod: "production" },
       ...(over.policy ? { unmanagedPolicy: over.policy } : {}),
     });

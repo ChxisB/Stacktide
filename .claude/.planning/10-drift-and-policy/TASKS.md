@@ -12,6 +12,6 @@ Done when: tests cover signature verification, retry/backoff, dead-letter and pa
 Do: policy set repo reference + tag attachment; generated plan job runs the evaluator on plan JSON and posts pass/deny/warn; `deny` becomes an apply precondition; evaluator failure = deny.
 Done when: fixtures with allow, warn and deny plans behave as specified, and a crashed evaluator blocks apply.
 
-### POL-4 - Built-in guardrails  `[ ]` S - deps: SYNC-5, PIPE-5
+### POL-4 - Built-in guardrails  `[x]` S - deps: SYNC-5, PIPE-5
 Do: rule set with config toggles run during sync plan and pipeline validation; violations are plan errors with the rule id.
 Done when: each rule has a passing and failing case, and disabled rules do nothing.

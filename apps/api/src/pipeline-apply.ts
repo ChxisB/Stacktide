@@ -14,7 +14,9 @@ import {
   type Template,
   type Validation,
 } from "@orch/pipelines";
+import type { GuardrailConfig } from "@orch/sync";
 import { WHY } from "./connections";
+import { WAY_OUT } from "./guardrails";
 import { validatePipeline } from "./pipeline-validate";
 
 export const PIPELINE_FILE = ".gitlab-ci.yml";
@@ -64,6 +66,8 @@ export interface PipelineDeps {
   catalog: readonly Template[];
   /** Opens the connection that reaches the project; called once the project is known to be there. */
   gitlab: () => Promise<Gitlab>;
+  /** The built-in guardrails (POL-4); the defaults when left out. */
+  guardrails?: GuardrailConfig | undefined;
 }
 
 /** GitLab refusing or failing, as the API reports it: about this project (422) or about GitLab (502). */
@@ -155,6 +159,7 @@ async function prepare(
       text,
       lint: (content) => api.ci.lint(ref, content),
       environments: request.environments,
+      guardrails: deps.guardrails,
     });
     const onDefault =
       (await notFound(api.repository.getFile(ref, PIPELINE_FILE, base)))?.content ?? null;
@@ -197,6 +202,14 @@ export const lintRefusal = (validation: Validation) =>
     "pipeline_invalid",
     422,
     `GitLab's lint refuses this pipeline: ${sentence(validation.lint.errors.slice(0, 3).map(clip))}`,
+  );
+
+/** The pipeline would run in a production environment whose variables are open to every branch: nothing is committed. */
+export const violationRefusal = (validation: Validation) =>
+  new DomainError(
+    "guardrail_violation",
+    422,
+    `The pipeline breaks ${validation.violations.length === 1 ? "a guardrail" : "guardrails"}: ${sentence(validation.violations.slice(0, 3).map((v) => `${v.rule}: ${v.message}`))}. ${WAY_OUT}`,
   );
 
 const SHOWN = 10;
@@ -248,7 +261,8 @@ function describeMr(p: Prepared, request: PipelineRequest, version: string) {
  * Lands the pipeline as a merge request (PIPE-6): the file is committed to the branch
  * `orch/pipeline` (made from the default branch if it is not there), and one merge request from it
  * is opened or, if it is already open, updated. Nothing is ever committed to the default branch, and
- * a pipeline GitLab's lint refuses is not committed at all. Running it again with the same inputs
+ * a pipeline GitLab's lint refuses, or one that breaks a guardrail, is not committed at all (a file
+ * already in place on the default branch commits nothing, so it is not refused for a guardrail). Running it again with the same inputs
  * makes no commit and changes nothing; with other inputs it commits on the same branch and edits the
  * same merge request. A hand-written file on the default branch is replaced only by the merge request,
  * which says so. Missing variables do not stop it: they are listed in the merge request.
@@ -295,6 +309,8 @@ export async function applyPipeline(
     config: config(mr),
   });
   if (onDefault === text) return done("in_place", false, null);
+  // a file already in place commits nothing, so a guardrail has nothing to refuse
+  if (validation.violations.length > 0) throw violationRefusal(validation);
 
   try {
     const onBranch = await notFound(api.repository.getBranch(ref, PIPELINE_BRANCH));

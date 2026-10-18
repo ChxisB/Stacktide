@@ -2,6 +2,7 @@ import { DomainError, type Logger } from "@orch/core";
 import { type Db, listPinnedPipelines } from "@orch/db";
 import type { Gitlab } from "@orch/gitlab";
 import { byVersion, type Template } from "@orch/pipelines";
+import type { GuardrailConfig } from "@orch/sync";
 import {
   type Applied,
   applyPipeline,
@@ -10,6 +11,7 @@ import {
   type PipelineRequest,
   pick,
   previewPipeline,
+  violationRefusal,
 } from "./pipeline-apply";
 
 /** Projects handled by one call, at most; the caller continues from `next`. */
@@ -29,6 +31,8 @@ export interface FleetDeps {
   pause: (ms: number) => Promise<void>;
   pauseMs?: number;
   logger: Logger;
+  /** The built-in guardrails (POL-4); the defaults when left out. */
+  guardrails?: GuardrailConfig | undefined;
 }
 
 export interface FleetRequest {
@@ -78,7 +82,12 @@ export interface FleetResult {
 }
 
 /** The project's template cannot be rendered or linted at the new version: the owner has to change it. */
-const BLOCKED = new Set(["invalid_pipeline", "pipeline_invalid", "unknown_template"]);
+const BLOCKED = new Set([
+  "invalid_pipeline",
+  "pipeline_invalid",
+  "unknown_template",
+  "guardrail_violation",
+]);
 
 /**
  * Lines gained and lost between two texts, as multisets: a line that only moved counts as no change.
@@ -203,10 +212,14 @@ export async function upgradeFleet(
         db: deps.db,
         catalog: deps.catalog,
         gitlab: () => deps.gitlab(config.connectionId),
+        guardrails: deps.guardrails,
       };
       if (mode === "plan") {
         const p = await previewPipeline(pipelineDeps, orgId, config.projectId, request);
         if (!p.validation.lint.valid) throw lintRefusal(p.validation);
+        if (p.current !== p.text && p.validation.violations.length > 0) {
+          throw violationRefusal(p.validation);
+        }
         items.push({
           ...item,
           status: p.current === p.text ? "no_change" : "would_upgrade",

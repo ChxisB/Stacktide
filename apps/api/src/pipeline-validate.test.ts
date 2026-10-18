@@ -2,17 +2,21 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { DomainError } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
+  createConnection,
   createEnvironment,
   createOrganization,
   createProject,
+  createSyncTarget,
   createVariable,
   deleteVariable,
+  updateSyncTarget,
   type VariableKind,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { createGitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import { loadTemplates, render, type Template } from "@orch/pipelines";
+import type { GuardrailConfig } from "@orch/sync";
 import { validatePipeline } from "./pipeline-validate";
 
 const keys = envKeyProvider(`k1:${Buffer.alloc(32, 1).toString("base64")}`);
@@ -62,7 +66,32 @@ async function world(environments = ["dev", "prod"]) {
     key: string,
     kind: VariableKind = "secret",
   ) => createVariable(t.db, keys, { ...scope, key, kind, value: CANARY, actor });
-  return { org, project, at, set };
+  let connection: string | undefined;
+  /** A sync target of the project: GitLab variables, mapping environments to scopes. */
+  const target = async (
+    mapping: Record<string, string>,
+    config: Record<string, unknown> = { project: "fx/p" },
+    name = `t${++n}`,
+  ) => {
+    connection ??= (
+      await createConnection(t.db, keys, {
+        organizationId: org.id,
+        type: "gitlab",
+        name: "c",
+        token: CANARY,
+      })
+    ).id;
+    return createSyncTarget(t.db, {
+      organizationId: org.id,
+      projectId: project.id,
+      name,
+      type: "gitlab-variables",
+      connectionId: connection,
+      config,
+      environmentMapping: mapping,
+    });
+  };
+  return { org, project, at, set, target };
 }
 
 /** Lint through the mock, as the route will through a connection's client. */
@@ -94,6 +123,7 @@ describe("validatePipeline", () => {
       ok: true,
       lint: { valid: true, errors: [], warnings: [] },
       missingVariables: [],
+      violations: [],
     });
   });
 
@@ -239,5 +269,91 @@ describe("validatePipeline", () => {
     expect(JSON.stringify(r)).not.toContain(CANARY);
     expect(JSON.stringify(mock.requests)).not.toContain(CANARY);
     expect(validatePipeline.length).toBe(2); // (db, input): there is no key provider to open anything with
+  });
+});
+
+describe("the guardrails (POL-4)", () => {
+  const check = (
+    w: Awaited<ReturnType<typeof world>>,
+    over: { environments?: string[]; guardrails?: GuardrailConfig } = {},
+  ) => {
+    const template = needing();
+    return validatePipeline(t.db, {
+      ...w.at.project,
+      template,
+      text: render(template),
+      lint: linter(),
+      ...over,
+    });
+  };
+
+  test("an environment that a target that does not protect its variables syncs to production is a violation, in words", async () => {
+    const w = await world();
+    await w.target({ prod: "production" }, { project: "fx/p" }, "main");
+    const r = await check(w);
+    expect(r.ok).toBe(false);
+    expect(r.lint.valid).toBe(true);
+    expect(r.violations).toEqual([
+      {
+        rule: "production-variable-protected",
+        message:
+          'environment "prod" is synced to the production scope "production" by the target "main", which does not protect its variables',
+      },
+    ]);
+    expect(JSON.stringify(r)).not.toContain(CANARY);
+  });
+
+  test("a target that protects them, or maps the environment elsewhere, or not at all, is fine", async () => {
+    const w = await world();
+    await w.target({ prod: "production" }, { project: "fx/p", protected: true });
+    await w.target({ prod: "staging", dev: "*" });
+    await w.target({});
+    const r = await check(w);
+    expect(r.violations).toEqual([]);
+    expect(r.ok).toBe(true);
+  });
+
+  test("only the environments asked for are looked at", async () => {
+    const w = await world();
+    await w.target({ prod: "production" });
+    expect((await check(w, { environments: ["dev"] })).violations).toEqual([]);
+    expect((await check(w, { environments: ["dev", "prod"] })).violations).toHaveLength(1);
+  });
+
+  test("a project with no environments has nothing to break", async () => {
+    const w = await world([]);
+    await w.target({ prod: "production" });
+    expect((await check(w)).violations).toEqual([]);
+  });
+
+  test("each target is named, and the setting decides what production is and which rules hold", async () => {
+    const w = await world();
+    await w.target({ prod: "production" }, { project: "fx/a" }, "a");
+    await w.target({ prod: "live" }, { project: "fx/b" }, "b");
+    const both = await check(w);
+    expect(both.violations.map((v) => v.message.match(/target "(\w+)"/)?.[1])).toEqual(["a"]);
+    const live = await check(w, { guardrails: { off: [], production: ["live"] } });
+    expect(live.violations.map((v) => v.message.match(/target "(\w+)"/)?.[1])).toEqual(["b"]);
+    const off = await check(w, {
+      guardrails: { off: ["production-variable-protected"], production: ["production", "live"] },
+    });
+    expect(off.violations).toEqual([]);
+    expect(off.ok).toBe(true);
+  });
+
+  test("a target whose config the adapter refuses breaks nothing", async () => {
+    const w = await world();
+    const bad = await w.target({ prod: "production" });
+    await updateSyncTarget(t.db, w.org.id, w.project.id, bad.id, { config: { nonsense: true } });
+    expect((await check(w)).violations).toEqual([]);
+  });
+
+  test("targets are read page after page: one past the first page is still seen", async () => {
+    const w = await world();
+    for (let i = 0; i < 100; i++) await w.target({}, { project: "fx/p", protected: true });
+    await w.target({ prod: "production" }, { project: "fx/p" }, "last");
+    expect((await check(w)).violations.map((v) => v.message)).toEqual([
+      expect.stringContaining('target "last"'),
+    ]);
   });
 });

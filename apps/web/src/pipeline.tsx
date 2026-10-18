@@ -404,7 +404,7 @@ function Review({
   create: () => void;
 }) {
   const { request, preview } = reviewed;
-  const { lint, missingVariables } = preview.validation;
+  const { lint, missingVariables, violations } = preview.validation;
   return (
     <section className="stack card" aria-label="Step 4: Review">
       <h2>
@@ -428,6 +428,22 @@ function Review({
             ))}
           </ul>
           <p>No merge request can be created until the errors are gone. Change the parameters.</p>
+        </section>
+      )}
+      {violations.length > 0 && (
+        <section className="stack" aria-label="Guardrails">
+          <h3>This pipeline breaks a guardrail</h3>
+          <ul className="error">
+            {violations.map((v) => (
+              <li key={`${v.rule}:${v.message}`}>
+                {v.rule}: {v.message}
+              </li>
+            ))}
+          </ul>
+          <p>
+            No merge request can be created until the targets protect their variables: set protected
+            to true in the target's config.
+          </p>
         </section>
       )}
       {lint.warnings.length > 0 && (
@@ -467,7 +483,12 @@ function Review({
         <button type="button" onClick={back} disabled={busy}>
           Back to parameters
         </button>
-        <button type="button" className="primary" disabled={busy || !lint.valid} onClick={create}>
+        <button
+          type="button"
+          className="primary"
+          disabled={busy || !lint.valid || violations.length > 0}
+          onClick={create}
+        >
           {busy
             ? "Working…"
             : preview.existing === "identical"

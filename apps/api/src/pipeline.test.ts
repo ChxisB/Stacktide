@@ -4,9 +4,11 @@ import { envKeyProvider } from "@orch/crypto";
 import {
   auditEvents,
   createConnection,
+  createEnvironment,
   createOrganization,
   createProject,
   createSession,
+  createSyncTarget,
   createVariable,
   jobs,
   pipelineConfigs,
@@ -152,6 +154,74 @@ async function world(org = o1, files?: Record<string, string>) {
 const bun = (connectionId = conn1) => ({ connectionId, template: "bun-app" });
 const events = (action: string) =>
   t.db.select().from(auditEvents).where(eq(auditEvents.action, action)).orderBy(auditEvents.at);
+
+describe("the guardrails (POL-4)", () => {
+  /** An environment `prod` that a target syncs to the production scope without protecting its variables. */
+  const exposeProduction = async (w: Awaited<ReturnType<typeof world>>) => {
+    await createEnvironment(t.db, {
+      organizationId: w.org,
+      projectId: w.project,
+      name: "prod",
+      slug: "prod",
+    });
+    await createSyncTarget(t.db, {
+      organizationId: w.org,
+      projectId: w.project,
+      name: "main",
+      type: "gitlab-variables",
+      connectionId: conn1,
+      config: { project: "fx/p" },
+      environmentMapping: { prod: "production" },
+    });
+  };
+
+  test("the preview shows what the pipeline breaks and the apply is 422, writes nothing and is not audited", async () => {
+    const w = await world();
+    await exposeProduction(w);
+    const preview = await w.preview(bun());
+    expect(preview.status).toBe(200);
+    expect(preview.json.validation.ok).toBe(false);
+    expect(preview.json.validation.violations).toEqual([
+      {
+        rule: "production-variable-protected",
+        message: expect.stringContaining('environment "prod" is synced to the production scope'),
+      },
+    ]);
+
+    const res = await w.apply(bun());
+    expect(res.status).toBe(422);
+    expect(res.json.code).toBe("guardrail_violation");
+    expect(w.commits()).toBe(0);
+    expect(
+      await t.db.select().from(pipelineConfigs).where(eq(pipelineConfigs.projectId, w.project)),
+    ).toEqual([]);
+    expect((await events("pipeline.apply")).filter((e) => e.projectId === w.project)).toEqual([]);
+  });
+
+  test("a project that breaks nothing has no violations to show", async () => {
+    const w = await world();
+    expect((await w.preview(bun())).json.validation.violations).toEqual([]);
+  });
+
+  test("with the rule switched off in the app's setting the pipeline is applied", async () => {
+    const w = await world();
+    await exposeProduction(w);
+    const off = createApp({
+      logger: createLogger({ level: "debug", write: (line) => lines.push(line) }),
+      db: t.db,
+      principal: callerPrincipal({
+        db: t.db,
+        roles: (u) => roleTable.get(u.gitlabId) ?? { orgRoles: {}, projectRoles: {} },
+      }),
+      ready: async () => {},
+      keys,
+      guardrails: { off: ["production-variable-protected"], production: ["production"] },
+    });
+    const res = await call("alice", "POST", w.base, bun(), off);
+    expect(res.status).toBe(200);
+    expect(res.json.outcome).toBe("opened");
+  });
+});
 
 describe("GET /pipeline", () => {
   test("a reporter sees that nothing is set up and which templates suit the project", async () => {

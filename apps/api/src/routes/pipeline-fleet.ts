@@ -2,6 +2,7 @@ import type { Logger } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import type { Gitlab } from "@orch/gitlab";
 import type { Template } from "@orch/pipelines";
+import type { GuardrailConfig } from "@orch/sync";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
@@ -73,7 +74,13 @@ export const pipelineFleetRoutes = ({
   keys,
   logger,
   templates: given,
-}: RouteDeps & { keys?: KeyProvider; logger: Logger; templates?: readonly Template[] }) => {
+  guardrails,
+}: RouteDeps & {
+  keys?: KeyProvider;
+  logger: Logger;
+  templates?: readonly Template[];
+  guardrails?: GuardrailConfig | undefined;
+}) => {
   const templates = catalogOf(given);
   const deps = async (
     orgId: string,
@@ -95,6 +102,7 @@ export const pipelineFleetRoutes = ({
       record,
       pause: (ms) => Bun.sleep(ms),
       logger,
+      guardrails,
     };
   };
 

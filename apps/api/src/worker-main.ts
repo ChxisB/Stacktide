@@ -14,6 +14,7 @@ import {
 } from "@orch/db";
 import { z } from "zod";
 import { rolesFromEnv } from "./auth-config";
+import { guardrailEnv, guardrailsOf } from "./guardrails";
 import { mrCommandHandler } from "./mr-commands";
 import { mrPlanHandler } from "./mr-plan";
 import { notifyDeliverHandler } from "./notify";
@@ -53,6 +54,7 @@ const config = loadConfig(
     GITLAB_MEMBERSHIP_TOKEN: z.string().min(1).optional(),
     /** The image repository (no tag) per tool; Terragrunt has no default, and a stack with an `environment` needs one with `orch`. */
     ...toolImageEnv,
+    ...guardrailEnv,
     /** How often every sync target is checked for drift (SYNC-8); 0 switches the checks off. */
     DRIFT_CHECK_SECONDS: z.coerce
       .number()
@@ -83,14 +85,16 @@ if (config.ORCH_MASTER_KEYS !== undefined) {
 
 const db = createDb(config.DATABASE_URL, config.WORKER_CONCURRENCY + 2);
 
+const guardrails = guardrailsOf(config);
+
 // Later features register their handlers here, keyed by queue.
 const handlers: Record<string, JobHandler> = {};
 // A job that opens secrets needs the master keys here too: without them its queue is not served and its jobs wait.
 if (keys) {
   handlers[SYNC_APPLY] = syncApplyHandler({ db, keys, logger });
-  handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger });
+  handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger, guardrails });
   handlers[DRIFT_TICK_QUEUE] = driftTickHandler({ db });
-  handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger });
+  handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger, guardrails });
   // POL-2: the sink's address is sealed, so delivering needs the keys
   handlers[NOTIFY_QUEUE] = notifyDeliverHandler({ db, keys });
   // one queue, five consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
