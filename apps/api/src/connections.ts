@@ -2,6 +2,20 @@ import { DomainError, type Logger } from "@orch/core";
 import { CryptoError, type KeyProvider } from "@orch/crypto";
 import { type Connection, type Db, openConnection } from "@orch/db";
 import { createGitlab, GitlabError, type GitlabErrorKind } from "@orch/gitlab";
+import {
+  AWS_ASSUME_ROLE,
+  type AwsCreds,
+  awsConfigSchema,
+  type Check,
+  checkAwsAssumeRole,
+  checkKubernetes,
+  checkVaultAppRole,
+  type Fetch,
+  KUBERNETES,
+  kubernetesConfigSchema,
+  VAULT_APPROLE,
+  vaultConfigSchema,
+} from "@orch/sync";
 import { z } from "zod";
 
 /** What a connection test found. A failure is an answer, not an error: `message` is safe to show. */
@@ -70,6 +84,66 @@ export async function testGitlab(input: {
   }
 }
 
+/** How the checks of the non-GitLab connections reach their systems. Tests pass a fake `fetch`. */
+export interface CloudDeps {
+  fetch?: Fetch | undefined;
+  /**
+   * The platform's own AWS identity, read when a connection is checked. It needs one permission, to
+   * assume the roles connections name; `undefined` when the operator gave it none.
+   */
+  aws?: (() => AwsCreds | undefined) | undefined;
+}
+
+/** Fixed words for a platform that was started without the identity an `aws_assume_role` connection needs. */
+export const awsUnavailable = () =>
+  new DomainError(
+    "aws_identity_unavailable",
+    503,
+    "The platform has no AWS identity (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY) to assume roles with",
+  );
+
+/** Checks a stored or about-to-be-stored connection of one of the non-GitLab types against its system. */
+export async function checkCloud(
+  connection: { type: string; config: Record<string, unknown> },
+  secret: string,
+  cloud: CloudDeps = {},
+): Promise<Check> {
+  const fetch = cloud.fetch ?? globalThis.fetch;
+  // a stored configuration the schema no longer accepts is the operator's to fix, not a 500
+  const config = <T>(schema: z.ZodType<T>) => {
+    const parsed = schema.safeParse(connection.config);
+    if (!parsed.success) {
+      throw new DomainError(
+        "connection_config",
+        422,
+        "The stored configuration of this connection is not valid",
+      );
+    }
+    return parsed.data;
+  };
+  switch (connection.type) {
+    case AWS_ASSUME_ROLE: {
+      const base = cloud.aws?.();
+      if (!base) throw awsUnavailable();
+      return checkAwsAssumeRole(config(awsConfigSchema), secret, { fetch, base });
+    }
+    case KUBERNETES:
+      return checkKubernetes(config(kubernetesConfigSchema), secret, { fetch });
+    case VAULT_APPROLE:
+      return checkVaultAppRole(config(vaultConfigSchema), secret, { fetch });
+  }
+  throw new DomainError("connection_type", 422, "This type of connection cannot be tested");
+}
+
+// shortcut: literal loopback hosts only; a DNS name that resolves there passes. Resolve and check
+// the addresses together with the SSRF follow-up (GL-6 LOG).
+export const isLoopback = (host: string) =>
+  host === "localhost" ||
+  host.endsWith(".localhost") ||
+  host === "[::1]" ||
+  host === "0.0.0.0" ||
+  /^127\./.test(host);
+
 export const noKeys = () =>
   new DomainError(
     "secrets_unavailable",
@@ -78,16 +152,16 @@ export const noKeys = () =>
   );
 
 /**
- * A connection of the organization with its token opened, for talking to the system it belongs to.
+ * A connection of the organization with its secret opened, for talking to the system it belongs to.
  * Unknown (or another organization's) is a 404; a secret that cannot be opened is an operator's
  * problem (the master key is gone or the row was altered), logged by code only.
  */
-export async function openGitlabConnection(
+export async function openAnyConnection(
   deps: { db: Db; keys?: KeyProvider; logger: Logger },
   orgId: string,
   connectionId: string,
   requestId: unknown,
-): Promise<{ connection: Connection; baseUrl: string; token: string }> {
+): Promise<{ connection: Connection; token: string }> {
   if (!deps.keys) throw noKeys();
   const opened = await openConnection(deps.db, deps.keys, orgId, connectionId).catch((e) => {
     if (!(e instanceof CryptoError)) throw e;
@@ -103,6 +177,17 @@ export async function openGitlabConnection(
     );
   });
   if (!opened) throw new DomainError("not_found", 404, "Connection not found");
+  return opened;
+}
+
+/** A GitLab connection, opened. */
+export async function openGitlabConnection(
+  deps: { db: Db; keys?: KeyProvider; logger: Logger },
+  orgId: string,
+  connectionId: string,
+  requestId: unknown,
+): Promise<{ connection: Connection; baseUrl: string; token: string }> {
+  const opened = await openAnyConnection(deps, orgId, connectionId, requestId);
   // The type is free-form: another kind's secret must not be sent to a GitLab URL.
   if (opened.connection.type !== "gitlab") {
     throw new DomainError("connection_type", 422, "This is not a GitLab connection");

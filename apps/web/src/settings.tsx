@@ -101,7 +101,8 @@ function Row({
               another connection is set up. One that sync targets still use cannot be deleted.
             </p>
           )}
-          {result?.ok && (
+          {result?.ok && !("user" in result) && <p role="status">{result.summary}.</p>}
+          {result?.ok && "user" in result && (
             <p role="status">
               GitLab accepts it, as {result.user.name} (@{result.user.username}).{" "}
               {result.scopes ? `Scopes: ${result.scopes.join(", ")}.` : "Its scopes are not shown."}

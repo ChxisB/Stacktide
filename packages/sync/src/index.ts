@@ -1,8 +1,12 @@
+export * from "./aws";
 export * from "./errors";
 export * from "./fake";
 export * from "./gitlab-variables";
 export * from "./guardrails";
+export { type Check, type CheckReason, CloudError, type Fetch } from "./http";
+export * from "./kubernetes";
 export * from "./plan";
 export { byKeyThenScope, refId } from "./ref";
 export * from "./targets";
 export * from "./types";
+export * from "./vault";

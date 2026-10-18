@@ -1,6 +1,6 @@
 # 12 Extra Sync Targets - Tasks
 
-### EXT-1 - Target credential model and ADR  `[ ]` M - deps: GL-6, SYNC-4
+### EXT-1 - Target credential model and ADR  `[x]` M - deps: GL-6, SYNC-4
 Do: extend `connections` types (aws-assume-role, kubernetes, vault-approle) with validation and a connection test; write the ADR covering the invariant-3 exception and the runner-side alternative. **Human gate + `/security-review`.**
 Done when: ADR approved; tests prove secrets are encrypted at rest and never returned.
 

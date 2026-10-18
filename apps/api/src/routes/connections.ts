@@ -9,10 +9,30 @@ import {
   listConnections,
 } from "@orch/db";
 import { parseBaseUrl } from "@orch/gitlab";
+import {
+  AWS_ASSUME_ROLE,
+  awsConfigSchema,
+  type Check,
+  externalIdSchema,
+  KUBERNETES,
+  kubernetesConfigSchema,
+  kubernetesTokenSchema,
+  VAULT_APPROLE,
+  vaultConfigSchema,
+  vaultSecretIdSchema,
+} from "@orch/sync";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
-import { type ConnectionTest, noKeys, openGitlabConnection, testGitlab } from "../connections";
+import {
+  type CloudDeps,
+  type ConnectionTest,
+  checkCloud,
+  isLoopback,
+  noKeys,
+  openAnyConnection,
+  testGitlab,
+} from "../connections";
 import { guardPlugin } from "../guard";
 import {
   deleteResponses,
@@ -50,13 +70,15 @@ const connectionDto = (c: Connection): z.infer<typeof connectionSchema> => ({
   updatedAt: iso(c.updatedAt),
 });
 
-const testSchema = z.discriminatedUnion("ok", [
+// GitLab's answer names the user; the other systems' say in a sentence what was confirmed.
+const testSchema = z.union([
   z.object({
     ok: z.literal(true),
     user: z.object({ gitlabId: z.number().int(), username: z.string(), name: z.string() }),
     scopes: z.array(z.string()).nullable(),
     expiresAt: z.string().nullable(),
   }),
+  z.object({ ok: z.literal(true), summary: z.string() }),
   z.object({ ok: z.literal(false), reason: z.string(), message: z.string() }),
 ]);
 
@@ -74,14 +96,6 @@ const baseUrl = z
       return false;
     }
   }, BASE_URL_HELP);
-// shortcut: literal loopback hosts only; a DNS name that resolves there passes. Resolve and check
-// the addresses together with the SSRF follow-up (GL-6 LOG).
-const isLoopback = (host: string) =>
-  host === "localhost" ||
-  host.endsWith(".localhost") ||
-  host === "[::1]" ||
-  host === "0.0.0.0" ||
-  /^127\./.test(host);
 /** Origin and path only: a query, a fragment or a trailing slash is dropped. */
 const normalized = (v: string) => {
   const u = parseBaseUrl(v);
@@ -101,7 +115,81 @@ const create = z.discriminatedUnion("type", [
       .max(512)
       .regex(/^[!-~]+$/, "must be a GitLab access token"),
   }),
+  // The other systems: the shape of each is its module's, the secret is the one field that is sealed.
+  z.strictObject({
+    type: z.literal(AWS_ASSUME_ROLE),
+    name,
+    ...awsConfigSchema.shape,
+    externalId: externalIdSchema,
+  }),
+  z.strictObject({
+    type: z.literal(KUBERNETES),
+    name,
+    ...kubernetesConfigSchema.shape,
+    token: kubernetesTokenSchema,
+  }),
+  z.strictObject({
+    type: z.literal(VAULT_APPROLE),
+    name,
+    ...vaultConfigSchema.shape,
+    secretId: vaultSecretIdSchema,
+  }),
 ]);
+type Create = z.infer<typeof create>;
+
+/**
+ * What is stored in the open and what is sealed, for a connection that is not GitLab's. The address is
+ * refused when it points at this machine (unless the app allows that), then the system is asked; a
+ * system that says no stops the create with its reason in fixed words.
+ */
+async function prepareCloud(
+  body: Exclude<Create, { type: "gitlab" }>,
+  o: { loopback: boolean; cloud: CloudDeps | undefined },
+) {
+  let config: Record<string, unknown>;
+  let secret: string;
+  let address: string | undefined;
+  if (body.type === AWS_ASSUME_ROLE) {
+    config = { roleArn: body.roleArn, region: body.region };
+    secret = body.externalId;
+  } else if (body.type === KUBERNETES) {
+    config = {
+      server: body.server,
+      namespaces: body.namespaces,
+      ...(body.ca === undefined ? {} : { ca: body.ca }),
+    };
+    secret = body.token;
+    address = body.server;
+  } else {
+    config = {
+      address: body.address,
+      roleId: body.roleId,
+      authMount: body.authMount,
+      kvMount: body.kvMount,
+      prefix: body.prefix,
+    };
+    secret = body.secretId;
+    address = body.address;
+  }
+  if (!o.loopback && address && isLoopback(new URL(address).hostname)) {
+    throw new DomainError("base_url_refused", 422, "The address must not point at this machine");
+  }
+  const found = await checkCloud({ type: body.type, config }, secret, o.cloud);
+  if (!found.ok) throw new DomainError("connection_test_failed", 422, found.message);
+  return { config, secret };
+}
+
+/** What a create body stores and seals, once its system has said the credential works. */
+async function prepare(body: Create, o: { loopback: boolean; cloud: CloudDeps | undefined }) {
+  if (body.type !== "gitlab") return prepareCloud(body, o);
+  const config: Record<string, unknown> = { baseUrl: normalized(body.baseUrl) };
+  if (!o.loopback && isLoopback(new URL(String(config.baseUrl)).hostname)) {
+    throw new DomainError("base_url_refused", 422, "The base URL must not point at this machine");
+  }
+  const found = await testGitlab({ baseUrl: String(config.baseUrl), token: body.token });
+  if (!found.ok) throw new DomainError("connection_test_failed", 422, found.message);
+  return { config, secret: body.token };
+}
 
 const params = z.object({ orgId: z.uuid() });
 const itemParams = params.extend({ connectionId: z.uuid() });
@@ -127,7 +215,13 @@ export const connectionRoutes = ({
   keys,
   logger,
   loopbackConnections = false,
-}: RouteDeps & { keys?: KeyProvider; logger: Logger; loopbackConnections?: boolean }) =>
+  cloud,
+}: RouteDeps & {
+  keys?: KeyProvider;
+  logger: Logger;
+  loopbackConnections?: boolean;
+  cloud?: CloudDeps;
+}) =>
   new Elysia({ prefix: "/organizations/:orgId/connections" })
     .use(auditPlugin(principal))
     .use(guardPlugin)
@@ -154,16 +248,9 @@ export const connectionRoutes = ({
       async ({ params: { orgId }, body, audit, set }) => {
         if (!keys) throw noKeys();
         if (!(await getOrganization(db, orgId))) throw notFound("Organization");
-        const config = { baseUrl: normalized(body.baseUrl) };
-        if (!loopbackConnections && isLoopback(new URL(config.baseUrl).hostname)) {
-          throw new DomainError(
-            "base_url_refused",
-            422,
-            "The base URL must not point at this machine",
-          );
-        }
-        const found = await testGitlab({ ...config, token: body.token });
-        if (!found.ok) throw new DomainError("connection_test_failed", 422, found.message);
+        const { config, secret } = await prepare(body, { loopback: loopbackConnections, cloud });
+        // a CA certificate is long and public, and not what an audit reader looks for
+        const { ca: _ca, ...shown } = config;
         const connection = await db
           .transaction(async (tx) => {
             const c = await createConnection(tx, keys, {
@@ -171,11 +258,11 @@ export const connectionRoutes = ({
               type: body.type,
               name: body.name,
               config,
-              token: body.token,
+              token: secret,
             });
             await audit(
               tx,
-              audited("connection.create", c, { type: c.type, name: c.name, ...config }),
+              audited("connection.create", c, { type: c.type, name: c.name, ...shown }),
             );
             return c;
           })
@@ -199,18 +286,21 @@ export const connectionRoutes = ({
     )
     .post(
       "/:connectionId/test",
-      async ({ params: { orgId, connectionId }, audit, set }): Promise<ConnectionTest> => {
-        const opened = await openGitlabConnection(
+      async ({ params: { orgId, connectionId }, audit, set }): Promise<ConnectionTest | Check> => {
+        const { connection, token } = await openAnyConnection(
           { db, keys, logger },
           orgId,
           connectionId,
           set.headers["x-request-id"],
         );
-        const result = await testGitlab({ baseUrl: opened.baseUrl, token: opened.token });
+        const result =
+          connection.type === "gitlab"
+            ? await testGitlab({ baseUrl: z.string().parse(connection.config.baseUrl), token })
+            : await checkCloud(connection, token, cloud);
         await db.transaction((tx) =>
           audit(
             tx,
-            audited("connection.test", opened.connection, {
+            audited("connection.test", connection, {
               ok: result.ok,
               ...(result.ok ? {} : { reason: result.reason }),
             }),

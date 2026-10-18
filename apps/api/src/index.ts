@@ -1,6 +1,7 @@
 import { createLogger, loadConfig } from "@orch/core";
 import { envKeyProvider, type KeyProvider } from "@orch/crypto";
 import { createDb, pingDb } from "@orch/db";
+import { awsEnv, awsFromEnv } from "@orch/sync";
 import { z } from "zod";
 import { createApp } from "./app";
 import { accessEnv, authEnv, authFromEnv, ciFromEnv, rolesFromEnv } from "./auth-config";
@@ -25,7 +26,8 @@ const config = loadConfig(
       ...guardrailEnv,
     })
     .and(authEnv)
-    .and(accessEnv),
+    .and(accessEnv)
+    .and(awsEnv),
 );
 const logger = createLogger({ level: config.LOG_LEVEL });
 
@@ -78,6 +80,7 @@ const app = createApp({
   keys,
   images: toolImages(config),
   guardrails: guardrailsOf(config),
+  cloud: { aws: () => awsFromEnv(config) },
   loopbackConnections: ["development", "test"].includes(config.NODE_ENV.toLowerCase()),
 }).listen({
   hostname: config.HOST,

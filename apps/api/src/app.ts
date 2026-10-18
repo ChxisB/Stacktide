@@ -6,6 +6,7 @@ import type { Template } from "@orch/pipelines";
 import type { GuardrailConfig } from "@orch/sync";
 import { Elysia } from "elysia";
 import { auditPlugin } from "./audit";
+import type { CloudDeps } from "./connections";
 import { guardPlugin, unguardedRoutes } from "./guard";
 import { http } from "./http";
 import { openapiPlugin } from "./openapi";
@@ -53,6 +54,8 @@ export interface AppDeps {
   keys?: KeyProvider;
   /** Let connections point at this machine (tests, development). Production refuses them. */
   loopbackConnections?: boolean;
+  /** How the AWS, Kubernetes and Vault connections reach their systems (see `CloudDeps`). Left out, the real network and no AWS identity. */
+  cloud?: CloudDeps;
   /** The pipeline templates to offer. Left out, the shipped catalog. */
   templates?: readonly Template[];
   /** Image repository per tool that has no default (Terragrunt), for the pipelines an apply starts. */

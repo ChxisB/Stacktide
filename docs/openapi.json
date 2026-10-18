@@ -7603,6 +7603,137 @@
                       "token"
                     ],
                     "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "aws_assume_role"
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
+                      "roleArn": {
+                        "type": "string",
+                        "pattern": "^arn:aws:iam::\\d{12}:role\\/[\\w+=,.@/-]{1,512}$"
+                      },
+                      "region": {
+                        "type": "string",
+                        "pattern": "^[a-z]{2}(-[a-z]+)+-\\d$"
+                      },
+                      "externalId": {
+                        "type": "string",
+                        "minLength": 16,
+                        "maxLength": 1224,
+                        "pattern": "^[\\w+=,.@:/-]+$"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "name",
+                      "roleArn",
+                      "region",
+                      "externalId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "kubernetes"
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
+                      "server": {
+                        "type": "string",
+                        "maxLength": 2000
+                      },
+                      "namespaces": {
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"
+                        }
+                      },
+                      "ca": {
+                        "type": "string",
+                        "maxLength": 20000,
+                        "pattern": "^-----BEGIN CERTIFICATE-----[\\s\\S]+-----END CERTIFICATE-----\\s*$"
+                      },
+                      "token": {
+                        "type": "string",
+                        "minLength": 20,
+                        "maxLength": 8192,
+                        "pattern": "^[!-~]+$"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "name",
+                      "server",
+                      "namespaces",
+                      "token"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "vault_approle"
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 100
+                      },
+                      "address": {
+                        "type": "string",
+                        "maxLength": 2000
+                      },
+                      "roleId": {
+                        "type": "string",
+                        "pattern": "^[!-~]{1,256}$"
+                      },
+                      "authMount": {
+                        "default": "approle",
+                        "type": "string",
+                        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                      },
+                      "kvMount": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                      },
+                      "prefix": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(\\/[A-Za-z0-9_][A-Za-z0-9_.-]*){0,7}$"
+                      },
+                      "secretId": {
+                        "type": "string",
+                        "pattern": "^[!-~]{8,256}$"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "name",
+                      "address",
+                      "roleId",
+                      "kvMount",
+                      "prefix",
+                      "secretId"
+                    ],
+                    "additionalProperties": false
                   }
                 ]
               }
@@ -8153,7 +8284,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
+                  "anyOf": [
                     {
                       "type": "object",
                       "properties": {
@@ -8203,6 +8334,22 @@
                         "user",
                         "scopes",
                         "expiresAt"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ok": {
+                          "type": "boolean",
+                          "const": true
+                        },
+                        "summary": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "ok",
+                        "summary"
                       ]
                     },
                     {
