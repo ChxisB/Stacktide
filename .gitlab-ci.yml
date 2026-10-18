@@ -15,7 +15,13 @@ variables:
   POSTGRES_DB: orch
   DATABASE_URL: postgres://orch:orch@postgres:5432/orch
 
+# oven/bun has no git, and the version script, the release commit and the tag need it
+.git:
+  before_script:
+    - command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git)
+
 check:
+  extends: .git
   stage: test
   services:
     - name: postgres:18-alpine
@@ -104,7 +110,7 @@ release:
   before_script:
     - apk add --no-cache bash curl openssl
 
-image:
+image-test:
   extends: .docker
   stage: test
   script:
@@ -113,13 +119,13 @@ image:
 
 # What the next release would be, and its notes (scripts/version.ts). Publishes nothing.
 release-preview:
+  extends: .git
   stage: test
   variables:
     GIT_DEPTH: "0" # the tags and the commits since the last one
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" || $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
-    - command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git)
     - bun scripts/version.ts --notes notes.md | tee version.txt
     - '[ -s version.txt ] && cat notes.md || echo "Nothing releasable since the last tag."'
 
@@ -128,8 +134,9 @@ release-preview:
 # pushes both with RELEASE_TOKEN (a masked, protected project access token with write_repository); the tag pipeline then
 # runs `release` (binaries) and `image-publish`.
 release-cut:
+  extends: .git
   stage: deploy
-  needs: [check]
+  needs: [check, image-test]
   variables:
     GIT_DEPTH: "0"
     RELEASE_PUBLISH:
@@ -140,7 +147,6 @@ release-cut:
       when: manual
       allow_failure: true
   script:
-    - command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git)
     - version=$(bun scripts/version.ts --apply --notes notes.md)
     - '[ -n "$version" ] || { echo "Nothing releasable since the last tag."; exit 0; }'
     - cat notes.md
@@ -154,11 +160,12 @@ release-cut:
     - git add apps/cli/package.json bun.lock CHANGELOG.md
     - git commit --message "chore(release): v$version"
     - git tag --annotate "v$version" --message "v$version"
-    # the token goes in a header, never in the URL, so no error message can print it
+    # the token goes in a header set through the environment: not in the URL, not in the command line (nothing prints it)
     - |
-      auth=$(printf 'release-bot:%s' "$RELEASE_TOKEN" | base64 | tr -d '\n')
-      git -c "http.extraHeader=Authorization: Basic $auth" push --atomic \
-        "$CI_SERVER_PROTOCOL://$CI_SERVER_HOST/$CI_PROJECT_PATH.git" "HEAD:$CI_DEFAULT_BRANCH" "v$version"
+      export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader
+      GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'release-bot:%s' "$RELEASE_TOKEN" | base64 | tr -d '\n')"
+      export GIT_CONFIG_VALUE_0
+      git push --atomic "$CI_PROJECT_URL.git" "HEAD:$CI_DEFAULT_BRANCH" "v$version"
 
 # A tag like v1.2.3 builds the image, tests it and pushes it to the project's container registry.
 image-publish:

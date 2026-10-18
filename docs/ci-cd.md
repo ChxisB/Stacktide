@@ -10,7 +10,7 @@ so the two files stay thin: `scripts/version.ts` (version and changelog), `deplo
 | Config | `.github/workflows/ci.yml`, `release.yml` | `.gitlab-ci.yml` |
 | Check (typecheck, lint, test) | `check` | `check` |
 | Dependency advisories | `audit` | `audit` |
-| Image build + test, self-host smoke | `image` | `image` |
+| Image build + test, self-host smoke | `image` | `image-test` |
 | Browser journey (Playwright) | `e2e` | `e2e` |
 | Next version preview | `release-preview` | `release-preview` |
 | Cut a release | run **Release** (Actions tab) | run `release-cut` (manual job on `main`) |
@@ -28,26 +28,31 @@ Semantic versioning, decided by the commit messages since the last `v*` tag (Con
 | `fix:`, `perf:`, `revert:` | patch |
 | `docs:`, `chore:`, `test:`, `ci:`, `refactor:`, `style:`, `build:` (and anything that is not a conventional commit) | none |
 
-Land changes with **rebase or fast-forward merges**, not merge commits or squashes that rewrite the message, or the
-commit messages the rules read are lost. `bun scripts/version.ts` prints the next version (nothing if no commit
+Land changes with a merge commit, a rebase or a fast-forward: each keeps the commits behind it, and a merge commit
+itself releases nothing. Do **not squash**: the one message that replaces them is the only one the rules read. `bun scripts/version.ts` prints the next version (nothing if no commit
 releases); `--notes FILE` writes its release notes; `--apply` also sets the version in `apps/cli/package.json` (what
 the binary reports) and `bun.lock`, and prepends `CHANGELOG.md`. It never commits or tags.
 
 ## Releasing
 
-Releasing is a click, not a side effect of every merge: **publishing is a human gate** (OPS-6). Both hosts run the
-same steps, and the first part is a dry run that publishes nothing.
+Releasing is a click, not a side effect of every merge: **publishing is a human gate** (OPS-6). Both hosts do the
+same things in the same order, and everything before the commit is a dry run that publishes nothing.
 
 1. Compute the version and changelog. Nothing to release: stop.
 2. Build the four binaries and `SHA256SUMS`; build the image and run `deploy/image-test.sh` on it.
-3. Only when publishing: push the image (`X.Y.Z`, `X.Y`, `latest`); commit `chore(release): vX.Y.Z` (version files and
-   changelog); create the tag `vX.Y.Z` on it and push both together; attach the binaries to the release.
+3. Only when publishing: commit `chore(release): vX.Y.Z` (version files and changelog), create the tag `vX.Y.Z` on it and
+   push both together. This is the one step that cannot be taken back.
+4. Then, from that tag: push the image (`X.Y.Z`, `X.Y`, `latest`) and publish the binaries.
 
 **GitHub:** Actions > Release > Run workflow; leave *Publish* off for the dry run (the binaries are in the run's
-artifacts and the changelog in its summary), switch it on to publish.
-**GitLab:** the `release-cut` manual job on `main` runs the same with `RELEASE_PUBLISH=true` set on that run; without it, it is
-the dry run. It needs a `RELEASE_TOKEN` CI variable (a project access token with `write_repository`, masked and
-protected) to push the commit and tag. The tag pipeline then runs `release` (binaries) and `image-publish`.
+artifacts and the changelog in its summary), switch it on to publish. Publishing is refused unless the run is on the
+default branch and CI passed on that exact commit. Two jobs: `release` (steps 1-3, can write the repository) and `publish`
+(step 4, can write packages and the release). If `publish` fails, *Re-run failed jobs*: running the whole workflow again
+finds nothing to release, the tag is already there. A protected default branch must let `github-actions[bot]` push.
+**GitLab:** the `release-cut` manual job on `main` (it waits for `check` and `image-test`) runs steps 1-3 with
+`RELEASE_PUBLISH=true` set on that run; without it, it is the dry run. It needs a `RELEASE_TOKEN` CI variable (a project
+access token with `write_repository`, masked and protected) to push the commit and tag; the token reaches git through the
+environment, never the command line. The tag pipeline then runs `release` (binaries) and `image-publish` (step 4).
 
 To make releases automatic, run the same job on every push to `main` instead of by hand; the rules above already
 decide whether anything is released.
@@ -61,12 +66,12 @@ decide whether anything is released.
 ## Verified, and not
 
 **GitHub:** `check`, `audit`, `e2e`, `image` (the image test and the self-host smoke) and `release-preview` have run
-green on a real pull request. The **Release** workflow has not run yet: neither the dry run nor a publish. Run the dry
-run first and read its summary and artifacts.
+green on a real pull request. The **Release** workflow has not run yet: neither the dry run nor a publish (it was
+restructured into two jobs after that). Run the dry run first and read its summary and artifacts.
 
 **GitLab:** `.gitlab-ci.yml` has not run on a real GitLab: there is no GitLab project for this repository yet (FND-6),
 and nothing here can lint it beyond parsing the YAML. Push it to one and read the first pipeline before trusting it. The
-parts most likely to need a fix are the ones that differ from GitHub: the Docker-in-Docker jobs (`image`,
+parts most likely to need a fix are the ones that differ from GitHub: the Docker-in-Docker jobs (`image-test`,
 `release-cut`, `image-publish`), the `e2e` job (Microsoft's Playwright image plus Bun from npm) and the `RELEASE_TOKEN`
 push.
 

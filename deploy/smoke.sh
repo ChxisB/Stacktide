@@ -10,8 +10,15 @@ port=${SMOKE_PORT:-13001}
 work=$(mktemp -d)
 export ORCH_ENV_FILE=$work/env WEB_PORT=$port COMPOSE_PROJECT_NAME=stacktide-smoke
 compose() { docker compose -f "$here/compose.yml" "$@"; }
-trap 'compose logs --no-color >"$work/logs" 2>&1 || true; compose down -v >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
-fail() { echo "smoke: $*" >&2; compose logs --no-color --tail 40 >&2 || true; exit 1; }
+# on any failure (also one that is not a `fail`, such as a compose error) the logs go to stderr before the stack is removed
+cleanup() {
+  local code=$?
+  [ "$code" = 0 ] || compose logs --no-color --tail 60 >&2 || true
+  compose down -v >/dev/null 2>&1 || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+fail() { echo "smoke: $*" >&2; exit 1; }
 
 # the throwaway values never leave this machine; the GitLab address is reserved (RFC 6761) and is only redirected to
 password=$(openssl rand -hex 16)
