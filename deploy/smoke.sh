@@ -34,16 +34,23 @@ compose up -d $build
 probe() {
   compose exec -T web bun -e "const r = await fetch('http://127.0.0.1:3001$1', { redirect: 'manual', headers: { accept: 'text/html' } }); console.log(r.status, r.headers.get('location') ?? ''); console.log(await r.text())"
 }
+# Output is always captured whole, never piped into head or grep -q: a reader that quits early makes docker write to a
+# closed pipe and exit 255, which pipefail turns into a failure that depends on timing.
 for i in $(seq 90); do
-  [ "$(probe /ready 2>/dev/null | head -1 | cut -d' ' -f1)" = 200 ] && break
+  ready=$(probe /ready 2>/dev/null) || ready=
+  [ "${ready%% *}" = 200 ] && break
   [ "$i" -lt 90 ] || fail "the stack never became ready"
   sleep 1
 done
 
-compose logs migrate --no-color | grep -q "migrations applied" || fail "migrate did not report success"
-[ "$(probe /health | tail -n +2)" = '{"status":"ok"}' ] || fail "/health through the web page is not ok"
-probe / | grep -qi '<html' || fail "the web page is not served at /"
-where=$(probe /auth/login | head -1)
+migrate=$(compose logs migrate --no-color) || fail "could not read the migrate log"
+grep -q "migrations applied" <<<"$migrate" || fail "migrate did not report success"
+health=$(probe /health) || fail "/health through the web page failed"
+[ "${health#*$'\n'}" = '{"status":"ok"}' ] || fail "/health through the web page is not ok"
+page=$(probe /) || fail "the web page failed at /"
+grep -qi '<html' <<<"$page" || fail "the web page is not served at /"
+login=$(probe /auth/login) || fail "/auth/login failed"
+where=${login%%$'\n'*}
 case $where in
   "302 https://gitlab.example.test/oauth/authorize?"*) ;;
   *) fail "/auth/login did not redirect to the configured GitLab: $where" ;;

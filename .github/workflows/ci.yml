@@ -43,7 +43,8 @@ jobs:
       - run: |
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
           sudo apt-get install -y postgresql-client-18
-          pg_dump --version
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH" # the image's PATH puts the 16 client first
+      - run: pg_dump --version
       - run: bun run check
 
   # UI-9: the journey of a new team in Chromium, against the real API and a mock GitLab (apps/web/e2e).
