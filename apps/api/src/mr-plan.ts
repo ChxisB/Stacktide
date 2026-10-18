@@ -1,4 +1,4 @@
-import type { Logger } from "@orch/core";
+import { IAC_TAGS, type Logger } from "@orch/core";
 import {
   attachRunPipeline,
   audit,
@@ -41,11 +41,9 @@ export const CHILD_PIPELINE = "ORCH_CHILD_PIPELINE";
 
 // Only these events say that the merge request's commits may have changed.
 const ACTIONS = new Set(["open", "reopen", "update"]);
-// The projects whose merge requests are planned: those the import saw Terraform (or Terragrunt) in.
-const PLANNED = new Set(["terraform", "terragrunt"]);
 // A run's id is part of the summary path, and it is not known until the run exists: the generator
 // checks everything else about the request first, with this in its place.
-const NO_RUN = "00000000-0000-0000-0000-000000000000";
+export const NO_RUN = "00000000-0000-0000-0000-000000000000";
 
 export interface MrPlanConfig {
   /** The API as the runners reach it, without a trailing slash. */
@@ -75,11 +73,41 @@ export const mrEvent = z.looseObject({
 export async function plannedProject(db: Db, organizationId: string, gitlabProjectId: number) {
   const [linked] = await linkedProjects(db, organizationId, [gitlabProjectId]);
   const project = linked && (await getProject(db, organizationId, linked.id));
-  return project?.detectedTypes.some((d) => PLANNED.has(d.tag)) ? project : undefined;
+  return project?.detectedTypes.some((d) => IAC_TAGS.includes(d.tag)) ? project : undefined;
 }
 
 /** GitLab would not start the pipeline: what a person must fix, not something a retry changes. */
-class Refused extends Error {}
+export class Refused extends Error {}
+
+/** The plan pipeline of the `select`ed stacks as the run `runId` (see `NO_RUN`) is to report on it. */
+export const planRequest = (
+  config: MrPlanConfig,
+  at: { organizationId: string; projectId: string },
+  stacks: PlanInput["stacks"],
+  select: readonly string[],
+  runId: string,
+): PlanInput => ({
+  action: "plan",
+  audience: config.audience,
+  apiUrl: config.apiUrl,
+  summaryPath: `/organizations/${at.organizationId}/projects/${at.projectId}/runs/${runId}/plan-summary`,
+  helperImage: config.helperImage,
+  stacks,
+  select,
+  ...(config.images ? { images: config.images } : {}),
+});
+
+/** Starts a pipeline on `ref` that runs the generated child pipeline; `Refused` when GitLab will not. */
+export async function triggerPlan(gitlab: Gitlab, project: number, ref: string, yaml: string) {
+  try {
+    return await gitlab.pipelines.trigger(project, ref, [
+      { key: CHILD_PIPELINE, value: yaml, type: "file" },
+    ]);
+  } catch (error) {
+    if (error instanceof GitlabError && error.kind === "invalid") throw new Refused(error.message);
+    throw error;
+  }
+}
 
 interface Turn {
   deps: RunDeps & { config: MrPlanConfig };
@@ -226,17 +254,7 @@ async function start(c: Turn, tx: Tx, mr: MergeRequest, sha: string): Promise<st
     return notes;
   }
 
-  const { config } = deps;
-  const request = (runId: string): PlanInput => ({
-    action: "plan",
-    audience: config.audience,
-    apiUrl: config.apiUrl,
-    summaryPath: `/organizations/${at.organizationId}/projects/${at.projectId}/runs/${runId}/plan-summary`,
-    helperImage: config.helperImage,
-    stacks: scan.stacks,
-    select: affected,
-    ...(config.images ? { images: config.images } : {}),
-  });
+  const request = (runId: string) => planRequest(deps.config, at, scan.stacks, affected, runId);
   try {
     generatePipeline(request(NO_RUN));
   } catch (error) {
@@ -268,17 +286,12 @@ async function start(c: Turn, tx: Tx, mr: MergeRequest, sha: string): Promise<st
           metadata: { ref: run.ref, sha, mergeRequestIid: iid, ...auditedStacks(affected) },
         },
       );
-      let pipeline: { id: number };
-      try {
-        pipeline = await gitlab.pipelines.trigger(at.gitlabProjectId, mr.sourceBranch, [
-          { key: CHILD_PIPELINE, value: generatePipeline(request(run.id)), type: "file" },
-        ]);
-      } catch (error) {
-        if (error instanceof GitlabError && error.kind === "invalid") {
-          throw new Refused(error.message);
-        }
-        throw error;
-      }
+      const pipeline = await triggerPlan(
+        gitlab,
+        at.gitlabProjectId,
+        mr.sourceBranch,
+        generatePipeline(request(run.id)),
+      );
       await attachRunPipeline(sp, {
         organizationId: at.organizationId,
         projectId: at.projectId,

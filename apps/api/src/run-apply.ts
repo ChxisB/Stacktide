@@ -89,6 +89,9 @@ export async function applyRun(
   if (unknown.length > 0) {
     throw refuse("unknown_stack", `This run has no stack named ${quoted(unknown)}`, 422);
   }
+  if (run.kind === "drift") {
+    throw refuse("drift_run", "A drift check only plans: it is never applied");
+  }
   const iid = run.mergeRequestIid;
   if (iid === null) {
     throw refuse(

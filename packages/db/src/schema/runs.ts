@@ -32,6 +32,9 @@ export const runs = pgTable(
     ref: text().notNull(),
     sha: text().notNull(),
     mergeRequestIid: integer(),
+    // `plan`: a merge request's plans, which an apply may follow. `drift`: a scheduled plan of the
+    // default branch to see whether the infrastructure still matches (POL-1); it is never applied.
+    kind: text().notNull().default("plan"),
     ...timestamps(),
   },
   (t) => [
@@ -49,6 +52,9 @@ export const runs = pgTable(
     // a git object id: SHA-1, or SHA-256 in repositories that use it
     check("runs_sha_check", sql`${t.sha} ~ '^([0-9a-f]{40}|[0-9a-f]{64})$'`),
     check("runs_mr_check", sql`${t.mergeRequestIid} is null or ${t.mergeRequestIid} > 0`),
+    check("runs_kind_check", sql`${t.kind} in ('plan', 'drift')`),
+    // a drift run belongs to the default branch, not to a merge request
+    check("runs_drift_check", sql`${t.kind} <> 'drift' or ${t.mergeRequestIid} is null`),
   ],
 );
 

@@ -2,6 +2,9 @@
 export const PROJECT_TAGS = ["bun", "node", "docker", "terraform", "terragrunt"] as const;
 export type ProjectTag = (typeof PROJECT_TAGS)[number];
 
+/** The tags of the projects whose stacks are planned: merge requests (IAC-7) and drift runs (POL-1). */
+export const IAC_TAGS: readonly ProjectTag[] = ["terraform", "terragrunt"];
+
 export interface DetectedType {
   tag: ProjectTag;
   /** `high`: a marker file at the repository root. `medium`: only nested, or a weaker marker. */

@@ -36,6 +36,7 @@ describe("stack.yml", () => {
           "watch: [../modules/**, shared/*.tf]".replace("../", "mods/"),
           "apply_on: merge",
           "environment: staging",
+          "drift_every: 6h",
         ].join("\n"),
       ),
     ).toEqual({
@@ -47,6 +48,7 @@ describe("stack.yml", () => {
       watch: ["mods/modules/**", "shared/*.tf"],
       apply_on: "merge",
       environment: "staging",
+      drift_every: 6 * 3600,
     });
     expect(ok("name: a\ntool: terraform\nversion: 1.10.0-rc1\n").version).toBe("1.10.0-rc1");
   });
@@ -167,6 +169,36 @@ describe("stack.yml", () => {
       expect(ok(`name: a\ntool: tofu\nenvironment: ${JSON.stringify(e)}\n`).environment).toBe(e);
     }
     expect(ok("name: a\ntool: tofu\n").environment).toBeUndefined();
+  });
+
+  test("drift_every is whole hours or days, from an hour up, and is kept in seconds", () => {
+    const secs = (v: string) => ok(`name: a\ntool: tofu\ndrift_every: ${v}\n`).drift_every;
+    expect(secs("1h")).toBe(3600);
+    expect(secs("6h")).toBe(21_600);
+    expect(secs("1d")).toBe(86_400);
+    expect(secs("999d")).toBe(999 * 86_400);
+    expect(ok("name: a\ntool: tofu\n").drift_every).toBeUndefined();
+    // a check more often than hourly would be a plan pipeline every few minutes; the rest is not a duration
+    for (const v of [
+      "0h",
+      "30m",
+      "1m",
+      "h",
+      "01h",
+      "6",
+      "1.5h",
+      "1000d",
+      "-1h",
+      "6H",
+      "1d2h",
+      "1w",
+    ]) {
+      expect(bad(`name: a\ntool: tofu\ndrift_every: ${JSON.stringify(v)}\n`)[0], v).toContain(
+        "drift_every",
+      );
+    }
+    // a bare number is not a duration either (YAML reads 6 as a number)
+    expect(bad("name: a\ntool: tofu\ndrift_every: 6\n")[0]).toContain("drift_every");
   });
 
   test("apply_on is merge or command", () => {

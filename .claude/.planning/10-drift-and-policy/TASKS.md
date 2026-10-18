@@ -1,6 +1,6 @@
 # 10 Drift and Policy - Tasks
 
-### POL-1 - Drift runs  `[ ]` M - deps: IAC-6, API-7
+### POL-1 - Drift runs  `[x]` M - deps: IAC-6, API-7
 Do: scheduled drift runs per stack (configurable cadence); `kind=drift` plan-only pipeline; mark `drifted`/`clean`; episode tracking so one drift = one notification.
 Done when: tests with a fake clock cover schedule, clean->drifted->clean transitions and no apply ever being triggered.
 

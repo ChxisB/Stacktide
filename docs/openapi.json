@@ -23726,6 +23726,13 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "plan",
+                        "drift"
+                      ]
+                    },
                     "stacks": {
                       "type": "array",
                       "items": {
@@ -23782,6 +23789,7 @@
                     "ref",
                     "sha",
                     "mergeRequestIid",
+                    "kind",
                     "stacks",
                     "createdAt",
                     "updatedAt"
@@ -24273,6 +24281,13 @@
                             "minimum": -9007199254740991,
                             "maximum": 9007199254740991
                           },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "plan",
+                              "drift"
+                            ]
+                          },
                           "stacks": {
                             "type": "array",
                             "items": {
@@ -24329,6 +24344,7 @@
                           "ref",
                           "sha",
                           "mergeRequestIid",
+                          "kind",
                           "stacks",
                           "createdAt",
                           "updatedAt"
@@ -24705,6 +24721,13 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "plan",
+                        "drift"
+                      ]
+                    },
                     "stacks": {
                       "type": "array",
                       "items": {
@@ -24761,6 +24784,7 @@
                     "ref",
                     "sha",
                     "mergeRequestIid",
+                    "kind",
                     "stacks",
                     "createdAt",
                     "updatedAt"
@@ -25061,7 +25085,8 @@
     "/organizations/{orgId}/projects/{projectId}/runs/{runId}/plan-summary": {
       "post": {
         "x-audit": [
-          "run.summary"
+          "run.summary",
+          "stack.drift"
         ],
         "x-guard": "run.summary",
         "parameters": [
@@ -25658,6 +25683,13 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "plan",
+                        "drift"
+                      ]
+                    },
                     "stacks": {
                       "type": "array",
                       "items": {
@@ -25714,6 +25746,7 @@
                     "ref",
                     "sha",
                     "mergeRequestIid",
+                    "kind",
                     "stacks",
                     "createdAt",
                     "updatedAt"

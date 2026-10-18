@@ -10,7 +10,7 @@ export type RunStack = Omit<typeof runStacks.$inferSelect, "planResources">;
 export type RunWithStacks = typeof runs.$inferSelect & { stacks: RunStack[] };
 export type NewRun = Pick<
   typeof runs.$inferInsert,
-  "organizationId" | "projectId" | "ref" | "sha" | "mergeRequestIid"
+  "organizationId" | "projectId" | "ref" | "sha" | "mergeRequestIid" | "kind"
 > & {
   /** Names of the stacks to run. The caller has checked that they exist. */
   stacks: readonly string[];

@@ -183,6 +183,13 @@
       "when": 1792280238085,
       "tag": "0025_merge_request_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1792313505987,
+      "tag": "0026_stack_drift",
+      "breakpoints": true
     }
   ]
 }

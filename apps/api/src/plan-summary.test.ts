@@ -10,9 +10,11 @@ import {
   createSession,
   getPlanResources,
   getRun,
+  listStackDrift,
   moveRunStack,
   type NewStack,
   recordStackJobs,
+  runs,
   syncStacks,
   upsertUser,
 } from "@orch/db";
@@ -527,5 +529,113 @@ describe("what a summary leaks", () => {
       }),
     );
     expect(await read.text()).not.toContain("evil_name");
+  });
+});
+
+describe("the summary of a drift run", () => {
+  const DRIFT_REF = "main";
+  const driftAudits = () =>
+    t.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "stack.drift"), eq(auditEvents.projectId, ids.p2)));
+  const known = () => listStackDrift(t.db, ids.o1, ids.p2);
+  const counts = (add: number, change = 0, destroy = 0) =>
+    summary({ add, change, destroy, resources: [] });
+  /** A run of `net` in the second project, and a token of its summary job. */
+  async function driftRun(kind: "plan" | "drift", job: number) {
+    const run = await createRun(t.db, {
+      organizationId: ids.o1,
+      projectId: ids.p2,
+      ref: DRIFT_REF,
+      sha: SHA,
+      kind,
+      stacks: ["net"],
+    });
+    await recordStackJobs(t.db, ids.o1, ids.p2, run.id, "net", { summaryJobId: job });
+    const token = await ciToken({ projectId: ids.p2, ref: DRIFT_REF, jobId: job });
+    return { runId: run.id, bearer: token.bearer, tokenId: token.id };
+  }
+
+  test("the summary of a plan run says nothing of drift", async () => {
+    const r = await driftRun("plan", 910);
+    const res = await post(summaryPath(r.runId, ids.p2), counts(3), { bearer: r.bearer });
+    expect(res.status).toBe(204);
+    expect(await known()).toEqual([]);
+    expect(await driftAudits()).toEqual([]);
+  });
+
+  test("a stack that drifted is news once, however often it is found again, and so is its end", async () => {
+    const first = await driftRun("drift", 911);
+    expect(
+      (await post(summaryPath(first.runId, ids.p2), counts(2, 1), { bearer: first.bearer })).status,
+    ).toBe(204);
+    expect(await known()).toMatchObject([
+      { stack: "net", status: "drifted", planAdd: 2, planChange: 1, planDestroy: 0 },
+    ]);
+    const [detected] = await driftAudits();
+    expect(detected).toMatchObject({
+      actorKind: "ci",
+      actorId: first.tokenId,
+      organizationId: ids.o1,
+      projectId: ids.p2,
+      resourceType: "stack",
+      resourceId: "net",
+      metadata: { stack: "net", status: "drifted", add: 2, change: 1, destroy: 0 },
+    });
+    // a second run of the stack finds it still drifted: no second event, the counts are the latest
+    const again = await driftRun("drift", 912);
+    await post(summaryPath(again.runId, ids.p2), counts(0, 5), { bearer: again.bearer });
+    expect(await driftAudits()).toHaveLength(1);
+    expect(await known()).toMatchObject([{ status: "drifted", planAdd: 0, planChange: 5 }]);
+    // the run's own summary is still audited, drift or not
+    expect(
+      await t.db
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.action, "run.summary"), eq(auditEvents.resourceId, again.runId))),
+    ).toHaveLength(1);
+
+    const gone = await driftRun("drift", 913);
+    await post(summaryPath(gone.runId, ids.p2), counts(0), { bearer: gone.bearer });
+    expect(await known()).toMatchObject([{ status: "clean", since: null, planAdd: 0 }]);
+    const events = await driftAudits();
+    expect(events.map((e) => (e.metadata as { status: string }).status).sort()).toEqual([
+      "clean",
+      "drifted",
+    ]);
+  });
+
+  test("a summary that is refused or arrives too late records nothing", async () => {
+    const before = await known();
+    const wrong = await driftRun("drift", 914);
+    const other = await ciToken({ projectId: ids.p2, ref: DRIFT_REF, jobId: 999 });
+    expect(
+      (await post(summaryPath(wrong.runId, ids.p2), counts(9), { bearer: other.bearer })).status,
+    ).toBe(403);
+    await moveRunStack(t.db, ids.o1, ids.p2, wrong.runId, "net", "queued", "failed", "it failed");
+    const late = await post(summaryPath(wrong.runId, ids.p2), counts(9), { bearer: wrong.bearer });
+    expect(late.status).toBe(409);
+    expect(await known()).toEqual(before);
+    expect(await driftAudits()).toHaveLength(2);
+  });
+
+  test("a run that finishes after a newer one does not undo what the newer one found", async () => {
+    const events = (await driftAudits()).length;
+    const older = await driftRun("drift", 920);
+    const newer = await driftRun("drift", 921);
+    // asked for an hour apart, as they would be, not within the same millisecond
+    await t.db
+      .update(runs)
+      .set({ createdAt: new Date(Date.now() - 3_600_000) })
+      .where(eq(runs.id, older.runId));
+    expect(
+      (await post(summaryPath(newer.runId, ids.p2), counts(3), { bearer: newer.bearer })).status,
+    ).toBe(204);
+    expect(
+      (await post(summaryPath(older.runId, ids.p2), counts(0), { bearer: older.bearer })).status,
+    ).toBe(204);
+    expect(await known()).toMatchObject([{ status: "drifted", planAdd: 3 }]);
+    expect(await driftAudits()).toHaveLength(events + 1);
   });
 });

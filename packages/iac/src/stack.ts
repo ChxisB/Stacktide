@@ -95,6 +95,12 @@ export const stackManifest = z.strictObject({
     .max(63)
     .regex(SLUG, "must be the slug of an environment: lowercase letters and digits, single dashes")
     .optional(),
+  // how often the platform plans the stack to see whether the real infrastructure still matches (POL-1)
+  drift_every: z
+    .string()
+    .regex(/^[1-9]\d{0,2}[hd]$/, "must be whole hours or days, like 6h or 1d")
+    .transform((v) => Number.parseInt(v, 10) * (v.endsWith("d") ? 86_400 : 3_600))
+    .optional(),
 });
 export type StackManifest = z.output<typeof stackManifest>;
 

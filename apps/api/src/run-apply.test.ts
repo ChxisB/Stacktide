@@ -81,6 +81,8 @@ interface Opts {
   /** The merge request's target branch (made from `main`); `main` when left out. */
   target?: string;
   mergeRequest?: boolean;
+  /** The run is a scheduled drift check of the default branch (it has no merge request). */
+  drift?: boolean;
   /** The connection that read the run's plan pipeline is recorded (the apply route needs it). */
   connection?: boolean;
   /** The branch whose head the run was planned at, which the mock can still read: stale when it is not the merge request's. */
@@ -123,7 +125,8 @@ async function world(o: Opts = {}) {
     ref: "feature",
     sha,
     stacks: o.ghost ? [...NAMES, GHOST] : NAMES,
-    ...(o.mergeRequest === false ? {} : { mergeRequestIid: mr.iid }),
+    ...(o.drift ? { kind: "drift" as const } : {}),
+    ...(o.mergeRequest === false || o.drift ? {} : { mergeRequestIid: mr.iid }),
   });
   const plan = await api.pipelines.trigger(gl.id, "feature");
   await attachRunPipeline(t.db, {
@@ -341,6 +344,20 @@ describe("applying a run", () => {
     const w = await world({ mergeRequest: false });
     expect(await refused(apply(w))).toMatchObject({ status: 409, code: "no_merge_request" });
     expect(w.triggered()).toBe(0);
+  });
+
+  test("a drift run is never applied, whichever way it is asked for, and nothing is started", async () => {
+    for (const when of ["command", "merge"] as const) {
+      const w = await world({ drift: true, applyOn: { net: "merge", app: "merge" } });
+      const before = mock.requests.length;
+      expect(await refused(apply(w, { when }))).toMatchObject({
+        status: 409,
+        code: "drift_run",
+      });
+      expect(mock.requests.length).toBe(before);
+      expect(w.triggered()).toBe(0);
+      expect(await w.states()).toEqual(PLANNED);
+    }
   });
 
   test("a stack that is not planned is refused, and none of the others is started", async () => {

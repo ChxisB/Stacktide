@@ -27,6 +27,8 @@ export interface Stack {
   applyOn: ApplyOn;
   /** The platform environment whose variables the plan gets as `TF_VAR_*`; none: it gets none. */
   environment?: string | undefined;
+  /** How often the platform checks the stack for drift, in seconds; none: it does not. */
+  driftEverySeconds?: number | undefined;
   backend: Backend;
 }
 
@@ -202,6 +204,7 @@ export async function scanStacks(source: RepoSource, options: ScanOptions = {}) 
       watch: m.watch,
       applyOn: m.apply_on,
       environment: m.environment,
+      driftEverySeconds: m.drift_every,
       backend,
     };
     return { stack, problems: mine };

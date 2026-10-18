@@ -198,6 +198,41 @@ declare is ignored by Terraform (a warning at most for an environment variable).
 - A `TF_VAR_*` variable that is already in the job (a CI/CD variable of the GitLab project) still reaches
   the tool: `--prefix` renames the platform's variables, it does not clear the others.
 
+## Drift
+
+Real infrastructure changes by hand. A stack that says how often to look gets a **drift check**: the
+platform plans it on the head of the project's default branch and records whether that plan would add,
+change or destroy anything.
+
+```yaml
+# stack.yml
+name: network
+tool: terraform
+version: 1.9.0
+drift_every: 6h        # whole hours or days: 1h .. 999h, 1d .. 999d. Without it the stack is not checked.
+```
+
+- A run of kind `drift` is an ordinary run (it is listed with the others, and its pipeline looks like a
+  merge request's plan pipeline), but it has no merge request, **only plans, and is never applied**: an
+  apply of it is refused.
+- The worker looks at every project that has Terraform or Terragrunt once per
+  `STACK_DRIFT_CHECK_SECONDS` (default 3600; 0 switches drift checks off). A stack is due when its period is
+  up since a check of it was last **asked for**, less five minutes, or it has never been asked for. A cadence
+  shorter than the tick is met at the next tick. At most 100 stacks are asked for at once, the ones that
+  have waited longest first; the rest follow at the next tick. The settings are those of merge request plans (`ORCH_API_URL`, `ORCH_CI_AUDIENCE`,
+  `ORCH_HELPER_IMAGE`): without them no drift check runs.
+- A stack is `drifted` while the latest plan would change something, `clean` when it would not, `unknown`
+  until a plan reported. When a plan first finds drift, the platform writes one audit event
+  `stack.drift` (status `drifted`, with the counts); it writes another when a later plan finds the stack
+  clean. Plans in between that still show drift change the counts, not the news. A plan that finishes after a
+  newer one was asked for is kept in its run but does not change what is known of the stack. The events hold counts and the
+  stack's name, never a resource address. The notification sinks (POL-2) are to be fed from this event.
+- The default branch's `.gitlab-ci.yml` must include the parent snippet above, as for merge request plans,
+  since the check is a pipeline on the default branch. A project that does not have it is tried once per
+  period, and the worker logs that GitLab refused the pipeline.
+- A plan job that has a stack `environment` gets its variables like any other plan job (see Variables). The
+  check runs on the default branch, which GitLab protects by default, so a protected environment works.
+
 ## What to know
 
 - **A merge request from a fork is not planned.** The plan runs in the project's CI with the project's

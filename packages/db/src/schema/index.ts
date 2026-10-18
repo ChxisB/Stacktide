@@ -10,6 +10,7 @@ export * from "./pipeline-runs";
 export * from "./projects";
 export * from "./runs";
 export * from "./schedules";
+export * from "./stack-drift";
 export * from "./stacks";
 export * from "./sync-drift";
 export * from "./sync-runs";

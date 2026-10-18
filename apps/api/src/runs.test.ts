@@ -4,6 +4,7 @@ import {
   auditEvents,
   createOrganization,
   createProject,
+  createRun,
   createSession,
   moveRunStack,
   type NewStack,
@@ -130,6 +131,7 @@ describe("creating a run", () => {
       ref: "feature/net",
       sha: SHA,
       mergeRequestIid: 7,
+      kind: "plan",
     });
     expect(
       res.json.stacks.map((s: { name: string; status: string; error: unknown }) => [
@@ -299,6 +301,23 @@ describe("reading runs", () => {
       expect([who, res.status]).toEqual([who, 200]);
       expect(res.json).toEqual(made);
     }
+  });
+
+  test("a drift run says so, and a request cannot make one", async () => {
+    const drift = await createRun(t.db, {
+      organizationId: ids.o1,
+      projectId: ids.p1,
+      ref: "main",
+      sha: SHA,
+      kind: "drift",
+      stacks: ["net"],
+    });
+    const read = await call("bob", "GET", `${runsPath()}/${drift.id}`);
+    expect(read.json).toMatchObject({ kind: "drift", mergeRequestIid: null, ref: "main" });
+    const listed = (await call("bob", "GET", `${runsPath()}?limit=100`)).json.items;
+    expect(listed.find((r: { id: string }) => r.id === drift.id)).toEqual(read.json);
+    // the body is closed: a client cannot start one
+    expect((await call("carol", "POST", runsPath(), valid({ kind: "drift" }))).status).toBe(422);
   });
 
   test("a run last changed when its newest stack did", async () => {

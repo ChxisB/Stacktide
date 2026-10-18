@@ -6,6 +6,8 @@ import {
   DRIFT_CHECK_QUEUE,
   DRIFT_TICK_QUEUE,
   describeError,
+  STACK_DRIFT_CHECK_QUEUE,
+  STACK_DRIFT_TICK_QUEUE,
   upsertSchedule,
   WEBHOOK_QUEUE,
 } from "@orch/db";
@@ -16,6 +18,7 @@ import { mrPlanHandler } from "./mr-plan";
 import { pipelineEventHandler, workerGitlab } from "./pipeline-runs";
 import { mrApplyHandler } from "./run-apply";
 import { runEventHandler } from "./run-ingest";
+import { stackDriftCheckHandler, stackDriftTickHandler } from "./stack-drift";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
 import { syncAutoHandler } from "./sync-auto";
 import { driftCheckHandler, driftTickHandler } from "./sync-drift";
@@ -53,6 +56,13 @@ const config = loadConfig(
       .max(86_400)
       .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
       .default(900),
+    /** How often every project with stacks is looked at for a stack due its drift check (POL-1); 0 switches them off. */
+    STACK_DRIFT_CHECK_SECONDS: z.coerce
+      .number()
+      .int()
+      .max(86_400)
+      .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
+      .default(3600),
   }),
 );
 const logger = createLogger({ level: config.LOG_LEVEL });
@@ -107,6 +117,8 @@ if (keys) {
   if (mr) {
     consumers.push(mrPlanHandler({ ...gitlab, config: mr }));
     logger.info("merge request plans are on");
+    handlers[STACK_DRIFT_TICK_QUEUE] = stackDriftTickHandler({ db });
+    handlers[STACK_DRIFT_CHECK_QUEUE] = stackDriftCheckHandler({ ...gitlab, config: mr });
   } else logger.warn("merge requests will not be planned until these are set", { missing });
   const roles = rolesFromEnv(config, db, logger);
   if (roles) {
@@ -125,6 +137,13 @@ if (keys) {
     intervalSeconds: config.DRIFT_CHECK_SECONDS || 900,
     queue: DRIFT_TICK_QUEUE,
     enabled: config.DRIFT_CHECK_SECONDS > 0,
+  });
+  // a drift check plans stacks like a merge request does, so it needs the same settings
+  await upsertSchedule(db, {
+    name: "stack.drift",
+    intervalSeconds: config.STACK_DRIFT_CHECK_SECONDS || 3600,
+    queue: STACK_DRIFT_TICK_QUEUE,
+    enabled: config.STACK_DRIFT_CHECK_SECONDS > 0 && mr !== undefined,
   });
 } else logger.warn("ORCH_MASTER_KEYS is not set: syncs will not be applied until it is");
 const worker = createWorker({

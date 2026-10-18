@@ -10,6 +10,7 @@ import {
   listStacks,
   MAX_RUN_STACKS,
   type RunWithStacks,
+  recordStackDrift,
   storePlanSummary,
 } from "@orch/db";
 import { GitlabError } from "@orch/gitlab";
@@ -48,6 +49,8 @@ const runSchema = z.object({
   /** The commit the plans are made from. */
   sha: z.string(),
   mergeRequestIid: z.number().int().nullable(),
+  /** `plan`: a change's plans, which an apply may follow. `drift`: a scheduled check, never applied. */
+  kind: z.enum(["plan", "drift"]),
   /** Each stack of the run and where it is; a run has no state of its own. */
   stacks: z.array(
     z.object({
@@ -69,6 +72,7 @@ const dto = (r: RunWithStacks): z.infer<typeof runSchema> => ({
   ref: r.ref,
   sha: r.sha,
   mergeRequestIid: r.mergeRequestIid,
+  kind: r.kind as "plan" | "drift",
   stacks: r.stacks.map((s) => ({
     name: s.stack,
     status: s.status as (typeof RUN_STATES)[number],
@@ -318,6 +322,31 @@ export const runRoutes = ({
               resources: body.resources.length,
             },
           });
+          // A drift run's plan is the finding; an episode's start and end are the only news.
+          if (run.kind === "drift") {
+            const counts = { add: body.add, change: body.change, destroy: body.destroy };
+            const news = await recordStackDrift(
+              tx,
+              { organizationId: orgId, projectId, stack: body.stack },
+              counts,
+              // when the plan was asked for, so a run that finishes late cannot undo a newer one's finding
+              run.createdAt,
+            );
+            if (news) {
+              await audit(tx, {
+                action: "stack.drift",
+                resourceType: "stack",
+                resourceId: body.stack,
+                organizationId: orgId,
+                projectId,
+                metadata: {
+                  stack: body.stack,
+                  status: news === "detected" ? "drifted" : "clean",
+                  ...counts,
+                },
+              });
+            }
+          }
         });
         set.status = 204;
       },
@@ -333,7 +362,7 @@ export const runRoutes = ({
           return JSON.parse(text);
         },
         response: { 204: z.undefined(), ...writeErrors, 413: problemSchema },
-        audit: "run.summary",
+        audit: ["run.summary", "stack.drift"],
         guard: "run.summary",
       },
     )
