@@ -10,3 +10,8 @@ coverage
 *.pem
 *.key
 secrets.json
+
+# Playwright
+apps/web/e2e/.state.json
+apps/web/test-results
+apps/web/playwright-report

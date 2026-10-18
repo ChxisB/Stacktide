@@ -30,6 +30,26 @@ check:
     - bun install --frozen-lockfile
     - bun run check
 
+# UI-9: the journey of a new team in Chromium, against the real API and a mock GitLab (apps/web/e2e). Playwright
+# runs under Node, which oven/bun does not have, so this job uses Microsoft's image (Node and the matching
+# browsers) and adds the same Bun the others use. Keep the image tag equal to @playwright/test in apps/web.
+e2e:
+  stage: test
+  image: mcr.microsoft.com/playwright:v1.64.1-noble
+  services:
+    - name: postgres:18-alpine
+      alias: postgres
+  script:
+    - npm install --global bun@1.4.2
+    - bun install --frozen-lockfile
+    - bun run e2e
+  artifacts:
+    when: on_failure
+    expire_in: 1 week
+    paths:
+      - apps/web/test-results
+      - apps/web/playwright-report
+
 # Fails the pipeline when a dependency in bun.lock has a known advisory (OPS-5). Exit 1 on any finding, 0 when clean.
 # The one ignored advisory is esbuild 0.18 inside drizzle-kit (a dev tool that is never run in a deployment: the finding
 # is about esbuild's development server). Drop the --ignore when drizzle-kit moves to a patched esbuild.

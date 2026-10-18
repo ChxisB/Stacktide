@@ -40,6 +40,37 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check
 
+  # UI-9: the journey of a new team in Chromium, against the real API and a mock GitLab (apps/web/e2e).
+  e2e:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: orch
+          POSTGRES_PASSWORD: orch
+          POSTGRES_DB: orch
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U orch -d orch"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: cd apps/web && bunx playwright install --with-deps chromium
+      - run: bun run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-report
+          path: |
+            apps/web/test-results
+            apps/web/playwright-report
+          if-no-files-found: ignore
+
   # Fails on a known advisory in bun.lock (OPS-5). See .gitlab-ci.yml for why one esbuild advisory is ignored.
   audit:
     runs-on: ubuntu-24.04
