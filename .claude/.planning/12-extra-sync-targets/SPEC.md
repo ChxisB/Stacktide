@@ -1,5 +1,5 @@
 # 12 Extra Sync Targets - Spec
-Prefix: EXT · Milestone: M5 · Status: todo
+Prefix: EXT · Milestone: M5 · Status: done
 
 ## Goal
 Sync the same variables to AWS, Kubernetes and Vault, not only GitLab.

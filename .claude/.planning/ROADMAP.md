@@ -38,7 +38,7 @@ Status: `todo` / `building` / `done`. The factory updates this table.
 | 09 | [iac-stacks-and-runs](09-iac-stacks-and-runs/) | IAC | M3 | 02, 03, 04, 07 | done (first real plan/apply is a human gate) |
 | 10 | [drift-and-policy](10-drift-and-policy/) | POL | M4 | 09 | done (first real drift check, policy evaluation and notification are human gates) |
 | 11 | [governance](11-governance/) | GOV | M4 | 01, 04, 05 | done (first real approval, gated apply and forwarding are human gates) |
-| 12 | [extra-sync-targets](12-extra-sync-targets/) | EXT | M5 | 05 | todo |
+| 12 | [extra-sync-targets](12-extra-sync-targets/) | EXT | M5 | 05 | done (first real sync to AWS and Kubernetes, and ADR-0013's acceptance, are human gates) |
 | 13 | [deploy-and-operate](13-deploy-and-operate/) | OPS | M2-M4 | 01 | todo |
 
 ### Milestones
