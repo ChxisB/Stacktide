@@ -168,6 +168,9 @@ describe("plan and apply on a real repository", () => {
     expect(applied.text().trim()).toBe("0.1.0");
     expect(await readdir(r.dir)).not.toContain("--apply");
     expect(await readFile(join(r.dir, "apps/cli/package.json"), "utf8")).toContain('"0.1.0"');
+    // the notes go to a folder that does not exist yet, as dist/ in a fresh CI checkout
+    expect((await run("--notes", "out/dir/notes.md")).exitCode).toBe(0);
+    expect(await readFile(join(r.dir, "out/dir/notes.md"), "utf8")).toContain("0.1.0");
     expect((await run("--notes")).exitCode).not.toBe(0);
     expect((await run("--notes", "--apply")).exitCode).not.toBe(0);
   });

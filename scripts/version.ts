@@ -1,5 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 // Semantic versioning from Conventional Commits. Run it from the repository root:
 //   bun scripts/version.ts [--apply] [--notes FILE]
@@ -138,7 +138,10 @@ if (import.meta.main) {
   if (at >= 0 && (!file || file.startsWith("--"))) throw new Error("--notes needs a file");
   const next = await plan(process.cwd(), new Date().toISOString().slice(0, 10));
   if (next) {
-    if (file) await writeFile(file, next.notes);
+    if (file) {
+      await mkdir(dirname(file), { recursive: true }); // CI writes to dist/, which a fresh checkout does not have
+      await writeFile(file, next.notes);
+    }
     if (args.includes("--apply")) await apply(process.cwd(), next.version, next.notes);
     console.log(next.version);
   }
