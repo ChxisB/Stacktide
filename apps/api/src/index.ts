@@ -7,6 +7,7 @@ import { createApp } from "./app";
 import { accessEnv, authEnv, authFromEnv, ciFromEnv, rolesFromEnv } from "./auth-config";
 import { callerPrincipal } from "./credentials";
 import { guardrailEnv, guardrailsOf } from "./guardrails";
+import { hardeningEnv, hardeningOf } from "./hardening";
 import { metricsEnv } from "./metrics";
 import { devPrincipal } from "./principal";
 import { toolImageEnv, toolImages } from "./tool-images";
@@ -26,6 +27,7 @@ const config = loadConfig(
       ...toolImageEnv,
       ...guardrailEnv,
       ...metricsEnv,
+      ...hardeningEnv,
     })
     .and(authEnv)
     .and(accessEnv)
@@ -66,6 +68,7 @@ if (!devAuth && !config.GITLAB_MEMBERSHIP_TOKEN) {
     "GITLAB_MEMBERSHIP_TOKEN is not set: nobody holds a role in any organization or project",
   );
 }
+const auth = authFromEnv(config);
 const app = createApp({
   logger,
   db,
@@ -77,17 +80,20 @@ const app = createApp({
         roles: rolesFromEnv(config, db, logger),
       }),
   ready: () => pingDb(db),
-  auth: authFromEnv(config),
+  auth,
   ci: ciFromEnv(config),
   keys,
   images: toolImages(config),
   guardrails: guardrailsOf(config),
   metrics: config.ORCH_METRICS_TOKEN ? { token: config.ORCH_METRICS_TOKEN } : undefined,
+  hardening: hardeningOf(config, auth?.secureCookies === true),
   cloud: { aws: () => awsFromEnv(config) },
   loopbackConnections: ["development", "test"].includes(config.NODE_ENV.toLowerCase()),
 }).listen({
   hostname: config.HOST,
   port: config.PORT,
+  // the backstop for bodies that do not declare their length (the app refuses declared ones with a problem)
+  maxRequestBodySize: config.ORCH_MAX_BODY_BYTES,
 });
 logger.info("listening", { host: config.HOST, port: app.server?.port });
 

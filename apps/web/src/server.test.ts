@@ -9,6 +9,7 @@ const seen: {
   body: string;
 }[] = [];
 const stolen: string[] = [];
+const forwarded: (string | null)[] = [];
 const hung = { started: false, aborted: false };
 let upstream: ReturnType<typeof Bun.serve>;
 let elsewhere: ReturnType<typeof Bun.serve>;
@@ -29,6 +30,7 @@ beforeAll(() => {
     hostname: "127.0.0.1",
     async fetch(req) {
       const url = new URL(req.url);
+      forwarded.push(req.headers.get("x-forwarded-for"));
       seen.push({
         method: req.method,
         path: url.pathname + url.search,
@@ -104,6 +106,15 @@ test("everything else goes to the API with its method, path, cookie and body", a
       body: '{"name":"Acme"}',
     },
   ]);
+});
+
+test("the API is told who called: the caller's address is appended to what the caller claimed", async () => {
+  forwarded.length = 0;
+  await fetch(`${origin}/organizations`);
+  await fetch(`${origin}/organizations`, { headers: { "x-forwarded-for": "6.6.6.6" } });
+  // the test client is 127.0.0.1 (or ::1): only the last entry is the proxy's own word
+  expect(forwarded[0]).toMatch(/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/);
+  expect(forwarded[1]).toMatch(/^6\.6\.6\.6, (127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/);
 });
 
 test("a redirect and its cookie pass through for the browser to follow, and an error keeps its status", async () => {

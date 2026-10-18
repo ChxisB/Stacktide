@@ -193,6 +193,107 @@ describe("api entrypoint", () => {
     expect(out + (await child.err)).not.toContain(bad);
   });
 
+  test("the headers are on every answer, and a browser origin is refused unless it is listed", async () => {
+    const app = "https://app.example.com";
+    const child = start({ DATABASE_URL: t.url, ORCH_CORS_ORIGINS: app });
+    const base = `http://127.0.0.1:${await child.port()}`;
+    const res = await fetch(`${base}/organizations`, { headers: { origin: app } });
+    expect(res.status).toBe(401);
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("access-control-allow-origin")).toBe(app);
+    const foreign = await fetch(`${base}/organizations`, {
+      headers: { origin: "https://evil.example" },
+    });
+    expect(foreign.headers.get("access-control-allow-origin")).toBeNull();
+    child.proc.kill("SIGTERM");
+    await child.proc.exited;
+  });
+
+  test("HSTS is sent when the sign-in is https, and only then", async () => {
+    const gitlab = {
+      GITLAB_URL: "https://gitlab.example.com",
+      GITLAB_OAUTH_CLIENT_ID: "client-id",
+      GITLAB_OAUTH_CLIENT_SECRET: "client-secret",
+      GITLAB_MEMBERSHIP_TOKEN: "membership-token",
+    };
+    const hsts = async (redirect: string) => {
+      const child = start({
+        DATABASE_URL: t.url,
+        ...gitlab,
+        GITLAB_OAUTH_REDIRECT_URI: redirect,
+      });
+      const res = await fetch(`http://127.0.0.1:${await child.port()}/health`);
+      child.proc.kill("SIGTERM");
+      await child.proc.exited;
+      return res.headers.get("strict-transport-security");
+    };
+    expect(await hsts("https://orch.example.com/auth/callback")).toBe(
+      "max-age=31536000; includeSubDomains",
+    );
+    expect(await hsts("http://localhost:3000/auth/callback")).toBeNull();
+  });
+
+  test("a body over the cap is refused, declared or not, and one under it goes on", async () => {
+    const child = start({ DATABASE_URL: t.url, ORCH_MAX_BODY_BYTES: String(1024 * 1024) });
+    const base = `http://127.0.0.1:${await child.port()}`;
+    const post = (body: string | ReadableStream, headers: Record<string, string> = {}) =>
+      fetch(`${base}/organizations`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body,
+      });
+    const big = "x".repeat(1024 * 1024 + 1);
+    // the server's own limit is the same number and answers first, in plain text
+    expect((await post(big)).status).toBe(413);
+    // no content-length: a stream is stopped by the server itself
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(big));
+        c.close();
+      },
+    });
+    const chunked = await post(stream);
+    expect(chunked.status).toBe(413);
+    // small enough: the route answers (401: nobody is signed in), not the cap
+    expect((await post("{}")).status).toBe(401);
+    child.proc.kill("SIGTERM");
+    await child.proc.exited;
+  });
+
+  test("clients are told apart by the connection, not by what they claim in X-Forwarded-For", async () => {
+    const child = start({ DATABASE_URL: t.url, ORCH_RATE_LIMIT_SCALE: "0.1" });
+    const base = `http://127.0.0.1:${await child.port()}`;
+    const login = (n: number) =>
+      fetch(`${base}/auth/login`, {
+        redirect: "manual",
+        headers: { "x-forwarded-for": `1.1.1.${n}` },
+      });
+    const seen: number[] = [];
+    for (let i = 1; i <= 5; i++) seen.push((await login(i)).status);
+    // 3 allowed in 5 minutes at a tenth of 30; the claimed addresses all differ
+    expect(seen.filter((s) => s === 429)).toHaveLength(2);
+    expect(seen.slice(0, 3).every((s) => s !== 429)).toBe(true);
+    const refused = await login(9);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
+    child.proc.kill("SIGTERM");
+    await child.proc.exited;
+  });
+
+  test("refuses to start with settings of the edge that make no sense", async () => {
+    const settings: Record<string, string>[] = [
+      { ORCH_CORS_ORIGINS: "*" },
+      { ORCH_CORS_ORIGINS: "https://app.example.com/" },
+      { ORCH_MAX_BODY_BYTES: "10" },
+      { ORCH_TRUSTED_PROXY_HOPS: "9" },
+      { ORCH_RATE_LIMIT_SCALE: "0" },
+    ];
+    for (const bad of settings) {
+      const child = start({ DATABASE_URL: t.url, ...bad });
+      expect([bad, (await child.proc.exited) !== 0]).toEqual([bad, true]);
+      expect(await child.output()).not.toContain('"listening"');
+    }
+  });
+
   test("a missing DATABASE_URL exits non-zero naming the key", async () => {
     const child = start({});
     expect(await child.proc.exited).not.toBe(0);

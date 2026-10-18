@@ -17,6 +17,7 @@ import { createTestDb, type TestDb } from "@orch/db/testing";
 import { count, eq } from "drizzle-orm";
 import { createApp } from "./app";
 import { unguardedRoutes } from "./guard";
+import { LIMITS } from "./rate-limit";
 import { sessionPrincipal } from "./session";
 import { hashToken, randomToken } from "./tokens";
 
@@ -298,6 +299,36 @@ describe("coverage", () => {
       "POST /auth/cli/logout",
       "POST /tokens",
     ]);
+  });
+
+  test("the rate limit of every route that has one, written out", () => {
+    const limited = Object.fromEntries(
+      app.routes
+        .filter((r) => detailOf(r)["x-rate-limit"] !== undefined)
+        .map((r) => [`${r.method} ${r.path}`, detailOf(r)["x-rate-limit"]]),
+    );
+    const V = "/organizations/:orgId/projects/:projectId/environments/:envId";
+    expect(limited).toEqual({
+      "GET /auth/login": "login",
+      "GET /auth/callback": "login",
+      "GET /auth/cli": "login",
+      "POST /auth/cli/token": "login",
+      "POST /auth/ci/exchange": "ci_exchange",
+      "POST /webhooks/gitlab/:connectionId": "webhook",
+      "POST /tokens": "token_create",
+      "GET /organizations/:orgId/variables/:varId/value": "reveal",
+      "GET /organizations/:orgId/projects/:projectId/variables/:varId/value": "reveal",
+      [`GET ${V}/variables/:varId/value`]: "reveal",
+      [`GET ${V}/resolved-variables/values`]: "reveal",
+    });
+    // every class is in use, and nothing reads a secret's value without the reveal limit
+    expect([...new Set(Object.values(limited))].sort()).toEqual(Object.keys(LIMITS).sort());
+    const reveals = app.routes.filter((r) =>
+      String(detailOf(r)["x-guard"]).startsWith("secret.reveal"),
+    );
+    expect(reveals.length).toBeGreaterThan(0);
+    for (const r of reveals)
+      expect([r.path, detailOf(r)["x-rate-limit"]]).toEqual([r.path, "reveal"]);
   });
 });
 

@@ -9,10 +9,12 @@ import { Elysia } from "elysia";
 import { auditPlugin } from "./audit";
 import type { CloudDeps } from "./connections";
 import { guardPlugin, unauthenticated, unguardedRoutes } from "./guard";
+import { HARDENING_DEFAULTS, type Hardening } from "./hardening";
 import { http } from "./http";
 import { bearerMatches, newRegistry, renderStats, requestMetrics } from "./metrics";
 import { openapiPlugin } from "./openapi";
 import type { PrincipalResolver } from "./principal";
+import { createRateLimiter } from "./rate-limit";
 import { auditLogRoutes } from "./routes/audit-log";
 import { type AuthDeps, authRoutes } from "./routes/auth";
 import { changeRequestRoutes } from "./routes/change-requests";
@@ -66,6 +68,8 @@ export interface AppDeps {
   metrics?: { token: string; stats?: () => Promise<OperationalStats> } | undefined;
   /** The built-in guardrails (POL-4). Left out, every rule is on and production is `production` and `prod`. */
   guardrails?: GuardrailConfig | undefined;
+  /** Origins, body cap, proxy hops and rate-limit scale (see `Hardening`). The headers, the cap and the limits apply with the defaults when left out. */
+  hardening?: Partial<Hardening> | undefined;
 }
 
 // Registered by the OpenAPI plugin, which cannot carry route options. The document describes the
@@ -108,6 +112,18 @@ export function createApp(deps: AppDeps) {
   };
 
   const registry = newRegistry();
+  const edge: Hardening = { ...HARDENING_DEFAULTS, ...deps.hardening };
+  const limited = registry.counter(
+    "orch_rate_limited_total",
+    "Requests refused with 429, by the limit they hit.",
+    ["limit"],
+  );
+  const limits = createRateLimiter({
+    scale: edge.rateLimitScale,
+    proxyHops: edge.proxyHops,
+    onLimited: (limit) => limited.inc({ limit }),
+    warn: (message) => logger.warn(message),
+  });
   let cached: { at: number; stats: Promise<OperationalStats> } | undefined;
   const stats = () => {
     if (!cached || Date.now() - cached.at > STATS_TTL_MS) {
@@ -123,7 +139,8 @@ export function createApp(deps: AppDeps) {
   };
 
   const app = new Elysia({ name: "orch.api" })
-    .use(http(logger, requestMetrics(registry)))
+    .decorate("limits", limits)
+    .use(http(logger, requestMetrics(registry), edge))
     .use(openapiPlugin())
     .use(guardPlugin)
     .get("/health", () => ({ status: "ok" as const }), { public: "polled by load balancers" })

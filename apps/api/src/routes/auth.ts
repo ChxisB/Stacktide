@@ -6,6 +6,7 @@ import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { guardPlugin, unauthenticated } from "../guard";
 import { problem } from "../problem";
+import { rateLimitPlugin } from "../rate-limit";
 import { hashToken, randomToken, safeEqual } from "../tokens";
 import { problemSchema, type RouteDeps } from "./shared";
 
@@ -65,6 +66,7 @@ export const authRoutes = ({
   return new Elysia({ prefix: "/auth" })
     .use(auditPlugin(principal))
     .use(guardPlugin)
+    .use(rateLimitPlugin)
     .get(
       "/login",
       ({ query }) => {
@@ -88,6 +90,7 @@ export const authRoutes = ({
         query: z.object({ return_to: z.string().max(500).optional() }),
         response: { 302: z.undefined(), 422: problemSchema, 503: problemSchema },
         public: "starts the sign-in: the caller has no session yet",
+        limit: "login",
       },
     )
     .get(
@@ -178,6 +181,7 @@ export const authRoutes = ({
         },
         audit: "auth.login",
         public: "completes the sign-in: the caller has no session yet",
+        limit: "login",
       },
     )
     .get(

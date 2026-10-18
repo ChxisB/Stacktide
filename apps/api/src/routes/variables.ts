@@ -49,6 +49,7 @@ import { auditPlugin } from "../audit";
 import { noKeys, openGitlabConnection, WHY } from "../connections";
 import { guardPlugin, unauthenticated } from "../guard";
 import type { Principal } from "../principal";
+import { rateLimitPlugin } from "../rate-limit";
 import { fromFile, fromGitlab } from "../variable-import";
 import {
   iso,
@@ -553,6 +554,7 @@ const levelRoutes = <const P extends string>(
   return new Elysia({ prefix: spec.prefix })
     .use(auditPlugin(principal))
     .use(guardPlugin)
+    .use(rateLimitPlugin)
     .get(
       "",
       async ({ params: p, query, set }) => {
@@ -702,6 +704,8 @@ const levelRoutes = <const P extends string>(
         query: revealQuery,
         response: { 200: revealedSchema, ...reads },
         audit: "variable.reveal",
+        // before the guard, so that a caller who may not reveal is counted too
+        limit: "reveal",
         guard: actions.reveal,
       },
     )
@@ -1084,6 +1088,7 @@ const exportRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =
   new Elysia()
     .use(auditPlugin(deps.principal))
     .use(guardPlugin)
+    .use(rateLimitPlugin)
     .get(
       "/organizations/:orgId/projects/:projectId/environments/:envId/resolved-variables/values",
       async ({ params: { orgId, projectId, envId }, audit, set }) => {
@@ -1143,6 +1148,7 @@ const exportRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =
         params: z.object({ orgId: z.uuid(), projectId: z.uuid(), envId: z.uuid() }),
         response: { 200: exportedSchema, ...reads },
         audit: ["variable.reveal", "variable.export"],
+        limit: "reveal",
         guard: "secret.reveal",
       },
     );

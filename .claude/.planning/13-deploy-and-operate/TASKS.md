@@ -16,7 +16,7 @@ Done when: tests assert metric names/labels and a label-cardinality guard.
 Do: backup script (pg_dump + key handling guidance), restore script, `rotate-master-key` command using `rewrap`, runbook doc.
 Done when: an automated test restores into a fresh DB and decrypts a known secret; rotation leaves all values readable. **`/security-review`.**
 
-### OPS-5 - Hardening  `[ ]` M - deps: AUTH-3
+### OPS-5 - Hardening  `[x]` M - deps: AUTH-3
 Do: rate limiting (login, token create, reveal, webhooks), CORS allowlist, security headers, body limits, cookie flag assertions, `bun audit` job in CI.
 Done when: tests hit each limit and header; CI fails on a seeded vulnerable dependency. **Release gate for non-local exposure. `/security-review`.**
 

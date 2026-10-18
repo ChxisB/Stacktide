@@ -4,6 +4,7 @@ const TITLES: Record<number, string> = {
   403: "Forbidden",
   404: "Not Found",
   409: "Conflict",
+  413: "Content Too Large",
   415: "Unsupported Media Type",
   418: "I'm a teapot",
   422: "Unprocessable Content",

@@ -22,6 +22,8 @@ const makeApp = () =>
       roles: () => ({ orgRoles: {}, projectRoles: {} }),
     }),
     ready: async () => {},
+    // these tests make far more sign-ins and tokens than a person does; the limits are tested in limits.test.ts
+    hardening: { rateLimitScale: 100 },
   });
 
 beforeAll(async () => {

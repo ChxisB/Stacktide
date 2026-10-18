@@ -1,5 +1,12 @@
 import { DomainError, type Logger } from "@orch/core";
 import { Elysia, ElysiaCustomStatusResponse, StatusMap } from "elysia";
+import {
+  declaredTooLarge,
+  edgeHeaders,
+  HARDENING_DEFAULTS,
+  type Hardening,
+  preflightAnswer,
+} from "./hardening";
 import { problem } from "./problem";
 
 interface RequestState {
@@ -24,6 +31,8 @@ export const http = (
     status: number;
     seconds: number;
   }) => void,
+  /** Security headers, CORS and the body cap (see `Hardening`). */
+  edge: Hardening = HARDENING_DEFAULTS,
 ) => {
   // Keyed by Request so even routing failures (unknown route) have an id and a logger.
   const states = new WeakMap<Request, RequestState>();
@@ -47,6 +56,20 @@ export const http = (
           log: logger.child({ request_id: id }),
           startedAt: performance.now(),
         });
+      })
+      // The headers of every response, and the preflight of a listed origin; a body that declares itself too big stops here.
+      .onRequest(({ request, set }) => {
+        Object.assign(set.headers, edgeHeaders(edge, request.headers.get("origin")));
+        const preflight = preflightAnswer(edge, request);
+        if (preflight) return preflight;
+        if (declaredTooLarge(edge, request)) {
+          return problem(
+            413,
+            "payload_too_large",
+            stateOf(request).id,
+            "The request body is too large",
+          );
+        }
       })
       // Elysia parses urlencoded and multipart bodies on its own. The API speaks JSON only: a cross-site
       // form could otherwise send a state-changing request without a CORS preflight. Routes also say

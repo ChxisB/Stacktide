@@ -11,6 +11,7 @@ import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { guardPlugin } from "../guard";
 import type { Principal } from "../principal";
+import { rateLimitPlugin } from "../rate-limit";
 import { newApiToken } from "../tokens";
 import {
   deleteResponses,
@@ -72,6 +73,7 @@ export const tokenRoutes = ({ db, principal }: RouteDeps) =>
   new Elysia({ prefix: "/tokens" })
     .use(auditPlugin(principal))
     .use(guardPlugin)
+    .use(rateLimitPlugin)
     .get(
       "",
       ({ query, principal }) => {
@@ -127,6 +129,7 @@ export const tokenRoutes = ({ db, principal }: RouteDeps) =>
         response: { 201: createdSchema, ...writeErrors },
         audit: "token.create",
         signedIn: "creates a token for the caller; the handler refuses callers that are not users",
+        limit: "token_create",
       },
     )
     .delete(

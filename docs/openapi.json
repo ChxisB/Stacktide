@@ -27,6 +27,7 @@
     "/auth/login": {
       "get": {
         "x-public": "starts the sign-in: the caller has no session yet",
+        "x-rate-limit": "login",
         "parameters": [
           {
             "name": "return_to",
@@ -171,6 +172,7 @@
           "auth.login"
         ],
         "x-public": "completes the sign-in: the caller has no session yet",
+        "x-rate-limit": "login",
         "parameters": [
           {
             "name": "code",
@@ -891,6 +893,7 @@
     "/auth/cli": {
       "get": {
         "x-public": "hands a signed-in browser's one-time code to the CLI; sends others to sign in",
+        "x-rate-limit": "login",
         "parameters": [
           {
             "name": "port",
@@ -1000,6 +1003,7 @@
           "token.create"
         ],
         "x-public": "the one-time code and its verifier are the credentials",
+        "x-rate-limit": "login",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1697,6 +1701,7 @@
           "auth.ci_exchange"
         ],
         "x-public": "a CI job proves itself with its GitLab id_token; there is no session or token yet",
+        "x-rate-limit": "ci_exchange",
         "requestBody": {
           "content": {
             "application/json": {
@@ -11003,6 +11008,7 @@
     "/webhooks/gitlab/{connectionId}": {
       "post": {
         "x-public": "GitLab calls it with the connection's webhook secret, which the handler checks",
+        "x-rate-limit": "webhook",
         "x-no-audit": "the delivery row and the job it creates are the record; nothing here is a change by a user",
         "parameters": [
           {
@@ -38465,6 +38471,7 @@
           "token.create"
         ],
         "x-signed-in": "creates a token for the caller; the handler refuses callers that are not users",
+        "x-rate-limit": "token_create",
         "requestBody": {
           "content": {
             "application/json": {
@@ -42833,6 +42840,7 @@
         "x-audit": [
           "variable.reveal"
         ],
+        "x-rate-limit": "reveal",
         "x-guard": "secret.reveal.org",
         "parameters": [
           {
@@ -50620,6 +50628,7 @@
         "x-audit": [
           "variable.reveal"
         ],
+        "x-rate-limit": "reveal",
         "x-guard": "secret.reveal",
         "parameters": [
           {
@@ -58407,6 +58416,7 @@
         "x-audit": [
           "variable.reveal"
         ],
+        "x-rate-limit": "reveal",
         "x-guard": "secret.reveal",
         "parameters": [
           {
@@ -63307,6 +63317,7 @@
           "variable.reveal",
           "variable.export"
         ],
+        "x-rate-limit": "reveal",
         "x-guard": "secret.reveal",
         "parameters": [
           {

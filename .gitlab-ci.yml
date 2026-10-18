@@ -30,6 +30,15 @@ check:
     - bun install --frozen-lockfile
     - bun run check
 
+# Fails the pipeline when a dependency in bun.lock has a known advisory (OPS-5). Exit 1 on any finding, 0 when clean.
+# The one ignored advisory is esbuild 0.18 inside drizzle-kit (a dev tool that is never run in a deployment: the finding
+# is about esbuild's development server). Drop the --ignore when drizzle-kit moves to a patched esbuild.
+audit:
+  stage: test
+  script:
+    - bun install --frozen-lockfile
+    - bun audit --ignore GHSA-67mh-4wv8-2f99
+
 # A tag like v1.2.3 builds `orch` for all four platforms and publishes the binaries and SHA256SUMS to
 # the project's generic package registry; apps/cli/install.sh verifies against that list (docs/install.md).
 release:

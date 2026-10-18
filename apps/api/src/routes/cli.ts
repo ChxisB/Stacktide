@@ -11,6 +11,7 @@ import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { guardPlugin, unauthenticated } from "../guard";
+import { rateLimitPlugin } from "../rate-limit";
 import { hashToken, newApiToken, randomToken, safeEqual } from "../tokens";
 import { readCookie, SESSION_COOKIE } from "./auth";
 import { deleteResponses, iso, name, notFound, problemSchema, type RouteDeps } from "./shared";
@@ -54,6 +55,7 @@ export const cliRoutes = ({ db, principal }: RouteDeps) =>
   new Elysia()
     .use(auditPlugin(principal))
     .use(guardPlugin)
+    .use(rateLimitPlugin)
     .get(
       "/auth/whoami",
       ({ principal, set }) => {
@@ -111,6 +113,7 @@ export const cliRoutes = ({ db, principal }: RouteDeps) =>
         response: { 302: z.undefined(), 422: problemSchema },
         // No audit: minting a code changes nothing anyone can use; the exchange below is audited.
         public: "hands a signed-in browser's one-time code to the CLI; sends others to sign in",
+        limit: "login",
       },
     )
     .post(
@@ -162,6 +165,7 @@ export const cliRoutes = ({ db, principal }: RouteDeps) =>
         },
         audit: "token.create",
         public: "the one-time code and its verifier are the credentials",
+        limit: "login",
       },
     )
     .post(

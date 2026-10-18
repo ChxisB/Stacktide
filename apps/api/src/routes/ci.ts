@@ -6,6 +6,7 @@ import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { guardPlugin } from "../guard";
 import { type IdClaims, IdTokenError, verifyIdToken } from "../id-token";
+import { rateLimitPlugin } from "../rate-limit";
 import { newCiToken } from "../tokens";
 import { iso, problemSchema, type RouteDeps, writeErrors } from "./shared";
 
@@ -81,6 +82,7 @@ export const ciRoutes = ({
   return new Elysia({ prefix: "/auth/ci" })
     .use(auditPlugin(principal))
     .use(guardPlugin)
+    .use(rateLimitPlugin)
     .post(
       "/exchange",
       async ({ body, audit, set }) => {
@@ -221,6 +223,7 @@ export const ciRoutes = ({
         },
         audit: "auth.ci_exchange",
         public: "a CI job proves itself with its GitLab id_token; there is no session or token yet",
+        limit: "ci_exchange",
       },
     );
 };

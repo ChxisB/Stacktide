@@ -19,7 +19,8 @@ const keys = envKeyProvider(`k1:${Buffer.alloc(32, 1).toString("base64")}`);
 const ago = (s: number) => new Date(Date.now() - s * 1000);
 const between = (v: number | null | undefined, lo: number, hi: number) => {
   expect(v).not.toBeNull();
-  expect(v ?? -1).toBeGreaterThanOrEqual(lo);
+  // the host stamps the rows and the database's clock reads them, so allow a second of skew at the lower edge
+  expect(v ?? -1).toBeGreaterThanOrEqual(lo - 1);
   expect(v ?? -1).toBeLessThan(hi);
 };
 

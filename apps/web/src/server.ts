@@ -23,10 +23,20 @@ export function startWeb({
     hostname,
     development,
     routes: { "/": index },
-    async fetch(request) {
+    async fetch(request, server) {
       const url = new URL(request.url);
       const headers = new Headers(request.headers);
       for (const name of HOP) headers.delete(name);
+      // This is a proxy: the API sees this server as the peer. Say who called us, appended to whatever the caller sent,
+      // so that the API (with ORCH_TRUSTED_PROXY_HOPS=1) counts the real client and a forged first entry does not help.
+      const peer = server.requestIP(request)?.address;
+      if (peer) {
+        const before = request.headers.get("x-forwarded-for");
+        headers.set("x-forwarded-for", before ? `${before}, ${peer}` : peer);
+      } else {
+        // an unknown caller must not get to say who it is
+        headers.delete("x-forwarded-for");
+      }
       // only the path and query come from the request: `new URL("//evil.test/x", api)` would be another host
       const target = new URL(api);
       target.pathname = url.pathname;

@@ -4,6 +4,7 @@ import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { guardPlugin } from "../guard";
+import { rateLimitPlugin } from "../rate-limit";
 import { hashToken, randomToken, safeEqual } from "../tokens";
 import { notFound, problemSchema, type RouteDeps, readCapped, writeErrors } from "./shared";
 
@@ -100,6 +101,7 @@ export const webhookRoutes = ({ db, principal, logger }: RouteDeps & { logger: L
   new Elysia()
     .use(auditPlugin(principal))
     .use(guardPlugin)
+    .use(rateLimitPlugin)
     .post(
       "/organizations/:orgId/connections/:connectionId/webhook-secret",
       async ({ params: { orgId, connectionId }, audit, set }) => {
@@ -184,6 +186,7 @@ export const webhookRoutes = ({ db, principal, logger }: RouteDeps & { logger: L
         params: z.object({ connectionId: z.string().max(100) }),
         response: { 200: receipt, 400: problemSchema, 401: problemSchema, 413: problemSchema },
         public: "GitLab calls it with the connection's webhook secret, which the handler checks",
+        limit: "webhook",
         noAudit:
           "the delivery row and the job it creates are the record; nothing here is a change by a user",
       },
