@@ -119,6 +119,12 @@ const allowed: Record<string, string[]> = {
   "audit.retention.read": ["org admin", "org owner"],
   // deleting events is the owner's choice alone
   "audit.retention.update": ["org owner"],
+  // lifting protection is the admins' (the maintainers who approve must not be the ones to lift it)
+  "environment.protect": ["org admin", "org owner"],
+  "change_request.read": REPORTER_UP,
+  "change_request.create": DEVELOPER_UP,
+  "change_request.approve": MAINTAINER_UP,
+  "change_request.reject": MAINTAINER_UP,
 };
 
 describe("role x action", () => {

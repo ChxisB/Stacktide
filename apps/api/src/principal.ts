@@ -1,4 +1,5 @@
-import type { Subject } from "@orch/core";
+import { personRef, type Subject } from "@orch/core";
+import type { Person } from "@orch/db";
 import { Elysia } from "elysia";
 
 /** The GitLab job a CI token was issued to: what a route may check beyond the token's scopes. */
@@ -14,7 +15,21 @@ export interface CiJob {
  */
 export type Principal =
   | { id: string; kind: "dev" }
-  | { id: string; kind: Subject["kind"]; subject: Subject; job?: CiJob };
+  | {
+      id: string;
+      kind: Subject["kind"];
+      subject: Subject;
+      job?: CiJob;
+      /** The person a session or an API token belongs to (`id` of a token is the token's): who counts as one person for four-eyes rules. */
+      userId?: string | undefined;
+    };
+
+/** The caller as a change request records them: the audit trail's name, and the person behind it. */
+export const personOf = (p: Principal): Person => ({
+  kind: p.kind,
+  id: p.id,
+  ref: personRef({ kind: p.kind, id: p.id, userId: "userId" in p ? p.userId : undefined }),
+});
 
 /**
  * Resolves the caller: nothing for an anonymous request (a guard turns that into 401), a

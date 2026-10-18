@@ -36,6 +36,11 @@ export const sessionPrincipal = (options: SessionOptions): PrincipalResolver => 
     const token = readCookie(request, SESSION_COOKIE);
     const found = token ? await findSession(options.db, hashToken(token)) : undefined;
     if (!found) return undefined;
-    return { id: found.user.id, kind: "user", subject: await subject(found.user, "user") };
+    return {
+      id: found.user.id,
+      kind: "user",
+      userId: found.user.id,
+      subject: await subject(found.user, "user"),
+    };
   };
 };

@@ -578,6 +578,13 @@ describe("audit coverage", () => {
         "policy.set.delete",
         "audit.export", // the audit log handed out: with the filters and how many rows
         "audit.retention.update", // how long the events are kept
+        "environment.protection.update", // an environment's variables now change only through a request, or no longer
+        // a change to a protected environment's variables, waiting for a second person
+        "change_request.create",
+        "change_request.approve",
+        "change_request.reject",
+        // approving one applies it: the per-change rows reuse create, update and delete
+        ...["create", "update", "delete"].map((v) => `variable.${v}`),
         "stack.drift", // the same request, when the plan was a drift check and the stack's state changed
         "run.apply", // the apply of a run's saved plans
         // the environment's resolved set with its values: a row for each secret revealed, and one for the request

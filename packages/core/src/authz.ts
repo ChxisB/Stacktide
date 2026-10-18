@@ -103,6 +103,12 @@ export const RULES = {
   "audit.export": { org: "admin" },
   "audit.retention.read": { org: "admin" },
   "audit.retention.update": { org: "owner" },
+  // Protected environments (GOV-2): a variable change there waits for a second person. Turning protection on or off is the organization admins' (the maintainers who approve must not be the ones to lift it). Proposing a change is a developer's; deciding it a maintainer's, and the author's own request is never theirs to approve (checked on the person, not on the role).
+  "environment.protect": { org: "admin" },
+  "change_request.read": { project: "reporter" },
+  "change_request.create": { project: "developer" },
+  "change_request.approve": { project: "maintainer" },
+  "change_request.reject": { project: "maintainer" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

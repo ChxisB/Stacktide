@@ -150,6 +150,38 @@ async function sealingKey(db: Executor, keys: KeyProvider, o: Owner): Promise<De
   return winner;
 }
 
+/** Where a change request's sealed edits belong: moved to another request, environment, project or organization, they do not open. */
+export interface PendingAt {
+  organizationId: string;
+  projectId: string;
+  environmentId: string;
+  id: string;
+}
+const pendingAad = (p: PendingAt) =>
+  aad("change_request", p.organizationId, p.projectId, p.environmentId, p.id);
+
+/** The edits of a change request, sealed with the project's data key (made on first use, as for a first variable). */
+export async function sealPending(
+  db: Executor,
+  keys: KeyProvider,
+  at: PendingAt,
+  ops: readonly BulkOp[],
+): Promise<Uint8Array> {
+  const dek = await sealingKey(db, keys, at);
+  return encrypt(dek, JSON.stringify(ops), pendingAad(at));
+}
+
+/** The edits `sealPending` sealed. Sealed by this code and bound to `at`, so what opens is what was validated then. */
+export async function openPending(
+  db: Executor,
+  keys: KeyProvider,
+  at: PendingAt,
+  blob: Uint8Array,
+): Promise<BulkOp[]> {
+  const dek = await existingKey(db, keys, at);
+  return JSON.parse(decrypt(dek, blob, pendingAad(at))) as BulkOp[];
+}
+
 interface Sealed extends VariableInfo {
   version: number;
   valueEnc: Uint8Array;
@@ -732,10 +764,9 @@ export function bulkLevel(
   keys: KeyProvider,
   scope: Scope,
   ops: readonly BulkOp[],
-  opts: { actor: Actor },
+  opts: { actor: Actor; reason?: string },
 ): Promise<Bulked[]> {
-  const { actor } = opts;
-  const reason = "bulk edit";
+  const { actor, reason = "bulk edit" } = opts;
   return db.transaction(async (tx) => {
     const done: Bulked[] = [];
     for (const c of await bulkPlan(tx, keys, scope, ops)) {

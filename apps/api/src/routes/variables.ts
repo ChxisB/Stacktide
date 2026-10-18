@@ -19,6 +19,7 @@ import {
   createVariable,
   deleteVariable,
   describeVariable,
+  type Executor,
   getEnvironment,
   getOrganization,
   getProject,
@@ -28,6 +29,7 @@ import {
   importPlan,
   listVariables,
   listVersions,
+  lockEnvironment,
   openChain,
   restoreLevel,
   restorePlan,
@@ -257,21 +259,20 @@ const bulkOp = z.discriminatedUnion("op", [
   z.strictObject({ op: z.literal("rename"), key: keyName, to: keyName }),
   z.strictObject({ op: z.literal("delete"), key: keyName }),
 ]);
-const bulkBody = z.strictObject({
-  ops: z
-    .array(bulkOp)
-    .min(1)
-    .max(MAX_BULK)
-    .refine((ops) => {
-      const named = ops.flatMap(bulkKeys);
-      return new Set(named).size === named.length;
-    }, "a key may be named by one step only")
-    .refine(
-      (ops) => ops.reduce((n, o) => n + (o.op === "set" ? o.value.length : 0), 0) <= MAX_CONTENT,
-      "the values of one request may total 1 MiB",
-    ),
-  dryRun: z.boolean().optional(),
-});
+/** The steps of a bulk edit, or of a change request (GOV-2), which carries the same. */
+export const bulkOps = z
+  .array(bulkOp)
+  .min(1)
+  .max(MAX_BULK)
+  .refine((ops) => {
+    const named = ops.flatMap(bulkKeys);
+    return new Set(named).size === named.length;
+  }, "a key may be named by one step only")
+  .refine(
+    (ops) => ops.reduce((n, o) => n + (o.op === "set" ? o.value.length : 0), 0) <= MAX_CONTENT,
+    "the values of one request may total 1 MiB",
+  );
+const bulkBody = z.strictObject({ ops: bulkOps, dryRun: z.boolean().optional() });
 const bulkedSchema = z.object({
   dryRun: z.boolean(),
   changes: z.array(
@@ -423,6 +424,30 @@ const audited = (
   },
 });
 
+/** The audit events for what a bulk edit did, one per variable it touched; `extra` says where it came from. */
+export const bulkEvents = (
+  level: VariableLevel,
+  changes: readonly Bulked[],
+  extra: Record<string, unknown>,
+) =>
+  changes.flatMap((c) => {
+    const v = c.variable;
+    if (!v) return [];
+    if (c.change === "delete") return [audited("variable.delete", level, v, extra)];
+    if (c.change === "rename") {
+      return [
+        audited("variable.update", level, v, { ...extra, fields: ["key"], previousKey: c.key }),
+      ];
+    }
+    return [
+      audited(c.change === "create" ? "variable.create" : "variable.update", level, v, {
+        ...extra,
+        ...(c.change === "update" && { fields: ["value"] }),
+        version: v.currentVersion,
+      }),
+    ];
+  });
+
 const KNOWN_ERRORS = {
   variables_org_key: taken("key_taken", "The key"),
   variables_project_key: taken("key_taken", "The key"),
@@ -509,6 +534,22 @@ const levelRoutes = <const P extends string>(
     }
   };
   const { level, actions } = spec;
+  /**
+   * A protected environment's variables change only through a change request (GOV-2). Called first
+   * in the transaction of every write; the environment is held until it ends, so protection cannot
+   * be switched on between this check and the write.
+   */
+  const writable = async (tx: Executor, p: Params) => {
+    if (level !== "environment" || !p.projectId || !p.envId) return;
+    const env = await lockEnvironment(tx, p.orgId, p.projectId, p.envId, "share");
+    if (env?.protected) {
+      throw new DomainError(
+        "change_request_required",
+        409,
+        "This environment is protected: propose the change as a change request",
+      );
+    }
+  };
   return new Elysia({ prefix: spec.prefix })
     .use(auditPlugin(principal))
     .use(guardPlugin)
@@ -555,6 +596,7 @@ const levelRoutes = <const P extends string>(
         await spec.parent(db, p);
         const created = await db
           .transaction(async (tx) => {
+            await writable(tx, p);
             const v = await createVariable(tx, k, { ...scopeOf(p), ...body, actor });
             await audit(tx, audited("variable.create", level, v));
             return v;
@@ -579,6 +621,7 @@ const levelRoutes = <const P extends string>(
         const actor = actorOf(caller);
         const changed = await db
           .transaction(async (tx) => {
+            await writable(tx, p);
             const v = await setVariable(tx, k, scopeOf(p), p.varId, { ...body, actor });
             if (!v) throw notFound("Variable");
             const fields = (["description", "value"] as const).filter((f) => body[f] !== undefined);
@@ -604,6 +647,7 @@ const levelRoutes = <const P extends string>(
       "/:varId",
       async ({ params: p, audit, set }) => {
         await db.transaction(async (tx) => {
+          await writable(tx, p);
           const v = await describeVariable(tx, scopeOf(p), p.varId);
           if (!v || !(await deleteVariable(tx, scopeOf(p), p.varId))) throw notFound("Variable");
           await audit(tx, audited("variable.delete", level, v));
@@ -668,6 +712,7 @@ const levelRoutes = <const P extends string>(
         const actor = actorOf(caller);
         const restored = await db
           .transaction(async (tx) => {
+            await writable(tx, p);
             const old = await revealVariable(tx, k, scopeOf(p), p.varId, body.version);
             if (!old) throw notFound("Variable");
             // A new version with the old value: the history only grows.
@@ -752,6 +797,7 @@ const levelRoutes = <const P extends string>(
         const prune = body.prune === true;
         const done = await db
           .transaction(async (tx) => {
+            await writable(tx, p);
             const changes = await restoreLevel(tx, k, scopeOf(p), moment, { actor, prune });
             for (const c of changes) {
               if (!c.applied || !c.variable || c.change === "conflict") continue;
@@ -828,6 +874,7 @@ const levelRoutes = <const P extends string>(
             : fromFile(body.source, body.content, body.kind ?? "secret", accept);
         const done = await db
           .transaction(async (tx) => {
+            if (!dryRun) await writable(tx, p);
             const changes = dryRun
               ? (await importPlan(tx, k, scopeOf(p), found.entries, overwrite)).map(
                   (c): Imported => ({
@@ -906,6 +953,7 @@ const levelRoutes = <const P extends string>(
         const ops: BulkOp[] = body.ops;
         const done = await db
           .transaction(async (tx) => {
+            if (!dryRun) await writable(tx, p);
             const changes = dryRun
               ? (await bulkPlan(tx, k, scopeOf(p), ops)).map(
                   (c): Bulked => ({
@@ -917,31 +965,8 @@ const levelRoutes = <const P extends string>(
                   }),
                 )
               : await bulkLevel(tx, k, scopeOf(p), ops, { actor });
-            for (const c of changes) {
-              const v = c.variable;
-              if (!v) continue;
-              const extra = { source: "bulk" };
-              if (c.change === "delete") {
-                await audit(tx, audited("variable.delete", level, v, extra));
-              } else if (c.change === "rename") {
-                await audit(
-                  tx,
-                  audited("variable.update", level, v, {
-                    ...extra,
-                    fields: ["key"],
-                    previousKey: c.key,
-                  }),
-                );
-              } else {
-                await audit(
-                  tx,
-                  audited(c.change === "create" ? "variable.create" : "variable.update", level, v, {
-                    ...extra,
-                    ...(c.change === "update" && { fields: ["value"] }),
-                    version: v.currentVersion,
-                  }),
-                );
-              }
+            for (const event of bulkEvents(level, changes, { source: "bulk" })) {
+              await audit(tx, event);
             }
             const count = (change: string) => changes.filter((c) => c.change === change).length;
             // One row per request, a dry run too: it opens every secret of the level to compare.

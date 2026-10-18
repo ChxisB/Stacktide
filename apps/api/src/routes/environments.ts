@@ -1,3 +1,4 @@
+import { DomainError } from "@orch/core";
 import {
   createEnvironment,
   deleteEnvironment,
@@ -5,6 +6,8 @@ import {
   getEnvironment,
   getProject,
   listEnvironments,
+  lockEnvironment,
+  setEnvironmentProtection,
   updateEnvironment,
 } from "@orch/db";
 import { Elysia } from "elysia";
@@ -37,6 +40,8 @@ const envSchema = z.object({
   name: z.string(),
   slug: z.string(),
   sortOrder: z.number().int(),
+  /** Variable changes here wait for a second person's approval (GOV-2). */
+  protected: z.boolean(),
   ...stamps,
 });
 const envDto = (e: typeof environments.$inferSelect): z.infer<typeof envSchema> => ({
@@ -46,6 +51,7 @@ const envDto = (e: typeof environments.$inferSelect): z.infer<typeof envSchema> 
   name: e.name,
   slug: e.slug,
   sortOrder: e.sortOrder,
+  protected: e.protected,
   createdAt: iso(e.createdAt),
   updatedAt: iso(e.updatedAt),
 });
@@ -58,6 +64,8 @@ const create = z.strictObject({ name, slug, sortOrder: sortOrder.optional() });
 const patch = z
   .strictObject({ name: name.optional(), sortOrder: sortOrder.optional() })
   .refine(nonEmpty, atLeastOne);
+
+const protection = z.strictObject({ protected: z.boolean() });
 
 const audited = (
   action: string,
@@ -157,12 +165,45 @@ export const environmentRoutes = ({ db, principal }: RouteDeps) =>
         guard: "environment.update",
       },
     )
+    .put(
+      "/:envId/protection",
+      ({ params: { orgId, projectId, envId }, body, audit }) =>
+        db.transaction(async (tx) => {
+          const set = await setEnvironmentProtection(tx, orgId, projectId, envId, body.protected);
+          if (!set) throw notFound("Environment");
+          await audit(
+            tx,
+            audited("environment.protection.update", set.env, {
+              protected: set.env.protected,
+              previousProtected: set.previous,
+            }),
+          );
+          return envDto(set.env);
+        }),
+      {
+        params: itemParams,
+        body: protection,
+        parse: "json",
+        response: { 200: envSchema, ...writeErrors },
+        audit: "environment.protection.update",
+        guard: "environment.protect",
+      },
+    )
     .delete(
       "/:envId",
       async ({ params: { orgId, projectId, envId }, audit, set }) => {
         await db.transaction(async (tx) => {
-          const env = await getEnvironment(tx, orgId, projectId, envId);
-          if (!env || !(await deleteEnvironment(tx, orgId, projectId, envId))) {
+          // Locked: protection cannot be switched on between the check and the delete.
+          const env = await lockEnvironment(tx, orgId, projectId, envId, "update");
+          if (!env) throw notFound("Environment");
+          if (env.protected) {
+            throw new DomainError(
+              "protected_environment",
+              409,
+              "A protected environment cannot be deleted: remove its protection first",
+            );
+          }
+          if (!(await deleteEnvironment(tx, orgId, projectId, envId))) {
             throw notFound("Environment");
           }
           await audit(tx, audited("environment.delete", env, { name: env.name }));

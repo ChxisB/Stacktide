@@ -3,6 +3,7 @@ import { envKeyProvider, type KeyProvider } from "@orch/crypto";
 import {
   AUDIT_PURGE_QUEUE,
   AUTO_SYNC_QUEUE,
+  CHANGE_REQUEST_EXPIRE_QUEUE,
   createDb,
   DRIFT_CHECK_QUEUE,
   DRIFT_TICK_QUEUE,
@@ -16,6 +17,7 @@ import {
 import { z } from "zod";
 import { auditPurgeHandler } from "./audit-purge";
 import { rolesFromEnv } from "./auth-config";
+import { changeRequestExpireHandler } from "./change-request-expire";
 import { guardrailEnv, guardrailsOf } from "./guardrails";
 import { mrCommandHandler } from "./mr-commands";
 import { mrPlanHandler } from "./mr-plan";
@@ -78,6 +80,13 @@ const config = loadConfig(
       .max(86_400)
       .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
       .default(3600),
+    /** How often change requests nobody decided in time are closed (GOV-2); 0 switches it off. */
+    CHANGE_REQUEST_EXPIRE_SECONDS: z.coerce
+      .number()
+      .int()
+      .max(86_400)
+      .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
+      .default(300),
   }),
 );
 const logger = createLogger({ level: config.LOG_LEVEL });
@@ -105,6 +114,16 @@ await upsertSchedule(db, {
   intervalSeconds: config.AUDIT_PURGE_SECONDS || 3600,
   queue: AUDIT_PURGE_QUEUE,
   enabled: config.AUDIT_PURGE_SECONDS > 0,
+});
+// Closing a lapsed change request opens nothing either. A request past its time cannot be approved whether or not this has run.
+if (config.CHANGE_REQUEST_EXPIRE_SECONDS > 0) {
+  handlers[CHANGE_REQUEST_EXPIRE_QUEUE] = changeRequestExpireHandler({ db });
+}
+await upsertSchedule(db, {
+  name: "change_request.expire",
+  intervalSeconds: config.CHANGE_REQUEST_EXPIRE_SECONDS || 300,
+  queue: CHANGE_REQUEST_EXPIRE_QUEUE,
+  enabled: config.CHANGE_REQUEST_EXPIRE_SECONDS > 0,
 });
 // A job that opens secrets needs the master keys here too: without them its queue is not served and its jobs wait.
 if (keys) {

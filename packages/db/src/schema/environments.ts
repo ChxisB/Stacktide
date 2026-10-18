@@ -1,4 +1,4 @@
-import { foreignKey, integer, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { boolean, foreignKey, integer, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
 import { id, timestamps } from "./columns";
 import { projects } from "./projects";
 
@@ -11,6 +11,8 @@ export const environments = pgTable(
     name: text().notNull(),
     slug: text().notNull(),
     sortOrder: integer().notNull().default(0),
+    // A protected environment's variables change only through an approved change request (GOV-2).
+    protected: boolean().notNull().default(false),
     ...timestamps(),
   },
   (t) => [

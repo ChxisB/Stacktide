@@ -141,6 +141,37 @@ export async function updateEnvironment(
   return (await db.update(environments).set(set).where(where).returning())[0];
 }
 
+/**
+ * The environment, locked until the transaction ends: `share` keeps its protection from being
+ * switched while a variable is written (a write that sees it unprotected commits before protection
+ * turns on), `update` is for changing it or deleting the environment.
+ */
+export async function lockEnvironment(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  id: string,
+  mode: "share" | "update",
+) {
+  const where = envIs(organizationId, projectId, id);
+  return (await db.select().from(environments).where(where).for(mode))[0];
+}
+
+/** Turns protection on or off. Undefined when there is no such environment; `previous` is what it was. */
+export async function setEnvironmentProtection(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  id: string,
+  value: boolean,
+) {
+  const was = await lockEnvironment(db, organizationId, projectId, id, "update");
+  if (!was) return undefined;
+  const where = envIs(organizationId, projectId, id);
+  const [env] = await db.update(environments).set({ protected: value }).where(where).returning();
+  return env && { env, previous: was.protected };
+}
+
 /** True when a row was deleted. */
 export async function deleteEnvironment(
   db: Executor,

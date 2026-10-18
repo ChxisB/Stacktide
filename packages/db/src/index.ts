@@ -9,6 +9,7 @@ export * from "./audit";
 export * from "./audit-log";
 export * from "./auth";
 export * from "./auto-sync";
+export * from "./change-requests";
 export * from "./ci";
 export * from "./connections";
 export * from "./imports";

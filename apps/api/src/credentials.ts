@@ -53,6 +53,7 @@ export const bearerPrincipal = (options: SessionOptions): PrincipalResolver => {
     return {
       id: found.token.id,
       kind: "token",
+      userId: found.user.id,
       subject: { ...(await subject(found.user, "token")), scopes: found.token.scopes },
     };
   };

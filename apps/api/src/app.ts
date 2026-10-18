@@ -12,6 +12,7 @@ import { openapiPlugin } from "./openapi";
 import type { PrincipalResolver } from "./principal";
 import { auditLogRoutes } from "./routes/audit-log";
 import { type AuthDeps, authRoutes } from "./routes/auth";
+import { changeRequestRoutes } from "./routes/change-requests";
 import { type CiDeps, ciRoutes } from "./routes/ci";
 import { cliRoutes } from "./routes/cli";
 import { connectionRoutes } from "./routes/connections";
@@ -120,6 +121,7 @@ export function createApp(deps: AppDeps) {
     .use(importRoutes(deps))
     .use(webhookRoutes(deps))
     .use(environmentRoutes(deps))
+    .use(changeRequestRoutes(deps))
     .use(syncTargetRoutes(deps))
     .use(notificationSinkRoutes(deps))
     .use(notificationSubscriptionRoutes(deps))

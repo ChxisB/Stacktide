@@ -211,6 +211,12 @@ describe("coverage", () => {
       [`GET ${E}/:envId`]: "environment.read",
       [`PATCH ${E}/:envId`]: "environment.update",
       [`DELETE ${E}/:envId`]: "environment.delete",
+      [`PUT ${E}/:envId/protection`]: "environment.protect",
+      [`GET ${E}/:envId/change-requests`]: "change_request.read",
+      [`POST ${E}/:envId/change-requests`]: "change_request.create",
+      [`GET ${E}/:envId/change-requests/:crId`]: "change_request.read",
+      [`POST ${E}/:envId/change-requests/:crId/approve`]: "change_request.approve",
+      [`POST ${E}/:envId/change-requests/:crId/reject`]: "change_request.reject",
       [`GET ${P}/:projectId/sync-targets`]: "sync.target.read",
       [`POST ${P}/:projectId/sync-targets`]: "sync.target.create",
       [`GET ${P}/:projectId/sync-targets/:targetId`]: "sync.target.read",
@@ -310,7 +316,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(108);
+    expect(routes.length).toBe(114);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

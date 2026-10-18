@@ -40,6 +40,7 @@ describe("sessionPrincipal", () => {
     expect(await resolve(request(`orch_session=${token}`))).toEqual({
       id: user.id,
       kind: "user",
+      userId: user.id, // who the person is, for the rule that nobody approves their own change request
       subject: {
         kind: "user",
         platformAdmin: false,

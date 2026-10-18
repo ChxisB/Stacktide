@@ -47,12 +47,12 @@ describe("worker entrypoint", () => {
     };
     const withKeys = await run({ ORCH_MASTER_KEYS: keys });
     expect(withKeys).toContain(
-      '"queues":["audit.purge","sync.apply","sync.auto","sync.drift.tick","sync.drift","notify.deliver","gitlab.event"]',
+      '"queues":["audit.purge","change_request.expire","sync.apply","sync.auto","sync.drift.tick","sync.drift","notify.deliver","gitlab.event"]',
     );
     expect(withKeys).not.toContain(keys);
     const without = await run({});
-    // the audit purge reads no secret: it is served without keys
-    expect(without).toContain('"queues":["audit.purge"]');
+    // the audit purge and the expiry of change requests read no secret: they are served without keys
+    expect(without).toContain('"queues":["audit.purge","change_request.expire"]');
     expect(without).toContain("ORCH_MASTER_KEYS is not set");
   });
 
@@ -156,7 +156,11 @@ describe("worker entrypoint", () => {
     expect(await purge()).toMatchObject({ intervalSeconds: 120, enabled: true });
     await run({ AUDIT_PURGE_SECONDS: "0" });
     expect((await purge())?.enabled).toBe(false);
-    const off = start({ DATABASE_URL: t.url, AUDIT_PURGE_SECONDS: "0" });
+    const off = start({
+      DATABASE_URL: t.url,
+      AUDIT_PURGE_SECONDS: "0",
+      CHANGE_REQUEST_EXPIRE_SECONDS: "0",
+    });
     await Bun.sleep(500);
     off.proc.kill("SIGTERM");
     await off.proc.exited;
@@ -165,6 +169,31 @@ describe("worker entrypoint", () => {
     const child = start({ DATABASE_URL: t.url, AUDIT_PURGE_SECONDS: "30" });
     expect(await child.proc.exited).not.toBe(0);
     expect(await child.err).toContain("AUDIT_PURGE_SECONDS");
+  });
+
+  test("the expiry of change requests is scheduled without keys, off at 0, and a value in between is refused", async () => {
+    const run = async (extra: Record<string, string>) => {
+      const child = start({ DATABASE_URL: t.url, ...extra });
+      await Bun.sleep(500);
+      child.proc.kill("SIGTERM");
+      await child.proc.exited;
+    };
+    const expiry = async () =>
+      (await t.db.select().from(schedules)).find((s) => s.name === "change_request.expire");
+    await run({});
+    expect(await expiry()).toMatchObject({
+      intervalSeconds: 300,
+      queue: "change_request.expire",
+      enabled: true,
+    });
+    await run({ CHANGE_REQUEST_EXPIRE_SECONDS: "120" });
+    expect(await expiry()).toMatchObject({ intervalSeconds: 120, enabled: true });
+    await run({ CHANGE_REQUEST_EXPIRE_SECONDS: "0" });
+    expect((await expiry())?.enabled).toBe(false);
+
+    const child = start({ DATABASE_URL: t.url, CHANGE_REQUEST_EXPIRE_SECONDS: "30" });
+    expect(await child.proc.exited).not.toBe(0);
+    expect(await child.err).toContain("CHANGE_REQUEST_EXPIRE_SECONDS");
   });
 
   test("keys that do not parse stop the start", async () => {

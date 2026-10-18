@@ -4,7 +4,7 @@
 Do: filtered, cursor-paginated audit API; JSON/CSV export (audited); retention setting with a safe purge job.
 Done when: tests cover filters, permission checks, export content free of values, and purge respecting retention only.
 
-### GOV-2 - Protected environments and change requests  `[ ]` M - deps: VAR-4, GOV-1
+### GOV-2 - Protected environments and change requests  `[x]` M - deps: VAR-4, GOV-1
 Do: `environments.protected`; variable writes on protected envs create a change request; approve/reject endpoints; author cannot approve own request; expiry.
 Done when: tests cover the full state machine, self-approval rejection, expiry and that pending values are encrypted.
 
