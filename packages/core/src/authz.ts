@@ -88,6 +88,12 @@ export const RULES = {
   "run.summary": { project: "reporter" },
   // Applying a saved plan changes real infrastructure with the credentials of the project's runners: a maintainer, as for retrying a pipeline, and not a developer, who may start a plan. Merging is a separate decision, made in GitLab.
   "run.apply": { project: "maintainer" },
+  // Notification sinks hold an address that is itself a credential (a Slack hook, a webhook with a token) and send out of the platform: org admins create, list and delete them, as for connections. A project's reporters may see which sinks hear of the project; choosing them is the admins' too, as it decides what leaves.
+  "notification.sink.read": { org: "admin" },
+  "notification.sink.create": { org: "admin" },
+  "notification.sink.delete": { org: "admin" },
+  "notification.subscription.read": { project: "reporter" },
+  "notification.subscription.update": { org: "admin" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

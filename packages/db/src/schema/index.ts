@@ -4,6 +4,7 @@ export * from "./connections";
 export * from "./environments";
 export * from "./jobs";
 export * from "./merge-request-notes";
+export * from "./notifications";
 export * from "./organizations";
 export * from "./pipeline-configs";
 export * from "./pipeline-runs";

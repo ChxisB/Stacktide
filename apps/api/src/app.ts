@@ -15,6 +15,7 @@ import { cliRoutes } from "./routes/cli";
 import { connectionRoutes } from "./routes/connections";
 import { environmentRoutes } from "./routes/environments";
 import { importRoutes } from "./routes/imports";
+import { notificationSinkRoutes, notificationSubscriptionRoutes } from "./routes/notifications";
 import { organizationRoutes } from "./routes/organizations";
 import { pipelineRoutes } from "./routes/pipeline";
 import { pipelineFleetRoutes } from "./routes/pipeline-fleet";
@@ -115,6 +116,8 @@ export function createApp(deps: AppDeps) {
     .use(webhookRoutes(deps))
     .use(environmentRoutes(deps))
     .use(syncTargetRoutes(deps))
+    .use(notificationSinkRoutes(deps))
+    .use(notificationSubscriptionRoutes(deps))
     .use(syncRunRoutes(deps))
     .use(pipelineRoutes(deps))
     .use(pipelineFleetRoutes(deps))

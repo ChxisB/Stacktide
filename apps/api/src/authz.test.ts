@@ -242,6 +242,12 @@ describe("coverage", () => {
       [`GET ${O}/:orgId/connections/:connectionId/gitlab-projects`]: "project.import",
       [`POST ${O}/:orgId/connections/:connectionId/imports`]: "project.import",
       [`POST ${O}/:orgId/connections/:connectionId/webhook-secret`]: "connection.webhook",
+      [`GET ${O}/:orgId/notification-sinks`]: "notification.sink.read",
+      [`POST ${O}/:orgId/notification-sinks`]: "notification.sink.create",
+      [`DELETE ${O}/:orgId/notification-sinks/:sinkId`]: "notification.sink.delete",
+      [`GET ${P}/:projectId/notifications`]: "notification.subscription.read",
+      [`PUT ${P}/:projectId/notifications/:sinkId`]: "notification.subscription.update",
+      [`DELETE ${P}/:projectId/notifications/:sinkId`]: "notification.subscription.update",
       ...variableGuards(`${O}/:orgId/variables`, "variable.org", "secret.reveal.org"),
       ...variableGuards(`${P}/:projectId/variables`, "variable", "secret.reveal"),
       ...variableGuards(`${E}/:envId/variables`, "variable", "secret.reveal"),
@@ -287,6 +293,7 @@ describe("without a session", () => {
       .replace(":varId", NO_CONNECTION)
       .replace(":targetId", NO_CONNECTION)
       .replace(":runId", NO_CONNECTION)
+      .replace(":sinkId", NO_CONNECTION)
       .replace(":connectionId", NO_CONNECTION);
 
   test("every route that is not public answers 401", async () => {
@@ -295,7 +302,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(94);
+    expect(routes.length).toBe(100);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

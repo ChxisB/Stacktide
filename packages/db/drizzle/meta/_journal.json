@@ -190,6 +190,13 @@
       "when": 1792313505987,
       "tag": "0026_stack_drift",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1792314995658,
+      "tag": "0027_notifications",
+      "breakpoints": true
     }
   ]
 }

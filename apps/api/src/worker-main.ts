@@ -6,6 +6,7 @@ import {
   DRIFT_CHECK_QUEUE,
   DRIFT_TICK_QUEUE,
   describeError,
+  NOTIFY_QUEUE,
   STACK_DRIFT_CHECK_QUEUE,
   STACK_DRIFT_TICK_QUEUE,
   upsertSchedule,
@@ -15,6 +16,7 @@ import { z } from "zod";
 import { rolesFromEnv } from "./auth-config";
 import { mrCommandHandler } from "./mr-commands";
 import { mrPlanHandler } from "./mr-plan";
+import { notifyDeliverHandler } from "./notify";
 import { pipelineEventHandler, workerGitlab } from "./pipeline-runs";
 import { mrApplyHandler } from "./run-apply";
 import { runEventHandler } from "./run-ingest";
@@ -87,6 +89,8 @@ if (keys) {
   handlers[AUTO_SYNC_QUEUE] = syncAutoHandler({ db, keys, logger });
   handlers[DRIFT_TICK_QUEUE] = driftTickHandler({ db });
   handlers[DRIFT_CHECK_QUEUE] = driftCheckHandler({ db, keys, logger });
+  // POL-2: the sink's address is sealed, so delivering needs the keys
+  handlers[NOTIFY_QUEUE] = notifyDeliverHandler({ db, keys });
   // one queue, five consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
   // belongs to (IAC-6); a merge request event plans the merge request (IAC-7), and its merge applies
   // the stacks that opted in (IAC-8, which needs no setting of its own: no plan, no run to apply); a

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createLogger, type Subject } from "@orch/core";
+import { envKeyProvider } from "@orch/crypto";
 import {
   auditEvents,
   createApiToken,
@@ -8,13 +9,17 @@ import {
   createProject,
   createRun,
   createSession,
+  createSink,
   getPlanResources,
   getRun,
+  jobs as jobRows,
   listStackDrift,
   moveRunStack,
   type NewStack,
+  NOTIFY_QUEUE,
   recordStackJobs,
   runs,
+  setSubscriptions,
   syncStacks,
   upsertUser,
 } from "@orch/db";
@@ -637,5 +642,109 @@ describe("the summary of a drift run", () => {
     ).toBe(204);
     expect(await known()).toMatchObject([{ status: "drifted", planAdd: 3 }]);
     expect(await driftAudits()).toHaveLength(events + 1);
+  });
+});
+
+describe("the summary of a drift run tells the sinks that asked", () => {
+  const keys = envKeyProvider(`k1:${Buffer.alloc(32, 1).toString("base64")}`);
+  const ADDRESS = "https://ops.example.com/orch?token=URLTOKEN123";
+  let p3: string;
+  let heard: string;
+  let silent: string;
+  let job = 950;
+
+  beforeAll(async () => {
+    p3 = (await createProject(t.db, { organizationId: ids.o1, name: "p3" })).id;
+    await syncStacks(t.db, ids.o1, p3, ["net", "app"].map(stack), { prune: false });
+    const sink = (name: string) =>
+      createSink(t.db, keys, {
+        organizationId: ids.o1,
+        kind: "webhook",
+        name,
+        host: "ops.example.com",
+        secret: JSON.stringify({ url: ADDRESS, secret: "whsec_x" }),
+      }).then((s) => s.id);
+    heard = await sink("heard");
+    silent = await sink("silent");
+  });
+
+  const queued = async () =>
+    (await t.db.select().from(jobRows).where(eq(jobRows.queue, NOTIFY_QUEUE))).filter(
+      // biome-ignore lint/suspicious/noExplicitAny: the payload is checked by the assertions
+      (j) => (j.payload as any).projectId === p3,
+    );
+  async function found(stackName: string, kind: "plan" | "drift", add: number) {
+    const run = await createRun(t.db, {
+      organizationId: ids.o1,
+      projectId: p3,
+      ref: "main",
+      sha: SHA,
+      kind,
+      stacks: [stackName],
+    });
+    const gitlabJobId = ++job;
+    await recordStackJobs(t.db, ids.o1, p3, run.id, stackName, { summaryJobId: gitlabJobId });
+    const token = await ciToken({ projectId: p3, ref: "main", jobId: gitlabJobId });
+    const res = await post(
+      summaryPath(run.id, p3),
+      summary({ stack: stackName, add, change: 0, destroy: 0, resources: [] }),
+      { bearer: token.bearer },
+    );
+    expect(res.status).toBe(204);
+    return { at: run.createdAt, bearer: token.bearer };
+  }
+
+  test("nobody asked: nothing is queued", async () => {
+    await found("app", "drift", 1);
+    expect(await queued()).toEqual([]);
+  });
+
+  test("each start and end of drift is one delivery to each sink that asked, and the others hear nothing", async () => {
+    await t.db.transaction((tx) =>
+      setSubscriptions(tx, {
+        organizationId: ids.o1,
+        projectId: p3,
+        sinkId: heard,
+        events: ["stack.drift"],
+      }),
+    );
+    const first = await found("net", "drift", 4);
+    const rows = await queued();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload).toEqual({
+      sinkId: heard,
+      organizationId: ids.o1,
+      event: "stack.drift",
+      projectId: p3,
+      projectName: "p3",
+      stack: "net",
+      status: "drifted",
+      add: 4,
+      change: 0,
+      destroy: 0,
+      at: first.at.toISOString(),
+    });
+    // found again, still drifted: not news
+    await found("net", "drift", 5);
+    expect(await queued()).toHaveLength(1);
+    // a plan run's summary is not a drift finding
+    await found("net", "plan", 0);
+    expect(await queued()).toHaveLength(1);
+    // gone: the end of it is news too
+    await found("net", "drift", 0);
+    const all = await queued();
+    expect(all.map((j) => (j.payload as { status: string }).status).sort()).toEqual([
+      "clean",
+      "drifted",
+    ]);
+    expect(all.some((j) => (j.payload as { sinkId: string }).sinkId === silent)).toBe(false);
+  });
+
+  test("a delivery holds neither the sink's address nor the job's token", async () => {
+    const run = await found("net", "drift", 7);
+    const text = JSON.stringify(await t.db.select().from(jobRows));
+    expect(text).not.toContain("URLTOKEN123");
+    expect(text).not.toContain("whsec_x");
+    expect(text).not.toContain(run.bearer);
   });
 });

@@ -559,6 +559,11 @@ describe("audit coverage", () => {
         "connection.delete",
         "connection.webhook_secret",
         "project.import",
+        // where notifications go, and what a project asks of it
+        "notification.sink.create",
+        "notification.sink.delete",
+        "notification.subscription.update",
+        "notification.subscription.delete",
         "sync_run.plan",
         "sync_run.apply",
         "sync_run.failed",

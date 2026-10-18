@@ -9,6 +9,7 @@ import {
   listRuns,
   listStacks,
   MAX_RUN_STACKS,
+  notifyStackDrift,
   type RunWithStacks,
   recordStackDrift,
   storePlanSummary,
@@ -344,6 +345,15 @@ export const runRoutes = ({
                   status: news === "detected" ? "drifted" : "clean",
                   ...counts,
                 },
+              });
+              // Queued with the finding it reports, so each one exists exactly when the other does.
+              await notifyStackDrift(tx, {
+                organizationId: orgId,
+                projectId,
+                stack: body.stack,
+                status: news === "detected" ? "drifted" : "clean",
+                ...counts,
+                at: run.createdAt,
               });
             }
           }

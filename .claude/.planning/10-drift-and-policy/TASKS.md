@@ -4,7 +4,7 @@
 Do: scheduled drift runs per stack (configurable cadence); `kind=drift` plan-only pipeline; mark `drifted`/`clean`; episode tracking so one drift = one notification.
 Done when: tests with a fake clock cover schedule, clean->drifted->clean transitions and no apply ever being triggered.
 
-### POL-2 - Notification sinks  `[ ]` M - deps: API-6
+### POL-2 - Notification sinks  `[x]` M - deps: API-6
 Do: sink interface; HMAC-signed webhook sink; Slack formatter; per-project subscriptions; retries through the queue.
 Done when: tests cover signature verification, retry/backoff, dead-letter and payload leak test.
 

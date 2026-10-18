@@ -226,12 +226,57 @@ drift_every: 6h        # whole hours or days: 1h .. 999h, 1d .. 999d. Without it
   `stack.drift` (status `drifted`, with the counts); it writes another when a later plan finds the stack
   clean. Plans in between that still show drift change the counts, not the news. A plan that finishes after a
   newer one was asked for is kept in its run but does not change what is known of the stack. The events hold counts and the
-  stack's name, never a resource address. The notification sinks (POL-2) are to be fed from this event.
+  stack's name, never a resource address. Each of those two events is also sent to the project's notification sinks (below).
 - The default branch's `.gitlab-ci.yml` must include the parent snippet above, as for merge request plans,
   since the check is a pipeline on the default branch. A project that does not have it is tried once per
   period, and the worker logs that GitLab refused the pipeline.
 - A plan job that has a stack `environment` gets its variables like any other plan job (see Variables). The
   check runs on the default branch, which GitLab protects by default, so a protected environment works.
+
+### Notifications
+
+An organization admin adds **notification sinks** (`POST /organizations/:orgId/notification-sinks`), and
+chooses per project which of them hear of its drift (`PUT /organizations/:orgId/projects/:projectId/notifications/:sinkId`
+with `{"events": ["stack.drift"]}`). Both need the master keys (`ORCH_MASTER_KEYS`) on the API and the worker.
+
+- `kind: webhook`: any https address. The platform makes a signing secret (`whsec_…`) and shows it **once**,
+  in the answer that creates the sink. To change it, delete the sink and add another.
+- `kind: slack`: a Slack incoming webhook (`https://hooks.slack.com/services/…`) and nothing else. The
+  address is itself the credential, so there is no secret to show.
+- The address is sealed like a connection's token. No list, answer, log line or audit row has it; the list shows
+  the host. Addresses must be https, without a user name or password, and public: an IP address in a private,
+  loopback, link-local or other reserved range, `localhost`, and names that end in `.local` or `.internal` are
+  refused when the sink is made, and again at each delivery for whatever the name then resolves to. Redirects are
+  not followed. The known gap is a name that answers differently between the check and the connection (DNS rebinding):
+  also keep the worker's network from reaching what it need not.
+- One delivery is queued for each subscribed sink when a drift episode starts or ends, in the same transaction
+  as the `stack.drift` audit event. A failed delivery is tried up to 10 times, waiting 1 s, then twice as long
+  each time (about 8.5 minutes in all); after that the job stays `dead` in the queue with its last error
+  (`sink answered 500`, `sink could not be reached`).
+  Deliveries are **not ordered**: a retried one can arrive after a later one (a `clean` before the `drifted` it
+  follows). A receiver that keeps state should keep the newest `at` per project and stack; Slack shows them as they come.
+- The body (webhook; Slack gets a one-line text of the same facts):
+
+  ```json
+  {"id":"<delivery id>","event":"stack.drift","at":"2026-01-02T03:04:05.000Z","organizationId":"…",
+   "project":{"id":"…","name":"api"},"stack":"network","status":"drifted",
+   "plan":{"add":1,"change":2,"destroy":0}}
+  ```
+
+  `status` is `drifted` or `clean`; `at` is when the plan was asked for.
+
+  The headers are `x-orch-event`, `x-orch-delivery` (the same for every try of one delivery),
+  `x-orch-timestamp` (seconds, fresh on each try) and `x-orch-signature: v1=<hex>`, the HMAC-SHA256 of
+  `"<timestamp>.<body>"` with the signing secret. A receiver verifies it and refuses old timestamps:
+
+  ```ts
+  import { createHmac, timingSafeEqual } from "node:crypto";
+  const ok = (secret: string, timestamp: string, body: string, header: string) => {
+    const want = Buffer.from(`v1=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`);
+    const got = Buffer.from(header);
+    return want.length === got.length && timingSafeEqual(want, got) && Math.abs(Date.now() / 1000 - Number(timestamp)) < 300;
+  };
+  ```
 
 ## What to know
 

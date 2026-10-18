@@ -47,7 +47,7 @@ describe("worker entrypoint", () => {
     };
     const withKeys = await run({ ORCH_MASTER_KEYS: keys });
     expect(withKeys).toContain(
-      '"queues":["sync.apply","sync.auto","sync.drift.tick","sync.drift","gitlab.event"]',
+      '"queues":["sync.apply","sync.auto","sync.drift.tick","sync.drift","notify.deliver","gitlab.event"]',
     );
     expect(withKeys).not.toContain(keys);
     const without = await run({});

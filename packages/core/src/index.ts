@@ -6,6 +6,7 @@ export * from "./cron";
 export * from "./errors";
 export * from "./logger";
 export * from "./membership";
+export * from "./notifications";
 export * from "./project-types";
 export * from "./run-state";
 export * from "./variable-files";
