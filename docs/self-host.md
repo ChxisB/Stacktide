@@ -74,6 +74,9 @@ Upgrade: set `ORCH_IMAGE` to the new version and run `docker compose -f deploy/c
 [runbook](runbook-keys-and-backup.md) says; `deploy/backup.sh` and `deploy/restore.sh` read `DATABASE_URL`, so run them
 with the database's address (`docker compose exec db ...` or a published port of your choosing).
 
+The image's health check is the api's. `deploy/compose.yml` replaces it for `worker`, `migrate` and `web`; if you run
+those commands with plain `docker run`, add `--no-healthcheck`, or the container is reported unhealthy.
+
 ## What is verified
 
 `deploy/image-test.sh` and `deploy/smoke.sh` run in CI on every push ([ci-cd.md](ci-cd.md)). Not verified: a real

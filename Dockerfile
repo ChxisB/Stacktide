@@ -13,7 +13,8 @@ COPY --from=build --chown=bun:bun /app /app
 COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/orch-entrypoint
 USER bun
 EXPOSE 3000
-# Liveness of the api (the default command). Other commands: the compose file turns this off for the worker.
+# Liveness of the api (the default command). deploy/compose.yml overrides it for the other commands (the worker has none,
+# the web page checks its own port); run bare, `worker`, `migrate` and `web` need `docker run --no-healthcheck`.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
   CMD ["bun", "-e", "fetch(`http://127.0.0.1:${process.env.PORT}/health`).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 ENTRYPOINT ["orch-entrypoint"]

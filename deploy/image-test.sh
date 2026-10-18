@@ -5,14 +5,30 @@
 set -euo pipefail
 
 image=${1:-orch-image-test}
+root=$(cd "$(dirname "$0")/.." && pwd)
 net=orch-img-$$
-trap 'docker rm -f "$net-api" "$net-db" >/dev/null 2>&1 || true; docker network rm "$net" >/dev/null 2>&1 || true' EXIT
+scratch=$(mktemp -d)
+trap 'docker rm -f "$net-api" "$net-db" >/dev/null 2>&1 || true; docker network rm "$net" >/dev/null 2>&1 || true; rm -rf "$scratch"' EXIT
 fail() { echo "image-test: $*" >&2; exit 1; }
 
-[ "${SKIP_BUILD:-}" = 1 ] || docker build --tag "$image" "$(dirname "$0")/.."
+# The real .dockerignore against canary files, in a context of their own (a FROM scratch build needs no base image):
+# secrets, key material and browser-test state must stay out of the context, `.env.example` must stay in.
+mkdir -p "$scratch/ctx/deploy" "$scratch/ctx/x" "$scratch/ctx/apps/web/e2e" "$scratch/ctx/apps/web/test-results"
+cp "$root/.dockerignore" "$scratch/ctx/"
+(cd "$scratch/ctx" && touch .env deploy/.env deploy/.env.local deploy/.env.example x/a.pem x/b.key x/secrets.json \
+  apps/web/e2e/.state.json apps/web/test-results/trace.zip keep.txt)
+printf 'FROM scratch\nCOPY . /\n' >"$scratch/ctx/Dockerfile"
+docker buildx build --quiet --output "type=local,dest=$scratch/out" "$scratch/ctx" >/dev/null
+leaked=$(cd "$scratch/out" && find . -type f ! -name Dockerfile ! -name .dockerignore | LC_ALL=C sort | tr '\n' ' ')
+[ "$leaked" = "./deploy/.env.example ./keep.txt " ] || fail ".dockerignore lets through: $leaked"
+
+[ "${SKIP_BUILD:-}" = 1 ] || docker build --tag "$image" "$root"
 
 [ "$(docker run --rm --entrypoint id "$image" -u)" != 0 ] || fail "the image runs as root"
-if docker run --rm "$image" nonsense >/dev/null 2>&1; then fail "an unknown command ran"; fi
+# refused with the usage text and EX_USAGE (64), not by crashing for another reason
+refused=$(docker run --rm "$image" nonsense 2>&1) && code=0 || code=$?
+[ "$code" = 64 ] || fail "an unknown command exited $code, not 64"
+case $refused in *"usage: orch-entrypoint"*) ;; *) fail "an unknown command printed no usage: $refused" ;; esac
 
 docker network create "$net" >/dev/null
 docker run -d --name "$net-db" --network "$net" -e POSTGRES_USER=orch -e POSTGRES_PASSWORD=orch \

@@ -1,11 +1,15 @@
 **/node_modules
 .git
 .claude
-.env*
-!.env.example
+**/.env*
+!**/.env.example
 dist
 coverage
 .bun-cache
-*.pem
-*.key
-secrets.json
+**/*.pem
+**/*.key
+**/secrets.json
+# browser-test files: the e2e state holds a session token, and none of it runs in the image
+apps/web/e2e
+apps/web/test-results
+apps/web/playwright-report
