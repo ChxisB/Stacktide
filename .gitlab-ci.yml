@@ -30,6 +30,26 @@ check:
     - bun install --frozen-lockfile
     - bun run check
 
+# UI-9: the journey of a new team in Chromium, against the real API and a mock GitLab (apps/web/e2e). Playwright
+# runs under Node, which oven/bun does not have, so this job uses Microsoft's image (Node and the matching
+# browsers) and adds the same Bun the others use. Keep the image tag equal to @playwright/test in apps/web.
+e2e:
+  stage: test
+  image: mcr.microsoft.com/playwright:v1.64.1-noble
+  services:
+    - name: postgres:18-alpine
+      alias: postgres
+  script:
+    - npm install --global bun@1.4.2
+    - bun install --frozen-lockfile
+    - bun run e2e
+  artifacts:
+    when: on_failure
+    expire_in: 1 week
+    paths:
+      - apps/web/test-results
+      - apps/web/playwright-report
+
 # Fails the pipeline when a dependency in bun.lock has a known advisory (OPS-5). Exit 1 on any finding, 0 when clean.
 # The one ignored advisory is esbuild 0.18 inside drizzle-kit (a dev tool that is never run in a deployment: the finding
 # is about esbuild's development server). Drop the --ignore when drizzle-kit moves to a patched esbuild.
@@ -71,3 +91,89 @@ release:
   artifacts:
     paths:
       - dist/release/
+
+# Builds the image and runs what OPS-1 promises (deploy/image-test.sh), then the self-host stack (deploy/smoke.sh).
+# Needs a runner that offers docker-in-docker (privileged), such as GitLab.com's shared runners.
+.docker:
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - apk add --no-cache bash curl openssl
+
+image:
+  extends: .docker
+  stage: test
+  script:
+    - deploy/image-test.sh stacktide:ci
+    - ORCH_IMAGE=stacktide:ci deploy/smoke.sh
+
+# What the next release would be, and its notes (scripts/version.ts). Publishes nothing.
+release-preview:
+  stage: test
+  variables:
+    GIT_DEPTH: "0" # the tags and the commits since the last one
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" || $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git)
+    - bun scripts/version.ts --notes notes.md | tee version.txt
+    - '[ -s version.txt ] && cat notes.md || echo "Nothing releasable since the last tag."'
+
+# Cuts a release by hand (docs/ci-cd.md): run it on the default branch. Without RELEASE_PUBLISH=true it is the dry run: it
+# works out the version and builds the binaries and publishes nothing. With it, it commits the version, tags it and
+# pushes both with RELEASE_TOKEN (a masked, protected project access token with write_repository); the tag pipeline then
+# runs `release` (binaries) and `image-publish`.
+release-cut:
+  stage: deploy
+  needs: [check]
+  variables:
+    GIT_DEPTH: "0"
+    RELEASE_PUBLISH:
+      value: "false"
+      description: "true: commit, tag and push the release. false: dry run."
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_COMMIT_MESSAGE !~ /^chore\(release\)/
+      when: manual
+      allow_failure: true
+  script:
+    - command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git)
+    - version=$(bun scripts/version.ts --apply --notes notes.md)
+    - '[ -n "$version" ] || { echo "Nothing releasable since the last tag."; exit 0; }'
+    - cat notes.md
+    - bun install --frozen-lockfile
+    - rm -rf dist/release
+    - bun run release:build
+    - '[ "$RELEASE_PUBLISH" = true ] || { echo "Dry run: v$version is not committed or tagged."; exit 0; }'
+    - '[ -n "${RELEASE_TOKEN:-}" ] || { echo "RELEASE_TOKEN is not set" >&2; exit 1; }'
+    - git config user.name "release bot"
+    - git config user.email "release-bot@$CI_SERVER_HOST"
+    - git add apps/cli/package.json bun.lock CHANGELOG.md
+    - git commit --message "chore(release): v$version"
+    - git tag --annotate "v$version" --message "v$version"
+    # the token goes in a header, never in the URL, so no error message can print it
+    - |
+      auth=$(printf 'release-bot:%s' "$RELEASE_TOKEN" | base64 | tr -d '\n')
+      git -c "http.extraHeader=Authorization: Basic $auth" push --atomic \
+        "$CI_SERVER_PROTOCOL://$CI_SERVER_HOST/$CI_PROJECT_PATH.git" "HEAD:$CI_DEFAULT_BRANCH" "v$version"
+
+# A tag like v1.2.3 builds the image, tests it and pushes it to the project's container registry.
+image-publish:
+  extends: .docker
+  stage: deploy
+  needs: [check]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  script:
+    - version=${CI_COMMIT_TAG#v}
+    - docker build --tag "$CI_REGISTRY_IMAGE:$version" .
+    - SKIP_BUILD=1 deploy/image-test.sh "$CI_REGISTRY_IMAGE:$version"
+    - echo "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - |
+      for tag in "$version" "${version%.*}" latest; do
+        docker tag "$CI_REGISTRY_IMAGE:$version" "$CI_REGISTRY_IMAGE:$tag"
+        docker push "$CI_REGISTRY_IMAGE:$tag"
+      done

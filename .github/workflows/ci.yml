@@ -1,0 +1,116 @@
+# The GitHub twin of .gitlab-ci.yml: keep the two in step (docs/ci-cd.md).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: 1.4.2
+  # Throwaway credentials for the ephemeral service container below.
+  DATABASE_URL: postgres://orch:orch@localhost:5432/orch
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: orch
+          POSTGRES_PASSWORD: orch
+          POSTGRES_DB: orch
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U orch -d orch"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      # packages/db/src/backup.test.ts runs deploy/backup.sh and restore.sh, and pg_dump refuses a server newer than
+      # itself: the runner ships the 16 client, the service is 18. (GitLab's oven/bun image has none: it skips there.)
+      - run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-18
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH" # the image's PATH puts the 16 client first
+      - run: pg_dump --version
+      - run: bun run check
+
+  # UI-9: the journey of a new team in Chromium, against the real API and a mock GitLab (apps/web/e2e).
+  e2e:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: orch
+          POSTGRES_PASSWORD: orch
+          POSTGRES_DB: orch
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U orch -d orch"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: cd apps/web && bunx playwright install --with-deps chromium
+      - run: bun run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-report
+          path: |
+            apps/web/test-results
+            apps/web/playwright-report
+          if-no-files-found: ignore
+
+  # Fails on a known advisory in bun.lock (OPS-5). See .gitlab-ci.yml for why one esbuild advisory is ignored.
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun audit --ignore GHSA-67mh-4wv8-2f99
+
+  # Builds the image and runs what OPS-1 promises (deploy/image-test.sh), then the self-host stack (deploy/smoke.sh).
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: deploy/image-test.sh stacktide:ci
+      - run: ORCH_IMAGE=stacktide:ci deploy/smoke.sh
+
+  # What the next release would be, and its notes. Publishes nothing: releasing is the Release workflow.
+  release-preview:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the commits since the last tag
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: |
+          version=$(bun scripts/version.ts --notes "$RUNNER_TEMP/notes.md")
+          if [ -z "$version" ]; then
+            echo "Nothing releasable since the last tag." >> "$GITHUB_STEP_SUMMARY"
+          else
+            { echo "Next release: **v$version**"; echo; cat "$RUNNER_TEMP/notes.md"; } >> "$GITHUB_STEP_SUMMARY"
+          fi

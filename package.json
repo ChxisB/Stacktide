@@ -17,6 +17,7 @@
     "release:build": "bun apps/cli/release.ts",
     "cli:build": "mkdir -p dist && cd dist && bun build --compile ../apps/cli/src/main.ts --outfile orch && rm -f .*.bun-build",
     "web": "bun apps/web/src/server.ts",
+    "e2e": "cd apps/web && bunx playwright test",
     "templates:include": "bun packages/pipelines/src/include-files.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web",
     "lint": "biome check .",

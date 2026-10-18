@@ -12,7 +12,10 @@ Requires [Bun](https://bun.sh) 1.4+.
 bun install
 bun run check      # typecheck + lint + test
 bun run dev:db     # local Postgres on 127.0.0.1:5433 (needs Docker)
+bun run e2e        # the browser journey; once before: cd apps/web && bunx playwright install chromium
 ```
+
+Run it, build it, release it: [docs/self-host.md](docs/self-host.md) (the container image and `deploy/compose.yml`), [docs/ci-cd.md](docs/ci-cd.md) (GitHub Actions and GitLab CI, versions from commit messages, releases), [docs/install.md](docs/install.md) (the `orch` binary).
 
 ## API
 

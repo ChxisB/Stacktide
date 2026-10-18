@@ -1,0 +1,11 @@
+**/node_modules
+.git
+.claude
+.env*
+!.env.example
+dist
+coverage
+.bun-cache
+*.pem
+*.key
+secrets.json
