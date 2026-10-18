@@ -1,5 +1,5 @@
 # 11 Governance - Spec
-Prefix: GOV · Milestone: M4 · Status: todo
+Prefix: GOV · Milestone: M4 · Status: done
 
 ## Goal
 Production changes are reviewed by a second person and every action is traceable and exportable.
