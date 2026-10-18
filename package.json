@@ -12,6 +12,7 @@
     "dev:db": "docker compose --env-file .env.example up -d --wait db",
     "db:generate": "cd packages/db && bunx drizzle-kit generate",
     "db:migrate": "bun --env-file=.env.example packages/db/src/migrate.ts",
+    "keys:rotate": "bun --env-file=.env.example packages/db/src/rotate-master-key.ts",
     "openapi": "bun apps/api/src/gen-openapi.ts",
     "release:build": "bun apps/cli/release.ts",
     "cli:build": "mkdir -p dist && cd dist && bun build --compile ../apps/cli/src/main.ts --outfile orch && rm -f .*.bun-build",

@@ -34,6 +34,8 @@ export type Connection = Omit<
 const secretAad = (organizationId: string, id: string) => aad("connection", organizationId, id);
 const keyContext = (id: string) => `connection:${id}`;
 
+export { keyContext as connectionKeyContext }; // `rewrap.ts` needs the same context to move a key
+
 const inOrg = (organizationId: string, id: string) =>
   and(eq(connections.id, id), eq(connections.organizationId, organizationId));
 

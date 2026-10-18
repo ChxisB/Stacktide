@@ -12,7 +12,7 @@ Done when: following the doc on a clean machine yields a working login (smoke sc
 Do: `/metrics` (auth-protected or internal-only) with the metrics in the SPEC; labels never contain ids of secrets or values.
 Done when: tests assert metric names/labels and a label-cardinality guard.
 
-### OPS-4 - Backup, restore, key rotation runbook  `[ ]` M - deps: VAR-1, OPS-2
+### OPS-4 - Backup, restore, key rotation runbook  `[x]` M - deps: VAR-1, OPS-2
 Do: backup script (pg_dump + key handling guidance), restore script, `rotate-master-key` command using `rewrap`, runbook doc.
 Done when: an automated test restores into a fresh DB and decrypts a known secret; rotation leaves all values readable. **`/security-review`.**
 

@@ -81,6 +81,8 @@ const valueAad = (o: Owner, id: string, version: number) =>
 const keyContext = (o: Owner) =>
   o.projectId ? `variables:project:${o.projectId}` : `variables:org:${o.organizationId}`;
 
+export { keyContext as variableKeyContext }; // `rewrap.ts` needs the same context to move a key
+
 const ownerIs = (o: Owner) =>
   and(
     eq(variableKeys.organizationId, o.organizationId),

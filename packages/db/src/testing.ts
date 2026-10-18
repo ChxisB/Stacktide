@@ -26,20 +26,26 @@ async function withAdmin<T>(baseUrl: string, fn: (admin: SQL) => Promise<T>): Pr
   }
 }
 
+/** A uniquely named database with nothing in it; `remove` drops it (the caller closes its own pool first). */
+async function createBlank(baseUrl: string | undefined) {
+  if (!baseUrl) throw new Error("DATABASE_URL is not set. Run tests with `bun run test`.");
+  const name = `orch_test_${crypto.randomUUID().replaceAll("-", "")}`;
+  // `name` is generated above from hex only, so interpolating it is safe.
+  await withAdmin(baseUrl, (admin) => admin.unsafe(`CREATE DATABASE ${name}`));
+  const target = new URL(baseUrl);
+  target.pathname = `/${name}`;
+  const remove = () =>
+    withAdmin(baseUrl, (admin) => admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`));
+  return { name, url: target.toString(), remove };
+}
+
 /**
  * Creates a uniquely named, fully migrated database for one test file and returns a `drop()`
  * to call in `afterAll`.
  * shortcut: a crashed run leaves its `orch_test_*` database behind; add a sweeper if that bites.
  */
 export async function createTestDb(baseUrl = process.env.DATABASE_URL): Promise<TestDb> {
-  if (!baseUrl) throw new Error("DATABASE_URL is not set. Run tests with `bun run test`.");
-  const name = `orch_test_${crypto.randomUUID().replaceAll("-", "")}`;
-  // `name` is generated above from hex only, so interpolating it is safe.
-  await withAdmin(baseUrl, (admin) => admin.unsafe(`CREATE DATABASE ${name}`));
-
-  const target = new URL(baseUrl);
-  target.pathname = `/${name}`;
-  const url = target.toString();
+  const { name, url, remove } = await createBlank(baseUrl);
   const db = createDb(url, 2);
   let dropping: Promise<void> | undefined;
   const drop = () => {
@@ -48,9 +54,7 @@ export async function createTestDb(baseUrl = process.env.DATABASE_URL): Promise<
       try {
         await db.$client.close();
       } finally {
-        await withAdmin(baseUrl, (admin) =>
-          admin.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`),
-        );
+        await remove();
       }
     })();
     return dropping;
@@ -62,4 +66,10 @@ export async function createTestDb(baseUrl = process.env.DATABASE_URL): Promise<
     throw e;
   }
   return { db, url, name, drop };
+}
+
+/** A database with nothing in it (not even the migrations), for a restore test. `drop()` as for `createTestDb`. */
+export async function createEmptyDb(baseUrl = process.env.DATABASE_URL) {
+  const { name, url, remove } = await createBlank(baseUrl);
+  return { name, url, drop: remove };
 }

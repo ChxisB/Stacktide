@@ -23,6 +23,7 @@ export * from "./pipeline-configs";
 export * from "./pipeline-runs";
 export * from "./policy";
 export * from "./repo";
+export * from "./rewrap";
 export * from "./runs";
 export * from "./schedules";
 export * from "./schema";

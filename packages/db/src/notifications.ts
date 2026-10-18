@@ -43,6 +43,8 @@ const secretAad = (organizationId: string, id: string) =>
   aad("notification_sink", organizationId, id);
 const keyContext = (id: string) => `notification_sink:${id}`;
 
+export { keyContext as sinkKeyContext }; // `rewrap.ts` needs the same context to move a key
+
 const inOrg = (organizationId: string, id: string) =>
   and(eq(notificationSinks.id, id), eq(notificationSinks.organizationId, organizationId));
 
