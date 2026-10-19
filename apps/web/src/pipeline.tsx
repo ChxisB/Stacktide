@@ -3,9 +3,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { Delivery } from "./pipeline-delivery";
 import {
   type Applied,
   type Config,
+  type Delivery as DeliveryForm,
+  deliveryOf,
   initialValues,
   type Line,
   lineDiff,
@@ -14,6 +17,7 @@ import {
   type Preview,
   paramsOf,
   type Request,
+  startDelivery,
   type TemplateInfo,
   type Values,
   webUrl,
@@ -264,6 +268,8 @@ function Parameters({
   set,
   connectionId,
   setConnection,
+  delivery,
+  setDelivery,
   busy,
   error,
   back,
@@ -275,6 +281,8 @@ function Parameters({
   set: (name: string, value: string | boolean) => void;
   connectionId: string | undefined;
   setConnection: (id: string) => void;
+  delivery: DeliveryForm;
+  setDelivery: (next: DeliveryForm) => void;
   busy: boolean;
   error: string | undefined;
   back: () => void;
@@ -320,6 +328,13 @@ function Parameters({
             <small className="muted">The connection that reaches this project in GitLab.</small>
           </div>
         )}
+        <Delivery
+          orgId={orgId}
+          connectionId={connectionId}
+          template={template.name}
+          value={delivery}
+          set={setDelivery}
+        />
         {names.length === 0 && <p>This template has no parameters.</p>}
         {names.map((name) => {
           const p = template.params.properties[name];
@@ -413,10 +428,22 @@ function Review({
       <p className={preview.existing === "hand-written" ? "warn" : undefined}>
         {EXISTING[preview.existing]}
       </p>
-      {config?.mode === "include" && (
+      {request.include && (
+        <p>
+          The merge request writes a short {FILE} that{" "}
+          {request.mode === "component" ? "uses" : "includes"} {request.template} from{" "}
+          <code>{request.include.project}</code>
+          {request.include.ref ? ` at ${request.include.ref}` : ""}.
+        </p>
+      )}
+      {config && config.mode !== "inline" && !request.mode && (
         <p className="warn">
-          This project includes its template from another project. Creating this merge request
-          writes the whole pipeline into {FILE} instead.
+          This project{" "}
+          {config.mode === "component"
+            ? "uses its template as a component of"
+            : "includes its template from"}{" "}
+          another project. Creating this merge request writes the whole pipeline into {FILE}{" "}
+          instead.
         </p>
       )}
       {!lint.valid && (
@@ -560,6 +587,7 @@ function Wizard({
   const [name, setName] = useState(first.name);
   const [values, setValues] = useState<Values>(first.values);
   const [picked, setConnection] = useState<string>();
+  const [delivery, setDelivery] = useState<DeliveryForm>(() => startDelivery(config));
   const [reviewed, setReviewed] = useState<{ request: Request; preview: Preview }>();
   const [applied, setApplied] = useState<Applied>();
   const [busy, setBusy] = useState<"preview" | "apply">();
@@ -589,6 +617,7 @@ function Wizard({
       template: template.name,
       version: template.version,
       params: paramsOf(template, values),
+      ...deliveryOf(delivery),
     };
     setBusy("preview");
     setError(undefined);
@@ -624,6 +653,7 @@ function Wizard({
     setValues(again.values);
     setReviewed(undefined);
     setApplied(undefined);
+    setDelivery(startDelivery(config));
     go("detect");
   };
 
@@ -668,6 +698,8 @@ function Wizard({
           set={(n, v) => setValues((old) => ({ ...old, [n]: v }))}
           connectionId={connectionId}
           setConnection={setConnection}
+          delivery={delivery}
+          setDelivery={setDelivery}
           busy={busy === "preview"}
           error={error}
           back={() => go("select")}

@@ -1,10 +1,11 @@
-import { DomainError, type Logger } from "@orch/core";
+import { can, DomainError, type Logger } from "@orch/core";
 import { checkSessionTtl, createSession, deleteSession, findSession, upsertUser } from "@orch/db";
 import { GitlabError, type GitlabOAuth, pkceChallenge } from "@orch/gitlab";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { guardPlugin, unauthenticated } from "../guard";
+import type { OidcDeps } from "../oidc";
 import { problem } from "../problem";
 import { rateLimitPlugin } from "../rate-limit";
 import { hashToken, randomToken, safeEqual } from "../tokens";
@@ -17,6 +18,10 @@ export interface AuthDeps {
   sessionTtlMs?: number;
   /** Cookies get `Secure`: set when the API is served over https. */
   secureCookies?: boolean;
+  /** Where identity providers send the browser back to: `https://<host>/auth/sso/callback`. Left out, SSO sign-in answers 503. */
+  ssoRedirectUri?: string;
+  /** Test seams for talking to identity providers. */
+  oidc?: OidcDeps;
   /** Test seam: milliseconds since the epoch. */
   now?: () => number;
 }
@@ -28,8 +33,22 @@ export const DEFAULT_SESSION_TTL_MS = 12 * 3_600_000;
 const GITLAB_DOWN = new Set(["server", "timeout", "network", "rate_limited"]);
 
 /** A path on this site, nothing else: an absolute or protocol-relative URL would be an open redirect. */
-const safeReturnTo = (raw: string | undefined) =>
+export const safeReturnTo = (raw: string | undefined) =>
   raw && /^\/(?!\/)[\x21-\x7e]*$/.test(raw) && !raw.includes("\\") ? raw : "/";
+
+/** The cookie and redirect answers every sign-in flow builds: HttpOnly, Lax, and Secure when served over https. */
+export function cookieKit(secureCookies: boolean) {
+  return {
+    cookie: (name: string, value: string, maxAgeSeconds: number, path = "/") =>
+      `${name}=${value}; Path=${path}; Max-Age=${Math.floor(maxAgeSeconds)}; HttpOnly; SameSite=Lax${secureCookies ? "; Secure" : ""}`,
+    respond(status: number, cookies: string[], location?: string) {
+      const headers = new Headers({ "cache-control": "no-store" });
+      if (location) headers.set("location", location);
+      for (const c of cookies) headers.append("set-cookie", c);
+      return new Response(null, { status, headers });
+    },
+  };
+}
 
 export function readCookie(request: Request, name: string): string | undefined {
   for (const part of (request.headers.get("cookie") ?? "").split(";")) {
@@ -52,14 +71,7 @@ export const authRoutes = ({
   const now = auth.now ?? Date.now;
   checkSessionTtl(sessionTtlMs);
 
-  const cookie = (name: string, value: string, maxAgeSeconds: number, path = "/") =>
-    `${name}=${value}; Path=${path}; Max-Age=${Math.floor(maxAgeSeconds)}; HttpOnly; SameSite=Lax${secureCookies ? "; Secure" : ""}`;
-  const respond = (status: number, cookies: string[], location?: string) => {
-    const headers = new Headers({ "cache-control": "no-store" });
-    if (location) headers.set("location", location);
-    for (const c of cookies) headers.append("set-cookie", c);
-    return new Response(null, { status, headers });
-  };
+  const { cookie, respond } = cookieKit(secureCookies);
   const clearLogin = cookie(LOGIN_COOKIE, "", 0, "/auth");
   const clearSession = cookie(SESSION_COOKIE, "", 0);
 
@@ -186,21 +198,35 @@ export const authRoutes = ({
     )
     .get(
       "/me",
-      async ({ request, set }) => {
+      async ({ request, set, principal }) => {
         set.headers["cache-control"] = "no-store"; // per-user answer: no shared cache may keep it
         const token = readCookie(request, SESSION_COOKIE);
         const found = token ? await findSession(db, hashToken(token)) : undefined;
         if (!found) throw unauthenticated();
         const { user } = found;
-        return { id: user.id, gitlabId: user.gitlabId, username: user.username, name: user.name };
+        // What the guard of `organization.create` would say, for a screen that offers it (a hint: the guard decides).
+        // Only when the caller is the person the cookie names: a bearer token of someone else says nothing about them.
+        const platformAdmin =
+          principal?.kind === "dev" ||
+          (!!principal &&
+            principal.userId === user.id &&
+            can(principal.subject, "organization.create"));
+        return {
+          id: user.id,
+          gitlabId: user.gitlabId,
+          username: user.username,
+          name: user.name,
+          platformAdmin,
+        };
       },
       {
         response: {
           200: z.object({
             id: z.uuid(),
-            gitlabId: z.number(),
+            gitlabId: z.number().nullable(), // none for a person who signs in only through an identity provider
             username: z.string(),
             name: z.string(),
+            platformAdmin: z.boolean(), // may create organizations
           }),
           401: problemSchema,
         },

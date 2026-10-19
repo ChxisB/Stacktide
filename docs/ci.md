@@ -65,11 +65,137 @@ are set from the platform (the parent's other variables, a `TF_VAR_*` among them
 environment variable name: letters, digits and `_`, not starting with a digit, at most 64 characters.
 The generated plan jobs of a stack with an `environment` do this for you (`docs/iac.md`).
 
+## Terraform state: `--state`
+
+A stack that keeps its state on the platform (`state: orch` in `stack.yml`, ADR-0017; the generated jobs do all of what
+follows, see `docs/iac.md`) reaches it with a token of its own:
+`orch ci login --state` prints `ORCH_STATE_TOKEN` instead of `ORCH_TOKEN`, and the token is tied to no environment.
+It can read state (`state.read`), and **only a job on a protected ref** can also write and delete it (`state.write`),
+so a job on a branch anyone can push to reads state but cannot change it. It lasts as long as the job, up to one
+hour, which is why those jobs set `timeout: 1h`.
+
+Terraform's `http` backend sends Basic credentials, so the state routes (and only they) take this token as the
+password. Any user name will do:
+
+```
+TF_HTTP_ADDRESS=$ORCH_API_URL/organizations/$ORCH_ORG/projects/$ORCH_PROJECT/state/<stack>
+TF_HTTP_USERNAME=ci
+TF_HTTP_PASSWORD=$ORCH_STATE_TOKEN
+```
+
+`GET` reads the newest version (404 when there is none), `POST` stores the next one, `DELETE` removes them all. A
+person, whether signed in or holding an API token, gets 403: state holds secrets in clear, so its content goes to the
+job and to nobody who holds a role. A write is refused with 409 for a serial below the stored one, another lineage,
+or the stored serial with other content, and with 413 over the body cap. The platform keeps the newest 20 versions.
+A project that still holds state cannot be deleted (409 `project_has_state`): delete the state first.
+
+### What a state holds: the resource index
+
+Every write also records **which resources the state holds**, by name only, in the same transaction as the version
+(so the list always describes the newest version; a state it cannot list is refused with 422 `invalid_state` and
+nothing is stored). A person with the project role reporter or above, or an organization admin, reads it:
+
+```
+GET /organizations/<org>/projects/<project>/state/<stack>/resources
+    ?type=aws_route53_zone&provider=registry.terraform.io/hashicorp/aws&module=module.net&limit=50&cursor=...
+```
+
+Each item is `address`, `mode` (`managed` or `data`), `type`, `name`, `provider` (the registry address, without the
+alias), `module` (`null` at the root) and `indexKey` (the `count` or `for_each` key of an instance, else `null`),
+in address order. A filter is an **exact value**, not a pattern or a prefix: `module=module.net` does not include
+`module.net.module.sub`, and `module=` (empty) is the root module. A stack with no state, or whose state was
+deleted, lists nothing. The list is the identity of the resources and nothing from inside them: no attribute, no
+output and no private data is copied, so reading it cannot show a secret that is in the state.
+
+Two things to know. A `for_each` key is part of an address, and it is a name your configuration chose: a
+configuration that builds its keys from secret values would put those in the list, so keep secrets out of keys. And
+the index holds at most 100,000 instances: a state with more is refused (422), not cut short.
+
+### Looking at a state: `orch state ls`, `orch state resources` and the State page
+
+A person with the project role reporter or above (an organization viewer included) or an organization admin can see
+**which versions a stack has and what the newest one holds, by name**, and never the state itself. Nobody who holds a
+role can read or change a state's content; only the job can.
+
+```
+orch state ls <stack> --org <org> --project <project>
+orch state resources <stack> [--type <t>] [--provider <p>] [--module <m>] --org <org> --project <project>
+GET /organizations/<org>/projects/<project>/state/<stack>/versions
+```
+
+`ls` prints one line per version, newest first: serial, when it was written, its size and who wrote it (`ci:job-<id>`,
+or `import:user:<id>` for an import). `resources` prints the addresses, with the same exact filters as the API above
+(`--module=` is the root module). `--json` gives the whole items. The versions list is not paged: the platform keeps
+the newest 20. The **State** page of the web app shows the same two lists for the stack name you type in, read-only:
+no download, edit or rollback. A resource address and a lineage are text a job wrote, so the CLI blanks control
+characters in an address before it reaches your terminal.
+
+### Moving a stack from GitLab's state: `orch state import`
+
+A stack that has state in GitLab (the default) and is to keep it on the platform needs that state copied first;
+switching `state: orch` alone starts it from nothing (`docs/iac.md`). A project maintainer, or an organization admin,
+copies it:
+
+```
+orch state import <stack> --org <org> --project <project> [--connection <name>] [--yes]
+POST /organizations/<org>/projects/<project>/state/<stack>/import      {"connectionId": "<id>"}
+```
+
+The platform reads the state through the organization's GitLab connection (`GET .../terraform/state/<stack>` of the
+project, which GitLab answers to a token with the Maintainer role; the stack's name is the state's name, as the
+generated jobs use it), checks it is Terraform state (version 4), and keeps it as the stack's **first version**, at
+its own serial and lineage, byte for byte, with the resource index. Nothing is written to GitLab and nothing there is
+removed. Answer 201: `serial`, `lineage`, `sizeBytes`, `resources`. A person is never handed the state: the platform
+reads it, and an audit event `state.import` records who, the stack, the serial and the size, never what is inside.
+
+- **It fills an empty stack, nothing else.** A stack that has any version answers 409 `not_empty`, and GitLab is not
+  asked. Of two imports at once exactly one is kept. To import again, delete the state first (`DELETE` as a job on a
+  protected ref).
+- **It is a copy, taken once.** Stop the applies of the stack that still use GitLab's state before you import, and do not
+  run one after: a change applied there is not in the copy, and the next apply with `state: orch` would plan from
+  state that is behind. The import does **not** switch the stack: set `state: orch` in `stack.yml` in a merge request,
+  as any change to the repository.
+- **Refused with nothing kept:** a stack the scan does not list (403 `unknown_stack`), a project not linked to GitLab
+  (422 `project_unlinked`), no state of that name in GitLab (404 `state_not_found`; GitLab answers 404 for a project the
+  token cannot see too), a document that is not state (422 `invalid_state`, its text not repeated), more than 16 MiB
+  (413), a lock held on the stack (423), a connection that is not the organization's GitLab one (404, 422), and
+  GitLab refusing the token or failing (502 `gitlab_failed`, in fixed words).
+- The CLI asks for confirmation before it copies (`--yes` for scripts), prints what it kept, and says on stderr what is
+  left to do.
+
+Not verified: against a real GitLab. The endpoint, its token and the Maintainer role are taken from GitLab's
+documentation and exercised only against the mock. The first real import of a stack is yours to run and check
+(`orch state import`, then a `plan` with `state: orch` that should show no changes).
+
+### Locks
+
+A stack has one lock. Terraform's backend takes it with `LOCK` and releases it with `UNLOCK` on the state address
+(its default verbs). If a proxy in front of the API does not carry custom verbs, point the backend at the lock
+address instead and use `POST` and `DELETE` there:
+
+```
+TF_HTTP_LOCK_ADDRESS=$TF_HTTP_ADDRESS/lock    TF_HTTP_LOCK_METHOD=POST
+TF_HTTP_UNLOCK_ADDRESS=$TF_HTTP_ADDRESS/lock  TF_HTTP_UNLOCK_METHOD=DELETE
+```
+
+Only a job that may write (a protected ref, `state.write`) takes a lock. A second job is answered `423` with the
+holder's lock info (`ID`, `Who`, `Operation`, ...), which Terraform prints. While a lock is held only its holder
+writes, naming the lock in `?ID=`; reading is never held off. A lock is the job's: another job cannot release it,
+even knowing its ID, and the holder releases it only with its ID.
+
+A lock ends when the job's token does (up to one hour), so a crashed job does not hold a stack for long. To end one
+sooner, an organization admin calls `POST /organizations/<org>/projects/<project>/state/<stack>/force-unlock` with
+a session or an API token; it answers `{"released": true|false}` and is audited with the lock's ID and owner.
+
+A state larger than `ORCH_MAX_BODY_BYTES` (2 MiB by default, `docs/hardening.md`) is refused until the operator
+raises it; the repository itself stores up to 16 MiB.
+
 ## Options
 
 - `orch run --prefix <PREFIX>`: name every variable `<PREFIX><NAME>` for the command.
 - `orch ci login --api-url <url>`: instead of `ORCH_API_URL`.
 - `orch ci login --id-token-env NAME`: when the `id_tokens:` entry is not called `ORCH_ID_TOKEN`.
+- `orch ci login --state`: a token for Terraform state alone (below).
 - `orch --json ci login`: one JSON document with the token and what it is for.
 
 ## When it fails

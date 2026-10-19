@@ -143,7 +143,7 @@ describe("pipeline configurations", () => {
     expect(ejected).toMatchObject({ mode: "inline", includeProject: null, includeRef: null });
   });
 
-  test("the mode is one of two, and a templates project goes with the include mode alone", async () => {
+  test("the mode is one of three, and a templates project goes with the include and component modes alone", async () => {
     const w = await world();
     const refused = (over: Record<string, unknown>) =>
       savePipelineConfig(t.db, { ...w.input, ...over } as typeof w.input).catch((e) =>
@@ -165,6 +165,31 @@ describe("pipeline configurations", () => {
       mode: "include",
       includeRef: null,
     });
+  });
+
+  test("the component mode needs its catalog project and its version, and goes back to inline and include", async () => {
+    const w = await world();
+    const refused = (over: Record<string, unknown>) =>
+      savePipelineConfig(t.db, { ...w.input, ...over } as typeof w.input).catch((e) =>
+        pgConstraint(e),
+      );
+    expect(await refused({ mode: "component" })).toBe("pipeline_configs_include_check");
+    expect(await refused({ mode: "component", includeRef: "1.2.3" })).toBe(
+      "pipeline_configs_include_check",
+    );
+    // unlike include, a version is not optional
+    expect(await refused({ mode: "component", includeProject: "grp/x" })).toBe(
+      "pipeline_configs_include_check",
+    );
+    expect(
+      await refused({ mode: "component", includeProject: "grp/x", includeRef: "1.2.3" }),
+    ).toMatchObject({ mode: "component", includeProject: "grp/x", includeRef: "1.2.3" });
+    expect(
+      await refused({ mode: "include", includeProject: "grp/x", includeRef: "main" }),
+    ).toMatchObject({ mode: "include" });
+    expect(await refused({ mode: "inline", includeProject: null, includeRef: null })).toMatchObject(
+      { mode: "inline", includeProject: null, includeRef: null },
+    );
   });
 
   test("goes with its project, and holds its connection in place", async () => {

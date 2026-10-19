@@ -8,6 +8,7 @@ import {
   listSinks,
   listSubscriptions,
   NOTIFY_QUEUE,
+  notifyRotationFailing,
   notifyStackDrift,
   openSink,
   removeSubscriptions,
@@ -383,5 +384,64 @@ describe("telling the subscribers of a drifted stack", () => {
       })
       .catch(() => undefined);
     expect((await queued()).length).toBe(before);
+  });
+});
+
+describe("telling the subscribers of a rotation that keeps failing", () => {
+  const news = (o: { id: string }, p: { id: string }) => ({
+    organizationId: o.id,
+    projectId: p.id,
+    key: "DB_PASSWORD",
+    provider: "gitlab-token",
+    attempts: 3,
+    at: new Date(Date.UTC(2026, 9, 19, 8)),
+  });
+  const queued = () => t.db.select().from(jobs).where(eq(jobs.queue, NOTIFY_QUEUE));
+
+  test("only the sinks that asked for this event hear of it, as names and a count", async () => {
+    const o = await org();
+    const p = await project(o.id, "api");
+    const hears = await sink(o.id, { name: "a" });
+    const driftOnly = await sink(o.id, { name: "b" });
+    const sub = (s: { id: string }, events: ("stack.drift" | "rotation.failing")[]) =>
+      setSubscriptions(t.db, { organizationId: o.id, projectId: p.id, sinkId: s.id, events });
+    await sub(hears, ["rotation.failing"]);
+    await sub(driftOnly, ["stack.drift"]);
+    const before = (await queued()).length;
+
+    expect(await t.db.transaction((tx) => notifyRotationFailing(tx, news(o, p)))).toBe(1);
+
+    const [job, ...more] = (await queued()).slice(before);
+    expect(more).toEqual([]);
+    expect(job?.payload).toEqual({
+      sinkId: hears.id,
+      organizationId: o.id,
+      event: "rotation.failing",
+      projectId: p.id,
+      projectName: "api",
+      key: "DB_PASSWORD",
+      provider: "gitlab-token",
+      attempts: 3,
+      at: "2026-10-19T08:00:00.000Z",
+    });
+    expect(JSON.stringify(job)).not.toContain("SECRETSECRET");
+  });
+
+  test("a stack's drift does not reach a sink that only asked about rotations", async () => {
+    const o = await org();
+    const p = await project(o.id);
+    const s = await sink(o.id);
+    await setSubscriptions(t.db, {
+      organizationId: o.id,
+      projectId: p.id,
+      sinkId: s.id,
+      events: ["rotation.failing"],
+    });
+    const stack = { stack: "net", status: "drifted" as const, add: 1, change: 0, destroy: 0 };
+    expect(
+      await t.db.transaction((tx) =>
+        notifyStackDrift(tx, { organizationId: o.id, projectId: p.id, at: new Date(), ...stack }),
+      ),
+    ).toBe(0);
   });
 });

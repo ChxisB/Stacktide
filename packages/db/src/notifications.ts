@@ -246,11 +246,51 @@ export function listSubscriptions(
 }
 
 /**
- * Queues one delivery for each sink the project asked to hear of `stack.drift`, in the transaction of
+ * Queues one delivery of `event` for each sink the project asked to hear of it, in the transaction of
  * the change that is the news, so a delivery exists exactly when the change does. A delivery carries
  * ids, names and counts (the sink's address is read when it runs). Returns how many were queued.
  */
-export async function notifyStackDrift(
+async function fanOut(
+  tx: Executor,
+  at: { organizationId: string; projectId: string; event: NotificationEvent; when: Date },
+  facts: Record<string, string | number>,
+): Promise<number> {
+  const [project] = await tx
+    .select({ name: projects.name })
+    .from(projects)
+    .where(and(eq(projects.id, at.projectId), eq(projects.organizationId, at.organizationId)));
+  if (!project) return 0;
+  const subscribed = await tx
+    .select({ sinkId: notificationSubscriptions.sinkId })
+    .from(notificationSubscriptions)
+    .where(
+      and(
+        eq(notificationSubscriptions.projectId, at.projectId),
+        eq(notificationSubscriptions.organizationId, at.organizationId),
+        eq(notificationSubscriptions.event, at.event),
+      ),
+    )
+    .orderBy(asc(notificationSubscriptions.sinkId));
+  for (const { sinkId } of subscribed) {
+    await enqueue(tx, {
+      queue: NOTIFY_QUEUE,
+      maxAttempts: DELIVERY_ATTEMPTS,
+      payload: {
+        sinkId,
+        organizationId: at.organizationId,
+        event: at.event,
+        projectId: at.projectId,
+        projectName: project.name,
+        ...facts,
+        at: at.when.toISOString(),
+      },
+    });
+  }
+  return subscribed.length;
+}
+
+/** `stack.drift`: a stack drifted from its code or came back in line. */
+export function notifyStackDrift(
   tx: Executor,
   n: {
     organizationId: string;
@@ -263,40 +303,22 @@ export async function notifyStackDrift(
     at: Date;
   },
 ): Promise<number> {
-  const [project] = await tx
-    .select({ name: projects.name })
-    .from(projects)
-    .where(and(eq(projects.id, n.projectId), eq(projects.organizationId, n.organizationId)));
-  if (!project) return 0;
-  const subscribed = await tx
-    .select({ sinkId: notificationSubscriptions.sinkId })
-    .from(notificationSubscriptions)
-    .where(
-      and(
-        eq(notificationSubscriptions.projectId, n.projectId),
-        eq(notificationSubscriptions.organizationId, n.organizationId),
-        eq(notificationSubscriptions.event, "stack.drift"),
-      ),
-    )
-    .orderBy(asc(notificationSubscriptions.sinkId));
-  for (const { sinkId } of subscribed) {
-    await enqueue(tx, {
-      queue: NOTIFY_QUEUE,
-      maxAttempts: DELIVERY_ATTEMPTS,
-      payload: {
-        sinkId,
-        organizationId: n.organizationId,
-        event: "stack.drift",
-        projectId: n.projectId,
-        projectName: project.name,
-        stack: n.stack,
-        status: n.status,
-        add: n.add,
-        change: n.change,
-        destroy: n.destroy,
-        at: n.at.toISOString(),
-      },
-    });
-  }
-  return subscribed.length;
+  const { at, organizationId, projectId, ...facts } = n;
+  return fanOut(tx, { organizationId, projectId, event: "stack.drift", when: at }, facts);
+}
+
+/** `rotation.failing`: a variable's rotation has failed `attempts` times in a row. Only the key's name, never a value. */
+export function notifyRotationFailing(
+  tx: Executor,
+  n: {
+    organizationId: string;
+    projectId: string;
+    key: string;
+    provider: string;
+    attempts: number;
+    at: Date;
+  },
+): Promise<number> {
+  const { at, organizationId, projectId, ...facts } = n;
+  return fanOut(tx, { organizationId, projectId, event: "rotation.failing", when: at }, facts);
 }

@@ -1,3 +1,5 @@
+export type { CreateAccessTokenInput } from "./access-tokens";
+export { AccessToken } from "./access-tokens";
 export * from "./client";
 export * from "./errors";
 export * from "./gitlab";
@@ -17,6 +19,7 @@ export type {
   RepoFile,
   TreeEntry,
 } from "./repository";
+export type { Runner, RunnerStatus } from "./runners";
 export type {
   CreateVariableInput,
   VariableInput,

@@ -36,6 +36,8 @@ describe("stack.yml", () => {
           "watch: [../modules/**, shared/*.tf]".replace("../", "mods/"),
           "apply_on: merge",
           "environment: staging",
+          "pool: prod-runners",
+          "state: orch",
           "drift_every: 6h",
         ].join("\n"),
       ),
@@ -48,6 +50,8 @@ describe("stack.yml", () => {
       watch: ["mods/modules/**", "shared/*.tf"],
       apply_on: "merge",
       environment: "staging",
+      pool: "prod-runners",
+      state: "orch",
       drift_every: 6 * 3600,
     });
     expect(ok("name: a\ntool: terraform\nversion: 1.10.0-rc1\n").version).toBe("1.10.0-rc1");
@@ -169,6 +173,42 @@ describe("stack.yml", () => {
       expect(ok(`name: a\ntool: tofu\nenvironment: ${JSON.stringify(e)}\n`).environment).toBe(e);
     }
     expect(ok("name: a\ntool: tofu\n").environment).toBeUndefined();
+  });
+
+  test("pool is the name of an organization's worker pool, as the platform allows it", () => {
+    // it selects the runner tags of a generated job, so it is a closed character set and one name, not a tag list
+    for (const p of [
+      "Prod",
+      "a b",
+      "-a",
+      "a-",
+      "a--b",
+      "a_b",
+      "",
+      "a/b",
+      "x".repeat(64),
+      "$X",
+      "[a]",
+      "a,b",
+    ]) {
+      expect(bad(`name: a\ntool: tofu\npool: ${JSON.stringify(p)}\n`)[0]).toContain("pool");
+    }
+    expect(bad("name: a\ntool: tofu\npool: [a]\n")[0]).toContain("pool");
+    for (const p of ["a", "prod-eu", "0", "x".repeat(63)]) {
+      expect(ok(`name: a\ntool: tofu\npool: ${JSON.stringify(p)}\n`).pool).toBe(p);
+    }
+    expect(ok("name: a\ntool: tofu\n").pool).toBeUndefined();
+  });
+
+  test("state is gitlab or orch, and a file without it says neither (the platform reads that as gitlab)", () => {
+    expect(ok("name: a\ntool: tofu\nstate: orch\n").state).toBe("orch");
+    expect(ok("name: a\ntool: tofu\nstate: gitlab\n").state).toBe("gitlab");
+    expect(ok("name: a\ntool: tofu\n").state).toBeUndefined();
+    // a closed set: it picks the backend settings of a generated job
+    for (const s of ["Orch", "s3", "", "orch,gitlab", "$X", "[orch]", "true", "null"]) {
+      expect(bad(`name: a\ntool: tofu\nstate: ${JSON.stringify(s)}\n`)[0], s).toContain("state");
+    }
+    expect(bad("name: a\ntool: tofu\nstate: [orch]\n")[0]).toContain("state");
   });
 
   test("drift_every is whole hours or days, from an hour up, and is kept in seconds", () => {

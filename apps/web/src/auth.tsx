@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useEffect } from "react";
 import { ApiError, call, useClient } from "./api";
+import { SsoEntry } from "./ui";
 
 export interface Me {
   id: string;
-  gitlabId: number;
+  gitlabId: number | null;
   username: string;
   name: string;
+  /** May create organizations. */
+  platformAdmin: boolean;
 }
 
 const MeContext = createContext<Me | undefined>(undefined);
@@ -42,6 +45,8 @@ export function LoginPage() {
         <a className="button primary" href="/auth/login?return_to=/">
           Sign in with GitLab
         </a>
+        <h2>Or through your organization</h2>
+        <SsoEntry query="return_to=/" label="Sign in with single sign-on" />
       </div>
     </div>
   );

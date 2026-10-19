@@ -6,7 +6,7 @@ import {
   type ProjectRole,
   projectRoleOf,
 } from "@orch/core";
-import { type Db, gitlabLinks, type User } from "@orch/db";
+import { type Db, gitlabLinks } from "@orch/db";
 import { type Gitlab, GitlabError } from "@orch/gitlab";
 import type { Roles } from "./session";
 
@@ -46,7 +46,7 @@ export function gitlabRoles({
 }: MembershipOptions) {
   const cache = new Map<number, { until: number; roles: Promise<Roles> }>();
 
-  async function lookup(user: Pick<User, "gitlabId">): Promise<Roles> {
+  async function lookup(user: { gitlabId: number }): Promise<Roles> {
     const links = await gitlabLinks(db);
     const orgRoles: Record<string, OrgRole> = {};
     const projectRoles: Record<string, ProjectRole> = {};
@@ -65,7 +65,7 @@ export function gitlabRoles({
     return { orgRoles, projectRoles };
   }
 
-  return (user: Pick<User, "gitlabId">): Promise<Roles> => {
+  return (user: { gitlabId: number }): Promise<Roles> => {
     const at = now();
     const hit = cache.get(user.gitlabId);
     if (hit && hit.until > at) return hit.roles;

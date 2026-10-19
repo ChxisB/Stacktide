@@ -95,7 +95,7 @@ export const http = (
             ? error.cause
             : error;
         if (failure instanceof DomainError) {
-          response = problem(failure.status, failure.code, id, failure.message);
+          response = problem(failure.status, failure.code, id, failure.message, failure.extra);
         } else if (code === "NOT_FOUND") {
           response = problem(404, "not_found", id, "Route not found");
         } else if (code === "VALIDATION") {

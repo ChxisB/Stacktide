@@ -1,7 +1,7 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { NOTIFICATION_EVENTS, type SinkKind, takesNotifications } from "@orch/core";
+import { type SinkKind, takesNotifications } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import { type Db, ForwardFailure, openSink } from "@orch/db";
 import { z } from "zod";
@@ -101,19 +101,31 @@ export const sealSink = (s: { url: string; secret?: string | undefined }) => JSO
 /** A webhook's signing secret, shown once when the sink is made. */
 export const newWebhookSecret = () => `whsec_${randomBytes(32).toString("base64url")}`;
 
-const notificationShape = z.object({
+const notificationBase = {
   sinkId: z.uuid(),
   organizationId: z.uuid(),
-  event: z.enum(NOTIFICATION_EVENTS),
   projectId: z.uuid(),
   projectName: z.string().max(200),
-  stack: z.string().max(100),
-  status: z.enum(["drifted", "clean"]),
-  add: z.number().int().min(0),
-  change: z.number().int().min(0),
-  destroy: z.number().int().min(0),
   at: z.iso.datetime(),
-});
+};
+const notificationShape = z.discriminatedUnion("event", [
+  z.object({
+    ...notificationBase,
+    event: z.literal("stack.drift"),
+    stack: z.string().max(100),
+    status: z.enum(["drifted", "clean"]),
+    add: z.number().int().min(0),
+    change: z.number().int().min(0),
+    destroy: z.number().int().min(0),
+  }),
+  z.object({
+    ...notificationBase,
+    event: z.literal("rotation.failing"),
+    key: z.string().max(200),
+    provider: z.string().max(32),
+    attempts: z.number().int().min(1),
+  }),
+]);
 type Notification = z.infer<typeof notificationShape>;
 
 // Slack reads <...> as a link or a mention and & as an entity.
@@ -121,7 +133,13 @@ const slackText = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 function slackMessage(n: Notification) {
-  const where = `stack *${slackText(n.stack)}* (project *${slackText(n.projectName)}*)`;
+  const project = `project *${slackText(n.projectName)}*`;
+  if (n.event === "rotation.failing") {
+    return {
+      text: `:rotating_light: Rotation of *${slackText(n.key)}* (${slackText(n.provider)}) in ${project} has failed ${n.attempts} times; the old value is still in use`,
+    };
+  }
+  const where = `stack *${slackText(n.stack)}* (${project})`;
   return {
     text:
       n.status === "drifted"
@@ -130,16 +148,23 @@ function slackMessage(n: Notification) {
   };
 }
 
-const webhookBody = (id: string, n: Notification) => ({
-  id,
-  event: n.event,
-  at: n.at,
-  organizationId: n.organizationId,
-  project: { id: n.projectId, name: n.projectName },
-  stack: n.stack,
-  status: n.status,
-  plan: { add: n.add, change: n.change, destroy: n.destroy },
-});
+const webhookBody = (id: string, n: Notification) => {
+  const head = {
+    id,
+    event: n.event,
+    at: n.at,
+    organizationId: n.organizationId,
+    project: { id: n.projectId, name: n.projectName },
+  };
+  return n.event === "rotation.failing"
+    ? { ...head, rotation: { key: n.key, provider: n.provider, attempts: n.attempts } }
+    : {
+        ...head,
+        stack: n.stack,
+        status: n.status,
+        plan: { add: n.add, change: n.change, destroy: n.destroy },
+      };
+};
 
 const resolveAll = async (host: string) =>
   (await lookup(host, { all: true, verbatim: true })).map((a) => a.address);

@@ -13,6 +13,8 @@ export const organizations = pgTable(
     gitlabGroupId: bigint({ mode: "number" }),
     // Days the audit events of this organization are kept; null keeps them for ever (GOV-1). Only `audit_purge_expired()` reads it to delete.
     auditRetentionDays: integer(),
+    // What open secret findings on a project's default branch do to its applies: off, warn or deny (SCAN-6).
+    secretGate: text().notNull().default("off"),
     ...timestamps(),
   },
   (t) => [
@@ -20,6 +22,7 @@ export const organizations = pgTable(
       "organizations_audit_retention_check",
       sql`${t.auditRetentionDays} is null or ${t.auditRetentionDays} between 30 and 3650`,
     ),
+    check("organizations_secret_gate_check", sql`${t.secretGate} in ('off', 'warn', 'deny')`),
     // One organization per group: a GitLab membership must not read as two organizations' roles.
     uniqueIndex("organizations_gitlab_group_key")
       .on(t.gitlabGroupId)

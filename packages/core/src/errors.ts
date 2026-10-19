@@ -8,6 +8,8 @@ export class DomainError extends Error {
     readonly code: string,
     readonly status: number,
     message: string,
+    /** Fields added to the problem document (Terraform reads its lock info out of a 423). */
+    readonly extra: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = "DomainError";

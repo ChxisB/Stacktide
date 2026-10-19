@@ -16,6 +16,9 @@ export const paramSchema = z.strictObject({
   maximum: z.number().optional(),
 });
 
+/** Parameters the platform answers itself, for every template alike: a manifest cannot declare one. */
+export const PLATFORM_PARAMS = ["secretDetection"] as const;
+
 const NAME = /^[a-z][a-z0-9-]{0,63}$/;
 const PARAM_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
@@ -50,6 +53,8 @@ export const manifestSchema = z
     }
     for (const [name, p] of Object.entries(properties)) {
       const at = ["properties", name];
+      if ((PLATFORM_PARAMS as readonly string[]).includes(name))
+        bad(at, "is the platform's own parameter");
       const number = p.type === "number" || p.type === "integer";
       let sound = true;
       const refuse = (key: string, message: string) => {

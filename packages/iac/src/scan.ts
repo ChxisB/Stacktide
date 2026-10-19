@@ -1,4 +1,11 @@
-import { type ApplyOn, MARKER, MAX_MANIFEST_BYTES, parseManifest, type Tool } from "./stack";
+import {
+  type ApplyOn,
+  MARKER,
+  MAX_MANIFEST_BYTES,
+  parseManifest,
+  type StateStore,
+  type Tool,
+} from "./stack";
 
 /** What the scanner needs of a repository: its file paths and the text of a file. */
 export interface RepoSource {
@@ -27,6 +34,10 @@ export interface Stack {
   applyOn: ApplyOn;
   /** The platform environment whose variables the plan gets as `TF_VAR_*`; none: it gets none. */
   environment?: string | undefined;
+  /** The worker pool the file names; none: the organization's default, if it has one (see `resolvePool`). */
+  pool?: string | undefined;
+  /** Where the state lives; none: GitLab's (see `usesPlatformState`). */
+  state?: StateStore | undefined;
   /** How often the platform checks the stack for drift, in seconds; none: it does not. */
   driftEverySeconds?: number | undefined;
   backend: Backend;
@@ -204,6 +215,8 @@ export async function scanStacks(source: RepoSource, options: ScanOptions = {}) 
       watch: m.watch,
       applyOn: m.apply_on,
       environment: m.environment,
+      pool: m.pool,
+      state: m.state,
       driftEverySeconds: m.drift_every,
       backend,
     };

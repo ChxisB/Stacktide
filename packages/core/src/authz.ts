@@ -24,6 +24,7 @@ export const RULES = {
   "organization.read": { org: "viewer" },
   "organization.update": { org: "admin" },
   "organization.delete": { org: "owner" },
+  "member.read": { org: "admin" },
   "project.create": { org: "admin" },
   "project.read": { project: "reporter" },
   "project.update": { project: "maintainer" },
@@ -46,6 +47,10 @@ export const RULES = {
   "variable.import": { project: "maintainer" },
   // Setting, renaming and deleting many at once, previewed first (the preview compares values with the secrets held): one action, so a token is given the whole bundle by name.
   "variable.bulk": { project: "maintainer" },
+  // How a secret rotates (ROT-5): seeing it is reading; setting or removing it, and rotating now, change what is live.
+  "variable.rotation.read": { project: "reporter" },
+  "variable.rotation.manage": { project: "maintainer" },
+  "variable.rotation.run": { project: "maintainer" },
   "variable.org.read": { org: "viewer" },
   "variable.org.create": { org: "admin" },
   "variable.org.update": { org: "admin" },
@@ -54,6 +59,9 @@ export const RULES = {
   "variable.org.restore": { org: "admin" },
   "variable.org.import": { org: "admin" },
   "variable.org.bulk": { org: "admin" },
+  "variable.org.rotation.read": { org: "viewer" },
+  "variable.org.rotation.manage": { org: "admin" },
+  "variable.org.rotation.run": { org: "admin" },
   // Credentials for outside systems: org admins only, also to read (what they connect to is theirs to know).
   "connection.create": { org: "admin" },
   "connection.read": { org: "admin" },
@@ -79,6 +87,8 @@ export const RULES = {
   "pipeline.apply": { org: "admin" },
   // A fleet upgrade is pipeline.apply on every project that uses a template: listing, dry-running and applying it take the same people.
   "pipeline.upgrade": { org: "admin" },
+  // Reading what a catalog project publishes (its releases, components and their inputs) uses the organization's connection token on a repository the caller names: as privileged as previewing a pipeline, so org admins.
+  "template.registry.read": { org: "admin" },
   // Retrying runs the failed jobs of a pipeline again: the same commit and the same jobs, so no new code, only the project's runners and CI variables once more.
   "pipeline.retry": { project: "maintainer" },
   // Runs of IaC stacks: a plan only reads the project's repository and runs its own CI, as any merge request does, so developers may start one and reporters may read. What a run holds is names, a commit and states.
@@ -98,6 +108,22 @@ export const RULES = {
   "policy.set.read": { org: "viewer" },
   "policy.set.create": { org: "admin" },
   "policy.set.delete": { org: "admin" },
+  "cost.limit.read": { org: "viewer" },
+  "cost.limit.set": { org: "admin" },
+  "cost.limit.delete": { org: "admin" },
+  // The secret gate (SCAN-6) decides whether open findings hold back an apply: the organization's, so org admins set it, as for cost limits, and anyone in the organization may read it. A project maintainer applies plans and must not be the one to lift what holds them.
+  "secret.gate.read": { org: "viewer" },
+  "secret.gate.update": { org: "admin" },
+  // Worker pools (POOL-1) decide which runners a stack's jobs ask for, which is where its plans and applies run with the cloud credentials: the organization's, so org admins manage them, and anyone in the organization may read them.
+  "pool.read": { org: "viewer" },
+  "pool.create": { org: "admin" },
+  "pool.update": { org: "admin" },
+  "pool.delete": { org: "admin" },
+  // How a pool looks from a project (runners GitLab lists for it): reached with the organization's connection, so the people who may preview a pipeline.
+  "pool.status": { org: "admin" },
+  // An organization's identity provider (SSO-5, ADR-0016) decides who may sign in and with which role, so only an owner changes it, turns it on or off and has it asked for its keys (a request to an address the owner chose). Admins may see how it is set up. The client secret is never read back by anyone.
+  "sso.read": { org: "admin" },
+  "sso.manage": { org: "owner" },
   // The audit log (GOV-1) shows who did what in the organization: org admins, as for the other things that show how it is run. Exporting hands the whole log out and is audited, so it is an action of its own that a token is given by name. The retention is the one way events are ever deleted: only an owner chooses how long they are kept.
   "audit.read": { org: "admin" },
   "audit.export": { org: "admin" },
@@ -112,6 +138,22 @@ export const RULES = {
   "change_request.create": { project: "developer" },
   "change_request.approve": { project: "maintainer" },
   "change_request.reject": { project: "maintainer" },
+  // Leases (ROT-11, ADR-0014): a short-lived read-only GitLab token for the project's repository, made through the organization's connection. Taking one is a developer's, as running a plan is; ending one is too (any developer may end any lease of the project: it only takes access away). The list shows who holds what, never a value. A CI job holds the first two only by scope.
+  "lease.issue": { project: "developer" },
+  "lease.read": { project: "reporter" },
+  "lease.revoke": { project: "developer" },
+  // Findings (SCAN-4): where a leaked secret was seen, never what it was. Any member reads them; calling one a false alarm is a maintainer's, since it also takes it out of the gate.
+  "finding.read": { project: "reporter" },
+  "finding.dismiss": { project: "maintainer" },
+  "finding.reopen": { project: "maintainer" },
+  // Terraform state kept by the platform (STATE-3, ADR-0017): its content goes to CI jobs and to no person, whatever role or scope a person holds (the routes check the caller is a CI job on top of this). A job reads it with `state.read`; writing, deleting and locking are `state.write`, given only to a job on a protected ref.
+  "state.read": { project: "reporter" },
+  "state.list": { project: "reporter" },
+  "state.write": { project: "developer" },
+  // Taking over the state GitLab holds for a stack (STATE-7): a maintainer's, as it moves the secrets in that state into the platform. A person asks; the state is read by the platform, never handed to the person.
+  "state.import": { project: "maintainer" },
+  // Ending a lock that is not yours (STATE-4): an organization admin's, from the API, audited. A job releases only its own, which is `state.write`.
+  "state.force_unlock": { org: "admin" },
 } as const satisfies Record<string, Rule>;
 export type Action = keyof typeof RULES;
 

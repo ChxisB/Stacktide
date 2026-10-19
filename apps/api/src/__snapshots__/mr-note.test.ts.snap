@@ -1,0 +1,25 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`what the plan costs, in the note is a line per stack with an estimate or a limit: the figures, labelled as an estimate, and what the limit makes of them 1`] = `
+"**orch plan**
+
+Commit \`a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0\`
+
+| Stack | Status | Add | Change | Destroy | Plan |
+| --- | --- | ---: | ---: | ---: | --- |
+| \`a-pass\` | planned | 1 | 0 | 0 | – |
+| \`b-warn\` | planned | 1 | 0 | 0 | – |
+| \`c-deny\` | planned | 1 | 0 | 0 | – |
+| \`d-unavailable\` | planned | 1 | 0 | 0 | – |
+| \`e-saving\` | planned | 1 | 0 | 0 | – |
+
+Cost (estimate):
+
+- \`a-pass\`: +42.00 USD a month, total 1234.50 USD (estimate by \`infracost\`); limit 100.00 USD: pass
+- \`b-warn\`: +85.00 USD a month, total 1234.50 USD (estimate by \`infracost\`); limit 100.00 USD: warn (\`cost-near-limit\`)
+- \`c-deny\`: +250.50 USD a month, total 1234.50 USD (estimate by \`infracost\`); limit 100.00 USD: deny (\`cost-over-limit\`)
+- \`d-unavailable\`: no estimate; limit 100.00 USD: deny (\`cost-unavailable\`)
+- \`e-saving\`: -10.25 USD a month, total 1234.50 USD (estimate by \`infracost\`); limit 100.00 USD: pass
+
+<sub>Counts only: the plan itself stays in the job. This note is updated, not added to.</sub>"
+`;

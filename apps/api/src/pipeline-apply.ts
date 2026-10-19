@@ -4,12 +4,14 @@ import { type Db, getProject, type NewPipelineConfig } from "@orch/db";
 import { type Gitlab, GitlabError } from "@orch/gitlab";
 import {
   byVersion,
+  componentPath,
   GENERATED,
   type IncludeTarget,
   includePath,
   type Layer,
   RenderError,
   render,
+  renderComponent,
   renderInclude,
   type Template,
   type Validation,
@@ -23,6 +25,9 @@ export const PIPELINE_FILE = ".gitlab-ci.yml";
 /** The branch the merge request comes from: one per project, so a re-run finds it again. */
 export const PIPELINE_BRANCH = `${APP_NAME}/pipeline`;
 
+/** How the pipeline reaches the repository: the whole file, an `include:` of the template, or a CI/CD component (PIPE-9, CMP-2). */
+export type PipelineMode = "inline" | "include" | "component";
+
 export interface PipelineRequest {
   template: string;
   /** The newest version of the template when left out. */
@@ -31,9 +36,9 @@ export interface PipelineRequest {
   overrides?: Layer["overrides"];
   /** Environment slugs the required variables are checked in; all of the project's when left out. */
   environments?: string[];
-  /** `inline` (the default) commits the whole pipeline; `include` commits a thin file that includes the template from `include` (PIPE-9). */
-  mode?: "inline" | "include";
-  /** The templates project the template's file is published in; given with the `include` mode and only then. */
+  /** `inline` (the default) commits the whole pipeline; `include` commits a thin file that includes the template from `include` (PIPE-9); `component` one that uses it as a component of `include.project` at the version `include.ref` (CMP-2). */
+  mode?: PipelineMode;
+  /** The templates project the template's file is published in; given with the `include` and `component` modes and only then. The ref is required for a component. */
   include?: IncludeTarget;
 }
 
@@ -48,7 +53,7 @@ export interface Prepared {
   validation: Validation;
   existing: Existing;
   template: Template["manifest"];
-  mode: "inline" | "include";
+  mode: PipelineMode;
 }
 
 export interface Applied extends Omit<Prepared, "text" | "current" | "template"> {
@@ -71,7 +76,7 @@ export interface PipelineDeps {
 }
 
 /** GitLab refusing or failing, as the API reports it: about this project (422) or about GitLab (502). */
-const gitlabProblem = (e: unknown) => {
+export const gitlabProblem = (e: unknown) => {
   if (!(e instanceof GitlabError)) return e;
   const aboutProject = e.kind === "not_found" || e.kind === "forbidden";
   return new DomainError(
@@ -126,20 +131,26 @@ async function prepare(
   const template = pick(deps.catalog, request.template, request.version);
   const layer: Layer = { params: request.params, overrides: request.overrides };
   const mode = request.mode ?? "inline";
-  if ((mode === "include") !== (request.include !== undefined)) {
+  const { include } = request;
+  if ((mode !== "inline") !== (include !== undefined)) {
     throw new DomainError(
       "invalid_pipeline",
       422,
-      mode === "include"
-        ? "The include mode needs the templates project"
-        : "A templates project goes with the include mode alone",
+      mode === "inline"
+        ? "A templates project goes with the include and component modes alone"
+        : `The ${mode} mode needs the templates project`,
     );
   }
   let text: string;
   try {
-    text = request.include
-      ? renderInclude(template, [layer], request.include)
-      : render(template, [layer]);
+    text = !include
+      ? render(template, [layer])
+      : mode === "component"
+        ? renderComponent(template, [layer], {
+            project: include.project,
+            version: include.ref ?? "",
+          })
+        : renderInclude(template, [layer], include);
   } catch (e) {
     if (e instanceof RenderError) {
       throw new DomainError("invalid_pipeline", 422, sentence(e.problems.slice(0, 10)));
@@ -228,7 +239,15 @@ function describeMr(p: Prepared, request: PipelineRequest, version: string) {
     "",
     `Parameters: ${given.length === 0 ? "the template's defaults" : given.map(([k, v]) => `\`${k}\` = \`${clip(JSON.stringify(v))}\``).join(", ")}.`,
   ];
-  if (request.include) {
+  if (request.include && p.mode === "component") {
+    const { project, ref = "" } = request.include;
+    // a partial release follows the newest matching one: it moves without a merge request here
+    const moves = !/^(\d+\.\d+\.\d+|[0-9a-f]{40})$/.test(ref);
+    lines.push(
+      "",
+      `The pipeline itself is not in this file: it uses the component \`${p.template.name}\` of \`${project}\` at \`${clip(ref)}\`, and passes it these parameters. \`${componentPath(p.template)}\` must be published in that version before this is merged. Whoever can release \`${project}\` changes this project's pipeline${moves ? `, and \`${clip(ref)}\` follows the newest matching release, so it can change without a merge request here` : ""}.`,
+    );
+  } else if (request.include) {
     const { project, ref } = request.include;
     lines.push(
       "",

@@ -3,13 +3,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, StrictMode } from "react";
 import { ClientContext } from "./api";
 import { AuthGate } from "./auth";
+import { FindingsPage } from "./findings";
 import { Checklist } from "./onboarding";
 import { OrgProvider, RequireOrg } from "./org";
+import { OrganizationsPage } from "./organizations";
 import { PipelinePage } from "./pipeline";
 import { ProjectsPage } from "./projects";
 import { RunsPage } from "./runs";
 import { SettingsPage } from "./settings";
 import { type Page, Shell } from "./shell";
+import { StatePage } from "./state";
 import { SyncPage } from "./sync";
 import { VariablesPage } from "./variables";
 
@@ -55,10 +58,31 @@ const Status = () => (
   </>
 );
 
+const Findings = () => (
+  <>
+    <h1>Findings</h1>
+    <RequireOrg>{(org) => <FindingsPage key={org.id} orgId={org.id} />}</RequireOrg>
+  </>
+);
+
+const State = () => (
+  <>
+    <h1>State</h1>
+    <RequireOrg>{(org) => <StatePage key={org.id} orgId={org.id} />}</RequireOrg>
+  </>
+);
+
 const Settings = () => (
   <>
     <h1>Settings</h1>
     <RequireOrg>{(org) => <SettingsPage key={org.id} org={org} />}</RequireOrg>
+  </>
+);
+
+const Organizations = () => (
+  <>
+    <h1>Organizations</h1>
+    <OrganizationsPage />
   </>
 );
 
@@ -70,7 +94,10 @@ const pages: readonly Page[] = [
   { path: "sync", label: "Sync", element: <Sync /> },
   { path: "pipeline", label: "Pipeline", element: <Pipeline /> },
   { path: "status", label: "Status", element: <Status /> },
+  { path: "findings", label: "Findings", element: <Findings /> },
+  { path: "state", label: "State", element: <State /> },
   { path: "settings", label: "Settings", element: <Settings /> },
+  { path: "organizations", label: "Organizations", element: <Organizations /> },
 ];
 
 export const newQueryClient = () =>

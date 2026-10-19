@@ -3,7 +3,7 @@ import { call, clientFor, resolveApi } from "./api";
 import { CliError, type Command, parse, say } from "./cli";
 import { formatVariables } from "./format";
 
-const USAGE = "usage: orch ci login [--api-url <url>] [--id-token-env <NAME>]";
+const USAGE = "usage: orch ci login [--state] [--api-url <url>] [--id-token-env <NAME>]";
 const DEFAULT_VARIABLE = "ORCH_ID_TOKEN";
 const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,254}$/;
 /** header.payload.signature, each base64url: all that is checked before the value leaves this machine. */
@@ -31,6 +31,10 @@ const exchanged = z.object({
  * job's environment. Nothing is written to disk, and the id_token is read from the environment, never
  * the command line. shortcut: no `orch ci login && orch run` in one process, a process cannot set its
  * parent's environment; the one-line form would need `run` to log in by itself.
+ *
+ * `--state` asks for the other token, the one for the project's Terraform state (ADR-0017): it prints
+ * `ORCH_STATE_TOKEN` and the project's address, and leaves `ORCH_TOKEN` and `ORCH_ENV` alone, so a job can
+ * hold both and the state token never reads an environment's values.
  */
 export function ciCommands(): Record<string, Command> {
   return {
@@ -40,6 +44,7 @@ export function ciCommands(): Record<string, Command> {
         const { values, positionals } = parse(args, {
           "api-url": { type: "string" },
           "id-token-env": { type: "string" },
+          state: { type: "boolean" },
         });
         if (positionals.length !== 1 || positionals[0] !== "login") throw new CliError(USAGE, 2);
 
@@ -59,11 +64,16 @@ export function ciCommands(): Record<string, Command> {
           throw new CliError(`${variable} does not hold an id_token`, 2);
         }
 
+        const state = values.state === true;
         const { apiUrl } = await resolveApi(ctx, values["api-url"]);
         const got = exchanged.safeParse(
           await call(
             apiUrl,
-            () => clientFor(apiUrl).auth.ci.exchange.post({ id_token: idToken }),
+            () =>
+              clientFor(apiUrl).auth.ci.exchange.post({
+                id_token: idToken,
+                ...(state && { state: true }),
+              }),
             REFUSED,
           ),
         );
@@ -75,7 +85,7 @@ export function ciCommands(): Record<string, Command> {
           { key: "ORCH_API_URL", value: apiUrl },
           { key: "ORCH_ORG", value: organizationId },
           { key: "ORCH_PROJECT", value: projectId },
-          { key: "ORCH_TOKEN", value: token },
+          state ? { key: "ORCH_STATE_TOKEN", value: token } : { key: "ORCH_TOKEN", value: token },
           ...(environmentId ? [{ key: "ORCH_ENV", value: environmentId }] : []),
         ];
         // the token is the answer to this command and shown only here; stderr keeps stdout clean for `eval`
@@ -89,7 +99,7 @@ export function ciCommands(): Record<string, Command> {
           environmentId,
         });
         ctx.io.err(`signed in for this job until ${expiresAt}`);
-        if (!environmentId) {
+        if (!environmentId && !state) {
           ctx.io.err(
             "warning: this job runs in no environment, so its token reads the project only; give the job environment: name: <slug> to read variables",
           );

@@ -2,7 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { parse } from "yaml";
 import type { Template } from "./loader";
 import { manifestSchema } from "./manifest";
-import { GENERATED, type Layer, RenderError, render } from "./render";
+import {
+  GENERATED,
+  type Layer,
+  RenderError,
+  render,
+  renderComponent,
+  renderInclude,
+  SECRET_DETECTION_TEMPLATE,
+} from "./render";
 
 type Params = Record<string, Record<string, unknown>>;
 
@@ -357,5 +365,121 @@ build:
     const before = JSON.stringify([template, layers]);
     render(template, layers);
     expect(JSON.stringify([template, layers])).toBe(before);
+  });
+});
+
+describe("secret detection (SCAN-5)", () => {
+  const ON: Layer[] = [{ params: { secretDetection: true } }];
+  const withScan = (pipeline: string, layers: Layer[] = ON) =>
+    read(render(tpl(pipeline, {}), layers)) as Record<string, unknown>;
+  const TEMPLATE = { template: SECRET_DETECTION_TEMPLATE };
+  const NO_TEST = "stages: [build, deploy]\nbuild:\n  stage: build\n  script: [x]\n";
+
+  test("off is the default, and off says nothing", () => {
+    const plain = render(tpl(CI, CI_PARAMS));
+    expect(render(tpl(CI, CI_PARAMS), [{ params: { secretDetection: false } }])).toBe(plain);
+    expect(plain).not.toContain("secret");
+  });
+
+  test("on adds GitLab's template first and the job last, in the pipeline's first stage when it has no `test`", () => {
+    const text = render(tpl(NO_TEST, {}), ON);
+    expect(Object.keys(read(text) as object)).toEqual([
+      "include",
+      "stages",
+      "build",
+      "secret_detection",
+    ]);
+    expect(read(text)).toMatchObject({
+      include: [TEMPLATE],
+      secret_detection: { stage: "build", inherit: { default: false } },
+    });
+  });
+
+  test("a pipeline that has a `test` stage, or none at all (GitLab's own list has it), needs no stage for the job", () => {
+    expect(withScan("stages: [build, test]\nbuild:\n  script: [x]\n").secret_detection).toEqual({
+      inherit: { default: false },
+    });
+    expect(withScan("build:\n  script: [x]\n").secret_detection).toEqual({
+      inherit: { default: false },
+    });
+  });
+
+  test("an include the template already has stays, and ours follows it", () => {
+    for (const own of ["{ local: a.yml }", "[{ local: a.yml }]"]) {
+      expect(withScan(`include: ${own}\nbuild:\n  script: [x]\n`).include).toEqual([
+        { local: "a.yml" },
+        TEMPLATE,
+      ]);
+    }
+  });
+
+  test("only true or false is accepted, and the layers decide as for any parameter", () => {
+    for (const bad of ["true", 1, "", null]) {
+      expect(
+        problemsOf(() => render(tpl(CI, CI_PARAMS), [{ params: { secretDetection: bad } }])),
+      ).toEqual([expect.stringContaining("param secretDetection")]);
+    }
+    const layered = (...layers: Layer[]) =>
+      render(tpl(CI, CI_PARAMS), layers).includes("secret_detection");
+    expect(
+      layered({ params: { secretDetection: true } }, { params: { secretDetection: false } }),
+    ).toBe(false);
+    expect(
+      layered({ params: { secretDetection: false } }, { params: { secretDetection: true } }),
+    ).toBe(true);
+  });
+
+  test("an override still has the last word on the job", () => {
+    const doc = withScan("build:\n  script: [x]\n", [
+      ...ON,
+      { overrides: { secret_detection: { allow_failure: true, stage: "later" } } },
+    ]);
+    expect(doc.secret_detection).toEqual({
+      stage: "later",
+      inherit: { default: false },
+      allow_failure: true,
+    });
+  });
+
+  test("it is the platform's own name: a template cannot declare it", () => {
+    expect(() => tpl("a:\n  script: [x]\n", { secretDetection: { type: "boolean" } })).toThrow();
+  });
+
+  describe("in a thin file (include and component mode)", () => {
+    const stages = "stages: [check, build]\nlint:\n  stage: check\n  script: [x]\n";
+    const include = (layers: Layer[]) =>
+      read(renderInclude(tpl(stages, { x: str }), layers, { project: "g/ci" })) as Record<
+        string,
+        unknown
+      >;
+    const component = (layers: Layer[]) =>
+      read(
+        renderComponent(tpl(stages, { x: str }), layers, { project: "g/ci", version: "1.0.0" }),
+      ) as Record<string, unknown>;
+
+    test.each([
+      ["include", include],
+      ["component", component],
+    ])(
+      "%s: our template follows the template's own include, and the job is placed from the template's stages",
+      (_mode, make) => {
+        const doc = make(ON) as { include: Record<string, unknown>[]; secret_detection: unknown };
+        expect(doc.include).toHaveLength(2);
+        expect(doc.include[1]).toEqual(TEMPLATE);
+        // the template's own parameters are its inputs, and this one is not among them: GitLab would refuse an input it does not know
+        expect(doc.include[0]?.inputs).toEqual({ x: "x" });
+        expect(doc.secret_detection).toEqual({ stage: "check", inherit: { default: false } });
+      },
+    );
+
+    test.each([
+      ["include", include],
+      ["component", component],
+    ])("%s: off leaves the thin file as it was", (_mode, make) => {
+      expect(JSON.stringify(make([{ params: { secretDetection: false } }]))).toBe(
+        JSON.stringify(make([])),
+      );
+      expect(JSON.stringify(make([]))).not.toContain("secret");
+    });
   });
 });

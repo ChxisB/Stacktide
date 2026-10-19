@@ -491,6 +491,117 @@ describe("what a summary may hold", () => {
   });
 });
 
+describe("the cost estimate in a summary (COST-1)", () => {
+  const cost = (extra: Record<string, unknown> = {}) => ({
+    monthlyDelta: 123.45,
+    monthlyTotal: 980.5,
+    currency: "USD",
+    tool: "infracost",
+    ...extra,
+  });
+  const costOf = async (runId: string) => {
+    const row = await stackRow(runId, "net");
+    return [row?.costMonthlyDelta, row?.costMonthlyTotal, row?.costCurrency, row?.costTool];
+  };
+  const send = async (body: unknown, raw?: string) => {
+    const runId = await newRun();
+    const { bearer } = await ciToken();
+    return { runId, ...(await post(summaryPath(runId), body, { bearer, raw })) };
+  };
+
+  test("is stored with the summary, and the audit event says that there was one, not what it said", async () => {
+    const res = await send(summary({ cost: cost() }));
+    expect(res.status).toBe(204);
+    expect(await costOf(res.runId)).toEqual([123.45, 980.5, "USD", "infracost"]);
+    const [event] = await audits(res.runId);
+    expect(event?.metadata).toMatchObject({ stack: "net", costed: true });
+    expect(JSON.stringify(event)).not.toContain("980.5");
+  });
+
+  test("a summary without one is still accepted, and a savings estimate (a negative delta) is too", async () => {
+    const none = await send(summary());
+    expect(none.status).toBe(204);
+    expect(await costOf(none.runId)).toEqual([null, null, null, null]);
+    expect((await audits(none.runId))[0]?.metadata).toMatchObject({ costed: false });
+
+    const saving = await send(summary({ cost: cost({ monthlyDelta: -40, monthlyTotal: 0 }) }));
+    expect(saving.status).toBe(204);
+    expect(await costOf(saving.runId)).toEqual([-40, 0, "USD", "infracost"]);
+  });
+
+  test("the later summary replaces the estimate, and one without an estimate removes it", async () => {
+    const runId = await newRun();
+    const { bearer } = await ciToken();
+    await post(summaryPath(runId), summary({ cost: cost() }), { bearer });
+    await post(summaryPath(runId), summary({ cost: cost({ monthlyDelta: 5 }) }), { bearer });
+    expect((await costOf(runId))[0]).toBe(5);
+    await post(summaryPath(runId), summary(), { bearer });
+    expect(await costOf(runId)).toEqual([null, null, null, null]);
+  });
+
+  test("a retried plan job is a new plan: the estimate of the old one goes with it", async () => {
+    const runId = await newRun();
+    await recordStackJobs(t.db, ids.o1, ids.p1, runId, "net", { planJobId: 500 });
+    await post(summaryPath(runId), summary({ cost: cost() }), {
+      bearer: (await ciToken()).bearer,
+    });
+    // the same job seen again changes nothing
+    await recordStackJobs(t.db, ids.o1, ids.p1, runId, "net", { planJobId: 500 });
+    expect((await costOf(runId))[0]).toBe(123.45);
+    await recordStackJobs(t.db, ids.o1, ids.p1, runId, "net", { planJobId: 501 });
+    expect(await costOf(runId)).toEqual([null, null, null, null]);
+    // the counts are the summary's, replaced by the next summary
+    expect(await stackRow(runId, "net")).toMatchObject({ planAdd: 2 });
+  });
+
+  test("is refused 422 when an amount is not a finite number, a currency or a tool is not a name, or a field is missing", async () => {
+    const bad: [string, unknown][] = [
+      ["a string amount", cost({ monthlyDelta: "12" })],
+      ["a null amount", cost({ monthlyTotal: null })],
+      ["a total below zero", cost({ monthlyTotal: -1 })],
+      ["a delta beyond a trillion", cost({ monthlyDelta: 1e13 })],
+      ["a lower-case currency", cost({ currency: "usd" })],
+      ["a two-letter currency", cost({ currency: "US" })],
+      ["a four-letter currency", cost({ currency: "USDD" })],
+      ["a numeric currency", cost({ currency: 840 })],
+      ["a tool with capitals", cost({ tool: "Infracost" })],
+      ["a tool with a space", cost({ tool: "evil tool" })],
+      ["an empty tool", cost({ tool: "" })],
+      ["a tool of 41 characters", cost({ tool: "a".repeat(41) })],
+      ["an extra field", cost({ extra: 1 })],
+      ["no currency", { monthlyDelta: 1, monthlyTotal: 1, tool: "infracost" }],
+      ["no tool", { monthlyDelta: 1, monthlyTotal: 1, currency: "USD" }],
+      ["an empty object", {}],
+      ["null", null],
+    ];
+    for (const [what, value] of bad) {
+      const res = await send(summary({ cost: value }));
+      expect([what, res.status]).toEqual([what, 422]);
+      expect(await stackRow(res.runId, "net")).toMatchObject({ planAdd: null });
+      expect(await costOf(res.runId)).toEqual([null, null, null, null]);
+      expect(res.text).not.toContain("evil");
+    }
+  });
+
+  test("an amount JSON writes beyond what a number holds is refused, not stored as Infinity", async () => {
+    const raw = JSON.stringify(summary({ cost: cost({ monthlyDelta: 1 }) })).replace(
+      '"monthlyDelta":1',
+      '"monthlyDelta":1e999',
+    );
+    const res = await send(undefined, raw);
+    expect(res.status).toBe(422);
+    expect(await costOf(res.runId)).toEqual([null, null, null, null]);
+  });
+
+  test("is refused 403 for a job that is not the stack's summary job, and nothing is stored", async () => {
+    const runId = await newRun();
+    const other = await ciToken({ jobId: APP_JOB });
+    const res = await post(summaryPath(runId), summary({ cost: cost() }), { bearer: other.bearer });
+    expect(res.status).toBe(403);
+    expect(await costOf(runId)).toEqual([null, null, null, null]);
+  });
+});
+
 describe("what a summary leaks", () => {
   test("a refusal is logged with its reason, and with nothing of the caller's token or body", async () => {
     const runId = await newRun();

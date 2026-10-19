@@ -78,6 +78,8 @@ export const variables = pgTable(
     ...timestamps(),
   },
   (t) => [
+    // The target of other tables' composite keys (a rotation stays in its variable's organization).
+    unique("variables_id_org_key").on(t.id, t.organizationId),
     // For the cascades from an organization, project or environment (the partial indexes below
     // cannot serve them: they only hold live rows).
     index("variables_scope_idx").on(t.organizationId, t.projectId),

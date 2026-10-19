@@ -5,7 +5,9 @@ import {
   auditEvents,
   createConnection,
   createOrganization,
+  createPool,
   createProject,
+  deletePool,
   jobs,
   listRuns,
   listStackDrift,
@@ -319,14 +321,16 @@ describe("checking a project", () => {
     expect(w.posts()).toBe(0);
   });
 
-  test("a stack whose pipeline cannot be generated is not planned, and nothing is recorded", async () => {
+  test("a stack whose pipeline cannot be generated is left out and not recorded; the others are still planned", async () => {
     const w = await world({
       files: { ...FILES, "stacks/net/stack.yml": "name: net\ntool: terraform\ndrift_every: 6h\n" },
     });
     await w.run();
-    expect(await w.runs()).toEqual([]);
-    expect(await w.known()).toEqual([]);
-    expect(w.posts()).toBe(0);
+    const [run, ...more] = await w.runs();
+    expect(more).toEqual([]);
+    expect(run?.stacks.map((s) => s.stack)).toEqual(["app"]);
+    expect((await w.known()).map((k) => k.stack)).toEqual(["app"]);
+    expect(w.posts()).toBe(1);
   });
 
   // MAX_RUN_STACKS stacks s000.., and one that is first by path but last by name
@@ -369,6 +373,70 @@ describe("checking a project", () => {
     const names = latest?.stacks.map((s) => s.stack) ?? [];
     expect(names).toContain("zz-last");
     expect(names).not.toContain("s099");
+  });
+});
+
+describe("worker pools in a drift check (POOL-3)", () => {
+  const withPool = {
+    ...FILES,
+    "stacks/net/stack.yml": stack("net", "drift_every: 6h\npool: ops\n"),
+  };
+  const make = (name: string, over: Record<string, unknown> = {}) =>
+    t.db.transaction((tx) =>
+      createPool(tx, { organizationId: org, name, tags: [`${name}-runner`], ...over }),
+    );
+  const remove = (id: string) => t.db.transaction((tx) => deletePool(tx, org, id));
+
+  test("a drift plan runs on the runners of the stack's pool", async () => {
+    setNow(0);
+    const pool = await make("ops");
+    try {
+      const w = await world({ files: withPool });
+      await w.run();
+      const [run] = await w.runs();
+      const [pipeline] = await planPipelinesOfRun(t.db, org, w.project.id, run?.id as string);
+      const yaml = mock.pipelineVariables(pipeline as number)?.[0]?.value ?? "";
+      const jobs = Bun.YAML.parse(yaml) as Record<string, { tags?: string[] }>;
+      expect(jobs["plan:net"]?.tags).toEqual(["ops-runner"]);
+      expect(jobs["summary:net"]?.tags).toEqual(["ops-runner"]);
+      // `app` names none and the organization has no default: shared runners, as before
+      expect(jobs["plan:app"]?.tags).toBeUndefined();
+    } finally {
+      await remove(pool?.id as string);
+    }
+  });
+
+  test("a stack whose pool the organization lacks is left out and not recorded; the others are still planned", async () => {
+    setNow(0);
+    const w = await world({ files: withPool });
+    await w.run();
+    const [run, ...more] = await w.runs();
+    expect(more).toEqual([]);
+    expect(run?.stacks.map((s) => s.stack)).toEqual(["app"]);
+    expect((await w.known()).map((k) => k.stack)).toEqual(["app"]);
+    expect(w.posts()).toBe(1);
+  });
+
+  test("stacks that cannot be generated do not take the places of a run: a healthy one still gets its check", async () => {
+    setNow(0);
+    const broken = Object.fromEntries(
+      Array.from({ length: MAX_RUN_STACKS }, (_, i) => {
+        const name = `s${String(i).padStart(3, "0")}`;
+        return [`many/${name}/stack.yml`, stack(name, "drift_every: 1h\npool: gone\n")];
+      }),
+    );
+    const files = {
+      ".gitlab-ci.yml": FILES[".gitlab-ci.yml"] ?? "",
+      ...broken,
+      "many/zz-ok/stack.yml": stack("zz-ok", "drift_every: 1h\n"),
+    };
+    const w = await world({ files });
+    await w.run();
+    const [run, ...more] = await w.runs();
+    expect(more).toEqual([]);
+    // they sort first (never asked for, and by name), and would fill the run if they were chosen
+    expect(run?.stacks.map((s) => s.stack)).toEqual(["zz-ok"]);
+    expect((await w.known()).map((k) => k.stack)).toEqual(["zz-ok"]);
   });
 });
 

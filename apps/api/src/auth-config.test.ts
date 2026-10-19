@@ -58,6 +58,58 @@ describe("auth config", () => {
     expect(dev.secureCookies).toBe(false);
   });
 
+  test("the SSO redirect address alone turns SSO sign-in on, without GitLab sign-in, and https makes cookies Secure", () => {
+    const sso = load({ ORCH_SSO_REDIRECT_URI: "https://orch.example.com/auth/sso/callback" });
+    expect(sso).toEqual({
+      ssoRedirectUri: "https://orch.example.com/auth/sso/callback",
+      secureCookies: true,
+    });
+    expect(load({ ORCH_SSO_REDIRECT_URI: "http://localhost:3000/auth/sso/callback" })).toEqual({
+      ssoRedirectUri: "http://localhost:3000/auth/sso/callback",
+      secureCookies: false,
+    });
+    const both = load({
+      ...full,
+      ORCH_SSO_REDIRECT_URI: "https://orch.example.com/auth/sso/callback",
+    });
+    expect(both.oauth).toBeDefined();
+    expect(both.ssoRedirectUri).toBe("https://orch.example.com/auth/sso/callback");
+    expect(both.secureCookies).toBe(true);
+  });
+
+  test("a bad SSO redirect address is refused by key, without echoing it", () => {
+    try {
+      load({ ORCH_SSO_REDIRECT_URI: "not a url" });
+      expect.unreachable();
+    } catch (e) {
+      expect((e as ConfigError).keys).toEqual(["ORCH_SSO_REDIRECT_URI"]);
+      expect((e as ConfigError).message).not.toContain("not a url");
+    }
+  });
+
+  test("an SSO redirect address must be https (http only on this machine) and end where the callback is, so a typo is a startup error, not a failed sign-in", () => {
+    for (const bad of [
+      "http://orch.example.com/auth/sso/callback", // codes and cookies in the clear
+      "https://orch.example.com/auth/callback", // not the route that completes a sign-in
+      "https://orch.example.com/auth/sso/callback/", // the route has no trailing slash
+    ]) {
+      try {
+        load({ ORCH_SSO_REDIRECT_URI: bad });
+        expect.unreachable(bad);
+      } catch (e) {
+        expect((e as ConfigError).keys).toEqual(["ORCH_SSO_REDIRECT_URI"]);
+        expect((e as ConfigError).message).not.toContain("orch.example.com");
+      }
+    }
+    for (const ok of [
+      "http://127.0.0.1:3000/auth/sso/callback",
+      "http://[::1]:3000/auth/sso/callback",
+      "http://localhost:3000/auth/sso/callback",
+    ]) {
+      expect(load({ ORCH_SSO_REDIRECT_URI: ok }).ssoRedirectUri).toBe(ok);
+    }
+  });
+
   test("a partial setting names the missing keys, never a value", () => {
     const { GITLAB_OAUTH_REDIRECT_URI: _, ...partial } = full;
     try {

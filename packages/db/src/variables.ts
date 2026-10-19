@@ -25,6 +25,7 @@ import { and, asc, desc, eq, gt, gte, isNull, lt, or, sql } from "drizzle-orm";
 import type { AuditContext } from "./audit";
 import { queueAutoSync } from "./auto-sync";
 import type { Executor, Page } from "./repo";
+import { dropRotationOf } from "./rotations";
 import { type VariableKind, variableKeys, variables, variableVersions } from "./schema";
 
 /**
@@ -323,6 +324,7 @@ export function deleteVariable(db: Executor, scope: Scope, id: string) {
       .where(live(scope, id))
       .returning({ id: variables.id });
     if (rows.length === 0) return false;
+    await dropRotationOf(tx, id);
     await queueAutoSync(tx, scope);
     return true;
   });

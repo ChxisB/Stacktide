@@ -80,3 +80,33 @@ export async function listPinnedPipelines(
     .orderBy(asc(pipelineConfigs.projectId))
     .limit(input.limit);
 }
+
+/**
+ * The organization's projects whose pipeline includes `includeProject` (as an include or a component),
+ * by project name, with the project's name. The template registry (CMP-5) shows how current they are.
+ * shortcut: the first 1000, no cursor; page it when an organization has more projects on one catalog.
+ */
+export async function listPipelineConsumers(
+  db: Executor,
+  organizationId: string,
+  includeProject: string,
+) {
+  return db
+    .select({ config: pipelineConfigs, projectName: projects.name })
+    .from(pipelineConfigs)
+    .innerJoin(
+      projects,
+      and(
+        eq(projects.id, pipelineConfigs.projectId),
+        eq(projects.organizationId, pipelineConfigs.organizationId),
+      ),
+    )
+    .where(
+      and(
+        eq(pipelineConfigs.organizationId, organizationId),
+        eq(pipelineConfigs.includeProject, includeProject),
+      ),
+    )
+    .orderBy(asc(projects.name), asc(pipelineConfigs.projectId))
+    .limit(1000);
+}

@@ -3,16 +3,30 @@ import { and, asc, eq, gt, ne, sql } from "drizzle-orm";
 import { connectionKeyContext } from "./connections";
 import { sinkKeyContext } from "./notifications";
 import type { Executor } from "./repo";
-import { connections, notificationSinks, variableKeys } from "./schema";
+import {
+  connections,
+  notificationSinks,
+  ssoProviders,
+  stateVersions,
+  variableKeys,
+} from "./schema";
+import { ssoKeyContext } from "./sso";
+import { stateKeyContext } from "./state";
 import { variableKeyContext } from "./variables";
 
 /**
  * Every secret the platform stores is sealed with a data key (DEK), and a DEK is stored wrapped by a master
  * key in exactly these tables (ADR-0007). Moving to a new master key is moving these wraps; no value is
  * re-encrypted. Pending change-request values and audit-forwarding sinks are sealed with the keys of
- * `variable_keys` and `notification_sinks`, so they are covered.
+ * `variable_keys` and `notification_sinks`, so they are covered. A stack's state versions (ADR-0017) are the fifth.
  */
-export const KEY_TABLES = ["variable_keys", "connections", "notification_sinks"] as const;
+export const KEY_TABLES = [
+  "variable_keys",
+  "connections",
+  "notification_sinks",
+  "sso_providers",
+  "state_versions",
+] as const;
 export type KeyTable = (typeof KEY_TABLES)[number];
 
 /** Master key id -> how many data keys it wraps, per table. */
@@ -140,6 +154,64 @@ const sources = (db: Executor): Record<KeyTable, Source> => ({
       return done.length > 0;
     },
   },
+  sso_providers: {
+    async read(current, after, limit) {
+      const rows = await db
+        .select({
+          id: ssoProviders.id,
+          keyId: ssoProviders.dekKeyId,
+          wrapped: ssoProviders.dekWrapped,
+        })
+        .from(ssoProviders)
+        .where(and(ne(ssoProviders.dekKeyId, current), gt(ssoProviders.id, after)))
+        .orderBy(asc(ssoProviders.id))
+        .limit(limit);
+      return rows.map((r) => ({ ...r, context: ssoKeyContext(r.id) }));
+    },
+    async write(row, next) {
+      const done = await db
+        .update(ssoProviders)
+        .set({ dekKeyId: next.keyId, dekWrapped: next.wrapped })
+        .where(
+          and(
+            eq(ssoProviders.id, row.id),
+            eq(ssoProviders.dekKeyId, row.keyId),
+            eq(ssoProviders.dekWrapped, row.wrapped),
+          ),
+        )
+        .returning({ id: ssoProviders.id });
+      return done.length > 0;
+    },
+  },
+  state_versions: {
+    async read(current, after, limit) {
+      const rows = await db
+        .select({
+          id: stateVersions.id,
+          keyId: stateVersions.dekKeyId,
+          wrapped: stateVersions.dekWrapped,
+        })
+        .from(stateVersions)
+        .where(and(ne(stateVersions.dekKeyId, current), gt(stateVersions.id, after)))
+        .orderBy(asc(stateVersions.id))
+        .limit(limit);
+      return rows.map((r) => ({ ...r, context: stateKeyContext(r.id) }));
+    },
+    async write(row, next) {
+      const done = await db
+        .update(stateVersions)
+        .set({ dekKeyId: next.keyId, dekWrapped: next.wrapped })
+        .where(
+          and(
+            eq(stateVersions.id, row.id),
+            eq(stateVersions.dekKeyId, row.keyId),
+            eq(stateVersions.dekWrapped, row.wrapped),
+          ),
+        )
+        .returning({ id: stateVersions.id });
+      return done.length > 0;
+    },
+  },
 });
 
 /**
@@ -156,7 +228,13 @@ export async function rewrapAll(
   batch = 100,
 ): Promise<RewrapReport> {
   const report: RewrapReport = {
-    rewrapped: { variable_keys: 0, connections: 0, notification_sinks: 0 },
+    rewrapped: {
+      variable_keys: 0,
+      connections: 0,
+      notification_sinks: 0,
+      sso_providers: 0,
+      state_versions: 0,
+    },
     failed: [],
   };
   const all = sources(db);
@@ -188,7 +266,13 @@ export async function rewrapAll(
 
 /** Which master key wraps how many data keys. The old key can go when nothing is left on it. */
 export async function keyUsage(db: Executor): Promise<KeyUsage> {
-  const usage: KeyUsage = { variable_keys: {}, connections: {}, notification_sinks: {} };
+  const usage: KeyUsage = {
+    variable_keys: {},
+    connections: {},
+    notification_sinks: {},
+    sso_providers: {},
+    state_versions: {},
+  };
   for (const table of KEY_TABLES) {
     const rows = await db.execute(
       sql`SELECT dek_key_id, count(*)::int AS n FROM ${sql.identifier(table)} GROUP BY dek_key_id`,

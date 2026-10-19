@@ -211,7 +211,7 @@ describe("a pipeline event", () => {
     expect(run?.webUrl).toBe(`${mock.url}/${w.gl.path}/-/pipelines/${p}`);
   });
 
-  test("a repeated event is one run, and only a failure asks for the jobs", async () => {
+  test("a repeated event is one run, and only a finished pipeline asks for the jobs", async () => {
     const w = await world();
     const p = await w.trigger();
     mock.requests.splice(0);
@@ -221,7 +221,8 @@ describe("a pipeline event", () => {
     mock.finishPipeline(p, "failed");
     await handler(job(w.event(p)));
     expect(await w.runs()).toHaveLength(1);
-    expect(requestsTo(/\/jobs$/)).toHaveLength(1);
+    // one listing names the failure and one looks for a secret-detection report (SCAN-3)
+    expect(requestsTo(/\/jobs$/)).toHaveLength(2);
   });
 
   test("a failure names the first job that failed and why; passing later clears it", async () => {

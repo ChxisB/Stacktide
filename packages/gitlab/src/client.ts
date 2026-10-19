@@ -82,6 +82,11 @@ export interface GitlabClient {
   request<T = unknown>(method: string, path: string, opts?: RequestOptions): Promise<T>;
   /** Yields every item of a list endpoint, following the `Link: rel="next"` header. */
   paginate<T = unknown>(path: string, query?: Query): AsyncGenerator<T, void, undefined>;
+  /**
+   * A GET answered with a file, as text and not parsed. At most `maxBytes` are read: a longer body
+   * (by its declared length, or counted as it arrives) is dropped unread and answers `tooLarge`.
+   */
+  download(path: string, o: { maxBytes: number }): Promise<{ text: string } | { tooLarge: true }>;
 }
 
 const REDACTED = "[REDACTED]";
@@ -134,6 +139,32 @@ function redirectHint(location: string | null, from: string): string | undefined
   } catch {
     return undefined;
   }
+}
+
+/** The body as text, read no further than `max` bytes; undefined when it is longer. */
+async function readCapped(res: Response, max: number): Promise<string | undefined> {
+  const declared = count(res.headers.get("content-length"));
+  if (declared !== undefined && declared > max) {
+    await res.body?.cancel();
+    return undefined;
+  }
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return undefined;
+    }
+    // streamed, so a character cut between two chunks is still one character
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
 }
 
 /** Validates the instance URL. Never echoes the input: it may carry credentials. */
@@ -206,7 +237,13 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
     return new GitlabError(kind, scrub(`GitLab ${method} ${where} ${what}`), status, wait);
   }
 
-  async function send(method: string, url: string, body?: unknown, redact: string[] = []) {
+  async function send(
+    method: string,
+    url: string,
+    body?: unknown,
+    redact: string[] = [],
+    maxBytes?: number,
+  ) {
     // Only GitLab's own words are scrubbed (before truncation, so a cut value cannot slip through).
     const hide = redactor([auth.token, ...redact.filter((v) => v.length >= 4)]);
     const where = new URL(url).pathname; // no query string: filters can be private
@@ -221,13 +258,22 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
           redirect: "manual", // a custom auth header would follow a redirect to another host
           signal: AbortSignal.timeout(timeoutMs),
         });
-        const text = await res.text();
+        // only an answer that is the file is capped: a failure's body is read as ever
+        const text =
+          res.ok && maxBytes !== undefined ? await readCapped(res, maxBytes) : await res.text();
         noteRateLimit(base.host, res.headers);
-        if (res.ok) return { status: res.status, headers: res.headers, text };
+        if (res.ok) {
+          return {
+            status: res.status,
+            headers: res.headers,
+            text: text ?? "",
+            tooLarge: text === undefined,
+          };
+        }
         const said =
           res.status >= 300 && res.status < 400
             ? redirectHint(res.headers.get("location"), url)
-            : reasonOf(text);
+            : reasonOf(text ?? "");
         const reason = said === undefined ? undefined : hide(said).slice(0, DETAIL_MAX);
         err = failure(
           kindOfStatus(res.status),
@@ -289,6 +335,11 @@ export function createGitlabClient(opts: ClientOptions): GitlabClient {
       const m = method.toUpperCase();
       const url = urlFor(path, o.query);
       return parse(m, url, await send(m, url, o.body, o.redact)) as T;
+    },
+
+    async download(path: string, o: { maxBytes: number }) {
+      const r = await send("GET", urlFor(path), undefined, [], o.maxBytes);
+      return r.tooLarge ? { tooLarge: true as const } : { text: r.text };
     },
 
     async *paginate<T>(path: string, query: Query = {}) {

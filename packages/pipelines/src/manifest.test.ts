@@ -162,6 +162,13 @@ describe("manifest", () => {
     expect(problems({ ...valid, ...only({ type: "boolean" }) })).toEqual([]);
   });
 
+  test("secretDetection is the platform's own switch (SCAN-5): a template cannot declare it", () => {
+    const params = { type: "object", properties: { secretDetection: { type: "boolean" } } };
+    expect(problems({ ...valid, params })).toEqual([
+      "params.properties.secretDetection: is the platform's own parameter",
+    ]);
+  });
+
   test("a string needs an enum or a pattern, either one", () => {
     expect(problems({ ...valid, ...only({ type: "string" }) })).toEqual([
       "params.properties.x.pattern: a string needs an enum or a pattern: it ends up in a script",

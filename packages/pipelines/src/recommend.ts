@@ -51,3 +51,27 @@ export function recommend(
       (a, b) => SURER[a.confidence] - SURER[b.confidence] || (a.template < b.template ? -1 : 1),
     );
 }
+
+/** Runner executors that start a container: GitLab's secret detection runs in an analyzer image. */
+const CONTAINER_EXECUTORS = ["docker", "docker+machine", "docker-autoscaler", "kubernetes"];
+
+/**
+ * What to tell a project that switches secret detection on (SCAN-5). It is a warning, never a failure:
+ * the platform cannot see the project's runners' executors (`executors` left out: GitLab's runner API does
+ * not report one), and a runner it cannot see may well run containers.
+ */
+export function secretDetectionWarnings(o: {
+  secretDetection?: boolean;
+  /** The executors of the project's runners, when they are known. */
+  executors?: readonly string[];
+}): string[] {
+  if (!o.secretDetection) return [];
+  const needs = `GitLab's secret detection runs in a container, so it needs a runner with the ${CONTAINER_EXECUTORS.join(", ")} executor.`;
+  if (o.executors === undefined)
+    return [
+      `The project's runners are not known, so it is not known whether one can run it. ${needs}`,
+    ];
+  if (o.executors.some((e) => CONTAINER_EXECUTORS.includes(e))) return [];
+  const have = [...new Set(o.executors)].sort().join(", ");
+  return [`None of the project's runners can run it (${have || "it has none"}). ${needs}`];
+}

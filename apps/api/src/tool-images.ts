@@ -1,4 +1,4 @@
-import type { Tool } from "@orch/iac";
+import type { Platform, Tool } from "@orch/iac";
 import { z } from "zod";
 
 /**
@@ -24,3 +24,16 @@ export const toolImages = (
       ] as const
     ).filter(([, repository]) => repository !== undefined),
   );
+
+/**
+ * Where the platform is, for the jobs an apply starts (a stack whose state is on the platform signs in to it, STATE-5):
+ * both the address CI jobs reach the API at and the audience of their token, or nothing. A trailing slash is the
+ * usual way to write an address; the generator wants none.
+ */
+export const platformOf = (
+  apiUrl: string | undefined,
+  audience: string | undefined,
+): Platform | undefined =>
+  apiUrl !== undefined && audience !== undefined
+    ? { apiUrl: apiUrl.replace(/\/+$/, ""), audience }
+    : undefined;

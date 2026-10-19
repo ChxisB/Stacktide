@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
 import type { Executor, Page } from "./repo";
-import { apiTokens, cliLogins, sessions, users } from "./schema";
+import { apiTokens, cliLogins, sessions, userIdentities, users } from "./schema";
 
 export type User = typeof users.$inferSelect;
 export type ApiToken = typeof apiTokens.$inferSelect;
@@ -26,11 +26,11 @@ export function checkHash(tokenHash: string) {
     throw new AuthStoreError("tokenHash must be a SHA-256 hex digest");
 }
 
-/** Creates the user on first sign-in; later sign-ins refresh the name and the login time. */
+/** Creates the user, and its `gitlab` identity, on first sign-in; later sign-ins refresh the name and the login time. */
 export async function upsertUser(
   db: Executor,
   input: { gitlabId: number; username: string; name: string },
-): Promise<User> {
+): Promise<User & { gitlabId: number }> {
   const [row] = await db
     .insert(users)
     .values(input)
@@ -40,7 +40,11 @@ export async function upsertUser(
     })
     .returning();
   if (!row) throw new Error("upsert returned no row");
-  return row;
+  await db
+    .insert(userIdentities)
+    .values({ userId: row.id, provider: "gitlab", subject: String(input.gitlabId) })
+    .onConflictDoNothing();
+  return { ...row, gitlabId: input.gitlabId };
 }
 
 /**

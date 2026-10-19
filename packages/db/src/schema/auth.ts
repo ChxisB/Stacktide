@@ -12,10 +12,14 @@ import { id, timestamps } from "./columns";
 import { environments } from "./environments";
 import { projects } from "./projects";
 
-/** A person who signed in with GitLab. Roles and org membership come with AUTH-2/3, not here. */
+/**
+ * A person. Their ways of signing in are `user_identities` (ADR-0016). `gitlab_id` is the GitLab one, and null
+ * for a person who only signs in through an organization's identity provider; roles for such a person come
+ * from that provider's role map, not from GitLab.
+ */
 export const users = pgTable("users", {
   id: id(),
-  gitlabId: bigint({ mode: "number" }).notNull().unique("users_gitlab_id_key"),
+  gitlabId: bigint({ mode: "number" }).unique("users_gitlab_id_key"),
   username: text().notNull(),
   name: text().notNull(),
   lastLoginAt: timestamp({ withTimezone: true }).notNull().defaultNow(),

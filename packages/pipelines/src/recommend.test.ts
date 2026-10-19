@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { detectProjectTypes } from "@orch/core";
 import { loadTemplates, type Template } from "./loader";
-import { newest, recommend } from "./recommend";
+import { newest, recommend, secretDetectionWarnings } from "./recommend";
 
 const catalog = await loadTemplates();
 const of = (...paths: string[]) => recommend(detectProjectTypes(paths), catalog);
@@ -100,5 +100,41 @@ describe("newest", () => {
       "mid@2.0.0",
       "zed@1.0.0",
     ]);
+  });
+});
+
+describe("secretDetectionWarnings (SCAN-5)", () => {
+  test("with the scan off there is nothing to say, whatever the runners are", () => {
+    expect(secretDetectionWarnings({ secretDetection: false, executors: ["shell"] })).toEqual([]);
+    expect(secretDetectionWarnings({ secretDetection: false })).toEqual([]);
+  });
+
+  test("runners that are not known are a warning that says so, not a failure", () => {
+    const [w, ...more] = secretDetectionWarnings({ secretDetection: true });
+    expect(more).toEqual([]);
+    expect(w).toContain("not known");
+    expect(w).toContain("docker");
+  });
+
+  test.each([["docker"], ["docker+machine"], ["docker-autoscaler"], ["kubernetes"]])(
+    "a %s runner can run it",
+    (executor) => {
+      expect(
+        secretDetectionWarnings({ secretDetection: true, executors: ["shell", executor] }),
+      ).toEqual([]);
+    },
+  );
+
+  test("runners that are known and none of them runs containers: a warning that names what they are", () => {
+    const [w, ...more] = secretDetectionWarnings({
+      secretDetection: true,
+      executors: ["shell", "ssh", "shell"],
+    });
+    expect(more).toEqual([]);
+    expect(w).toContain("shell, ssh");
+  });
+
+  test("a project with no runner at all is the same warning: nothing can run it", () => {
+    expect(secretDetectionWarnings({ secretDetection: true, executors: [] })).toHaveLength(1);
   });
 });

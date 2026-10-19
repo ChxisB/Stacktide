@@ -13,6 +13,7 @@ import {
   listRuns,
   moveRunStack,
   recordStackJobs,
+  runPipelines,
   setEnvironmentProtection,
   WEBHOOK_QUEUE,
 } from "@orch/db";
@@ -436,6 +437,38 @@ describe("orch apply", () => {
     await w.say("orch apply net", MAINT);
     expect(w.replies().at(-1)).toBe("Apply started for `net`.");
     expect(await w.states()).toEqual({ app: "planned", net: "applying" });
+  });
+
+  test("a stack whose state is on the platform is applied by the command with the platform's address (STATE-5)", async () => {
+    const w = await world(TERRAFORM, {
+      ...FILES,
+      "stacks/net/stack.yml": `${FILES["stacks/net/stack.yml"]}state: orch\n`,
+    });
+    const images = { terraform: "ghcr.io/example/terraform-orch" };
+    const withImages = mrCommandHandler({
+      db: t.db,
+      gitlab: async () => client(),
+      roles,
+      images, // the worker gives both: the plan reads the config's, the apply the handler's
+      config: { ...config, images },
+    });
+    await withImages(w.note("orch plan", DEV));
+    await w.planned();
+    w.forget();
+    await withImages(w.note("orch apply net", MAINT));
+    expect(await w.states()).toEqual({ app: "planned", net: "applying" });
+    const run = await w.latest();
+    const [pipeline] = await t.db
+      .select()
+      .from(runPipelines)
+      .where(and(eq(runPipelines.runId, run?.id as string), eq(runPipelines.action, "apply")));
+    const yaml = mock.pipelineVariables(pipeline?.gitlabPipelineId as number)?.[0]?.value ?? "";
+    const jobs = Bun.YAML.parse(yaml) as Record<
+      string,
+      { script: string[]; variables: Record<string, string> }
+    >;
+    expect(jobs["apply:net"]?.script).toContain('login="$(orch ci login --state)"');
+    expect(jobs["apply:net"]?.variables.ORCH_API_URL).toBe("https://orch.example.com");
   });
 
   test("whatever else refuses an apply is said in the reply", async () => {

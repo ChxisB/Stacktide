@@ -232,6 +232,118 @@
       "when": 1792327240148,
       "tag": "0032_audit_forwarding",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1792366583149,
+      "tag": "0033_pipeline_component_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1792369929507,
+      "tag": "0034_run_stack_cost",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1792370217641,
+      "tag": "0035_cost_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1792371945425,
+      "tag": "0036_run_stack_tags",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1792394130739,
+      "tag": "0037_variable_rotations",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1792395319181,
+      "tag": "0038_rotation_failing_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1792398644286,
+      "tag": "0039_secret_leases",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1792402483020,
+      "tag": "0040_secret_findings",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1792403964895,
+      "tag": "0041_secret_gate",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1792406001633,
+      "tag": "0042_worker_pools",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1792409540526,
+      "tag": "0043_identities",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1792412068468,
+      "tag": "0044_sso_memberships",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1792417091393,
+      "tag": "0045_sso_memberships_provider_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1792418160617,
+      "tag": "0046_state_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1792419769779,
+      "tag": "0047_state_locks",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1792421391496,
+      "tag": "0048_state_resources",
+      "breakpoints": true
     }
   ]
 }

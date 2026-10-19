@@ -56,7 +56,7 @@ export const notificationSinks = pgTable(
 );
 
 /**
- * A project asking a sink to hear of an event (`stack.drift`). One row per sink, project and event;
+ * A project asking a sink to hear of an event (`stack.drift`, `rotation.failing`). One row per sink, project and event;
  * both foreign keys carry the organization, so a project can only use its own organization's sinks.
  */
 export const notificationSubscriptions = pgTable(
@@ -83,7 +83,10 @@ export const notificationSubscriptions = pgTable(
       columns: [t.projectId, t.organizationId],
       foreignColumns: [projects.id, projects.organizationId],
     }).onDelete("cascade"),
-    check("notification_subscriptions_event_check", sql`${t.event} in ('stack.drift')`),
+    check(
+      "notification_subscriptions_event_check",
+      sql`${t.event} in ('stack.drift', 'rotation.failing')`,
+    ),
   ],
 );
 

@@ -9,7 +9,9 @@ import {
   DRIFT_CHECK_QUEUE,
   DRIFT_TICK_QUEUE,
   describeError,
+  LEASE_SWEEP_QUEUE,
   NOTIFY_QUEUE,
+  ROTATION_TICK_QUEUE,
   STACK_DRIFT_CHECK_QUEUE,
   STACK_DRIFT_TICK_QUEUE,
   upsertSchedule,
@@ -22,17 +24,20 @@ import { auditPurgeHandler } from "./audit-purge";
 import { rolesFromEnv } from "./auth-config";
 import { changeRequestExpireHandler } from "./change-request-expire";
 import { guardrailEnv, guardrailsOf } from "./guardrails";
+import { leaseSweepHandler } from "./lease";
 import { mrCommandHandler } from "./mr-commands";
 import { mrPlanHandler } from "./mr-plan";
 import { notifyDeliverHandler } from "./notify";
 import { pipelineEventHandler, workerGitlab } from "./pipeline-runs";
+import { rotationTickHandler } from "./rotation-tick";
+import { builtInLeasers, builtInRotators } from "./rotators";
 import { mrApplyHandler } from "./run-apply";
 import { runEventHandler } from "./run-ingest";
 import { stackDriftCheckHandler, stackDriftTickHandler } from "./stack-drift";
 import { SYNC_APPLY, syncApplyHandler } from "./sync-apply";
 import { syncAutoHandler } from "./sync-auto";
 import { driftCheckHandler, driftTickHandler } from "./sync-drift";
-import { toolImageEnv, toolImages } from "./tool-images";
+import { platformOf, toolImageEnv, toolImages } from "./tool-images";
 import { chain, createWorker, type JobHandler } from "./worker";
 
 const config = loadConfig(
@@ -53,6 +58,8 @@ const config = loadConfig(
       ORCH_HELPER_IMAGE: z.string().min(1).optional(),
       /** POL-3: the helper's tools and `conftest`, for the summary job of a stack that policy judges. Without it such a stack is not planned. */
       ORCH_POLICY_IMAGE: z.string().min(1).optional(),
+      /** COST-4: `infracost` and `jq`, for the estimate job of a stack a cost limit reaches. Without it nothing is estimated and such a stack's apply is denied. */
+      ORCH_COST_IMAGE: z.string().min(1).optional(),
       /**
        * `orch plan` / `orch apply` in a merge request note (IAC-9) are run as the person who wrote them, with
        * the roles their GitLab membership gives: the API's two settings for that. Without them nobody holds a
@@ -98,6 +105,13 @@ const config = loadConfig(
         .max(3600)
         .refine((n) => n === 0 || n >= 10, "0 (off) or at least 10")
         .default(30),
+      /** How often secrets due for rotation are rotated and replaced credentials past their grace are revoked (ROT-4); 0 switches rotation off. */
+      ROTATION_CHECK_SECONDS: z.coerce
+        .number()
+        .int()
+        .max(86_400)
+        .refine((n) => n === 0 || n >= 60, "0 (off) or at least 60")
+        .default(300),
     })
     .and(awsEnv),
 );
@@ -157,6 +171,33 @@ if (keys) {
     queue: AUDIT_FORWARD_QUEUE,
     enabled: config.AUDIT_FORWARD_SECONDS > 0,
   });
+  // ROT-4: rotating opens and writes secrets, so it needs the keys; off means off, with no handler for a job that is already waiting
+  if (config.ROTATION_CHECK_SECONDS > 0) {
+    handlers[ROTATION_TICK_QUEUE] = rotationTickHandler({
+      db,
+      keys,
+      logger,
+      rotators: builtInRotators({ db, keys, logger }),
+    });
+  }
+  await upsertSchedule(db, {
+    name: "rotation.tick",
+    intervalSeconds: config.ROTATION_CHECK_SECONDS || 300,
+    queue: ROTATION_TICK_QUEUE,
+    enabled: config.ROTATION_CHECK_SECONDS > 0,
+  });
+  // ROT-10: a lease is a live token, so ending it on time does not depend on whether rotation is on
+  handlers[LEASE_SWEEP_QUEUE] = leaseSweepHandler({
+    db,
+    leasers: builtInLeasers({ db, keys, logger }),
+    logger,
+  });
+  await upsertSchedule(db, {
+    name: "lease.sweep",
+    intervalSeconds: 60,
+    queue: LEASE_SWEEP_QUEUE,
+    enabled: true,
+  });
   // one queue, five consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
   // belongs to (IAC-6); a merge request event plans the merge request (IAC-7), and its merge applies
   // the stacks that opted in (IAC-8, which needs no setting of its own: no plan, no run to apply); a
@@ -177,7 +218,7 @@ if (keys) {
   const consumers = [
     pipelineEventHandler(gitlab),
     runEventHandler(gitlab),
-    mrApplyHandler({ ...gitlab, images }),
+    mrApplyHandler({ ...gitlab, images, platform: platformOf(apiUrl, audience) }),
   ];
   // a trailing slash is the usual way to write an address; the generator wants none
   const mr =
@@ -187,6 +228,7 @@ if (keys) {
           audience,
           helperImage,
           policyImage: config.ORCH_POLICY_IMAGE,
+          costImage: config.ORCH_COST_IMAGE,
           images,
         }
       : undefined;

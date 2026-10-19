@@ -7,6 +7,8 @@ export interface CiJob {
   /** Null when the exchange's claims carried no job id. */
   gitlabJobId: number | null;
   ref: string;
+  /** When the CI token ends: nothing it makes may outlive it. */
+  expiresAt: Date;
 }
 
 /**

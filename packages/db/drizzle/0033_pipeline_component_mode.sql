@@ -1,0 +1,4 @@
+ALTER TABLE "pipeline_configs" DROP CONSTRAINT "pipeline_configs_mode_check";--> statement-breakpoint
+ALTER TABLE "pipeline_configs" DROP CONSTRAINT "pipeline_configs_include_check";--> statement-breakpoint
+ALTER TABLE "pipeline_configs" ADD CONSTRAINT "pipeline_configs_mode_check" CHECK ("pipeline_configs"."mode" in ('inline', 'include', 'component'));--> statement-breakpoint
+ALTER TABLE "pipeline_configs" ADD CONSTRAINT "pipeline_configs_include_check" CHECK (("pipeline_configs"."mode" in ('include', 'component')) = ("pipeline_configs"."include_project" is not null) and ("pipeline_configs"."include_ref" is null or "pipeline_configs"."include_project" is not null) and ("pipeline_configs"."mode" <> 'component' or "pipeline_configs"."include_ref" is not null));

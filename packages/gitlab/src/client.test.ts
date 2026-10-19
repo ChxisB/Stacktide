@@ -581,3 +581,77 @@ describe("rate limit samples", () => {
     expect(JSON.stringify(gitlabRateLimits())).not.toMatch(/secret-thing|leak|glpat/);
   });
 });
+
+describe("downloads", () => {
+  test("a file is read as text, not parsed, with the same credentials", async () => {
+    const s = setup(() => new Response("not json {"));
+    expect(
+      await s.client.download("/projects/1/jobs/2/artifacts/r.json", { maxBytes: 100 }),
+    ).toEqual({
+      text: "not json {",
+    });
+    expect(s.seen[0]?.headers.get("private-token")).toBe(TOKEN);
+  });
+
+  test("a file longer than the cap is refused from its declared length, and one of unknown length is cut off at the cap", async () => {
+    const declared = setup(() => new Response("x".repeat(50)));
+    expect(
+      await declared.client.download("/projects/1/jobs/2/artifacts/r.json", { maxBytes: 10 }),
+    ).toEqual({ tooLarge: true });
+
+    // chunked: no length to go by, so the bytes are counted as they arrive
+    let sent = 0;
+    const chunked = setup(
+      () =>
+        new Response(
+          new ReadableStream({
+            pull(c) {
+              sent += 8;
+              c.enqueue(new TextEncoder().encode("x".repeat(8)));
+              if (sent >= 8_000_000) c.close();
+            },
+          }),
+        ),
+    );
+    expect(
+      await chunked.client.download("/projects/1/jobs/2/artifacts/r.json", { maxBytes: 10 }),
+    ).toEqual({ tooLarge: true });
+    // it stopped reading long before the end of a very long body
+    expect(sent).toBeLessThan(8_000_000);
+    // a file exactly at the cap is read
+    const exact = setup(() => new Response("x".repeat(10)));
+    expect(
+      await exact.client.download("/projects/1/jobs/2/artifacts/r.json", { maxBytes: 10 }),
+    ).toEqual({ text: "x".repeat(10) });
+  });
+
+  test("a character split between two chunks is still one character", async () => {
+    // "é" is two bytes; the stream cuts between them
+    const bytes = new TextEncoder().encode("café ok");
+    const split = setup(
+      () =>
+        new Response(
+          new ReadableStream({
+            async start(c) {
+              c.enqueue(bytes.slice(0, 4));
+              // a gap, or the server sends both as one
+              await Bun.sleep(30);
+              c.enqueue(bytes.slice(4));
+              c.close();
+            },
+          }),
+        ),
+    );
+    expect(
+      await split.client.download("/projects/1/jobs/2/artifacts/r.json", { maxBytes: 100 }),
+    ).toEqual({ text: "café ok" });
+  });
+
+  test("a failure is a GitlabError as for any request, whatever the cap", async () => {
+    const s = setup(() => json({ message: "404 Not Found" }, { status: 404 }));
+    const e = await caught(
+      s.client.download("/projects/1/jobs/2/artifacts/r.json", { maxBytes: 10 }),
+    );
+    expect(e.kind).toBe("not_found");
+  });
+});

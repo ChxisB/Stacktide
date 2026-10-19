@@ -7,6 +7,7 @@ import { createMockGitlab } from "@orch/gitlab/mock";
 import { parse } from "yaml";
 import {
   type ApplyInput,
+  COST_FILTER,
   GenerateError,
   generatePipeline,
   PLAN_RETENTION_MS,
@@ -14,6 +15,7 @@ import {
   SUMMARY_FILTER,
 } from "./pipeline-gen";
 import { POLICY_FILTER, type PolicySet } from "./policy";
+import type { PoolRef } from "./pool";
 import type { Stack } from "./scan";
 
 const stack = (name: string, over: Partial<Stack> = {}): Stack => ({
@@ -374,6 +376,242 @@ describe("a stack with an environment gets its variables as TF_VAR_* (IAC-11)", 
   });
 });
 
+describe("a stack whose state is on the platform (STATE-5)", () => {
+  // the tool image holds orch as well: a job signs in and reads the state through it
+  const images = {
+    terraform: "registry.example.com/platform/terraform-orch",
+    tofu: "registry.example.com/platform/tofu-orch",
+  };
+  const platform = { apiUrl: "https://orch.example.com", audience: "orch.example.com" };
+  const stacks = [
+    stack("db", { state: "orch" }),
+    stack("net", { state: "gitlab" }),
+    stack("plain"),
+  ];
+  const select = ["db", "net", "plain"];
+  const planOf = (over: Partial<PlanInput> = {}) =>
+    generatePipeline(plan({ stacks, select, images, ...over }));
+  const applyOf = (over: Partial<ApplyInput> = {}) =>
+    generatePipeline(
+      apply({ stacks, select, images, platform, planJobs: { db: 1, net: 2, plain: 3 }, ...over }),
+    );
+  const STATE_LOGIN = ['login="$(orch ci login --state)"', 'eval "$login"'];
+  const ADDRESS = "$ORCH_API_URL/organizations/$ORCH_ORG/projects/$ORCH_PROJECT/state/db";
+  const SETTINGS = `export TF_HTTP_ADDRESS="${ADDRESS}" TF_HTTP_USERNAME=ci TF_HTTP_PASSWORD="$ORCH_STATE_TOKEN"`;
+  const LOCKS =
+    'export TF_HTTP_LOCK_ADDRESS="$TF_HTTP_ADDRESS/lock" TF_HTTP_LOCK_METHOD=POST TF_HTTP_UNLOCK_ADDRESS="$TF_HTTP_ADDRESS/lock" TF_HTTP_UNLOCK_METHOD=DELETE';
+
+  test("snapshot: a plan and an apply with one stack of each kind", () => {
+    expect(planOf()).toMatchSnapshot();
+    expect(applyOf()).toMatchSnapshot();
+  });
+
+  test("its plan job signs in for the state, reads it with a read-only token and never locks", () => {
+    const job = jobsOf(planOf())["plan:db"] as Job;
+    expect(job.script).toEqual([
+      "cd stacks/db",
+      ...STATE_LOGIN,
+      SETTINGS,
+      "terraform init -input=false",
+      "terraform plan -input=false -lock=false -out=plan.tfplan",
+      "terraform show -json plan.tfplan > plan.json",
+    ]);
+    // GitLab's settings are not there: the job token is not the state's credential
+    expect(job.variables).toEqual({ ORCH_API_URL: "https://orch.example.com" });
+    expect(job.id_tokens).toEqual({ ORCH_ID_TOKEN: { aud: "orch.example.com" } });
+    expect(job.image.name).toBe("registry.example.com/platform/terraform-orch:1.9.8");
+    // the token ends with the job, and the job with it
+    expect(job.timeout).toBe("1h");
+  });
+
+  test("its apply job takes the lock with POST and DELETE, for as long as the job's token lives", () => {
+    const job = jobsOf(applyOf())["apply:db"] as Job;
+    expect(job.script.slice(0, 5)).toEqual(["cd stacks/db", ...STATE_LOGIN, SETTINGS, LOCKS]);
+    expect(job.script).toContain("terraform apply -input=false -lock-timeout=5m plan.tfplan");
+    expect(job.variables).toEqual({ ORCH_API_URL: "https://orch.example.com" });
+    expect(job.id_tokens).toEqual({ ORCH_ID_TOKEN: { aud: "orch.example.com" } });
+    expect(job.timeout).toBe("1h");
+  });
+
+  test("a stack that says gitlab, or nothing, is exactly what it was, byte for byte", () => {
+    const only = (state: Stack["state"]) => [stack("db", { ...(state ? { state } : {}) })];
+    const gen = (state: Stack["state"]) => ({
+      plan: generatePipeline(plan({ stacks: only(state), select: ["db"] })),
+      apply: generatePipeline(apply({ stacks: only(state), select: ["db"], planJobs: { db: 1 } })),
+    });
+    expect(gen("gitlab")).toEqual(gen(undefined));
+    const job = jobsOf(gen("gitlab").apply)["apply:db"] as Job;
+    expect(job.variables.TF_HTTP_PASSWORD).toBe("$CI_JOB_TOKEN");
+    expect(job).not.toHaveProperty("timeout");
+    expect(job.script.join("\n")).not.toContain("orch");
+    // and beside a platform stack the others keep their own settings, with no sign-in
+    const jobs = jobsOf(planOf());
+    for (const name of ["plan:net", "plan:plain"]) {
+      const j = jobs[name] as Job;
+      expect(j.variables.TF_HTTP_USERNAME).toBe("gitlab-ci-token");
+      expect(j).not.toHaveProperty("timeout");
+      expect(j).not.toHaveProperty("id_tokens");
+      expect(j.script.join("\n")).not.toContain("orch");
+    }
+  });
+
+  test("a stack with an environment signs in twice: for its variables, then for its state", () => {
+    const both = [stack("db", { state: "orch", environment: "staging" })];
+    const job = jobsOf(planOf({ stacks: both, select: ["db"] }))["plan:db"] as Job;
+    expect(job.script).toEqual([
+      "cd stacks/db",
+      'login="$(orch ci login)"',
+      'eval "$login"',
+      ...STATE_LOGIN,
+      SETTINGS,
+      "orch run --prefix TF_VAR_ -- terraform init -input=false",
+      "orch run --prefix TF_VAR_ -- terraform plan -input=false -lock=false -out=plan.tfplan",
+      "orch run --prefix TF_VAR_ -- terraform show -json plan.tfplan > plan.json",
+    ]);
+    expect(job.environment).toEqual({ name: "staging", action: "access" });
+    expect(job.id_tokens).toEqual({ ORCH_ID_TOKEN: { aud: "orch.example.com" } });
+  });
+
+  test("a stack at the root of the repository signs in with no cd, and the cloud's tokens stay beside the platform's", () => {
+    const root = [stack("root", { state: "orch", path: "." })];
+    const jobs = jobsOf(
+      planOf({ stacks: root, select: ["root"], cloudTokens: { AWS_ID_TOKEN: "sts" } }),
+    );
+    const job = jobs["plan:root"] as Job;
+    expect(job.script[0]).toBe(STATE_LOGIN[0] as string);
+    expect(job.id_tokens).toEqual({
+      AWS_ID_TOKEN: { aud: "sts" },
+      ORCH_ID_TOKEN: { aud: "orch.example.com" },
+    });
+  });
+
+  test("terragrunt, whose backend is not read, is wired the same way; another backend or none is left alone", () => {
+    const grunt = stack("g", {
+      state: "orch",
+      tool: "terragrunt",
+      version: "0.67.0",
+      backend: "unchecked",
+    });
+    const other = stack("o", { state: "orch", backend: "other" });
+    const none = stack("n", { state: "orch", backend: "none" });
+    const jobs = jobsOf(
+      planOf({
+        stacks: [grunt, other, none],
+        select: ["g", "o", "n"],
+        images: { ...images, terragrunt: "registry.example.com/tg-orch" },
+      }),
+    );
+    expect((jobs["plan:g"] as Job).script).toContain(
+      "terragrunt plan -input=false -lock=false -out=plan.tfplan",
+    );
+    for (const name of ["plan:o", "plan:n"]) {
+      const j = jobs[name] as Job;
+      expect(j.script.join("\n")).not.toContain("orch");
+      expect(j.variables).toBeUndefined();
+      expect(j).not.toHaveProperty("timeout");
+    }
+  });
+
+  test("the token and the state's address are references the job resolves: no value is in the pipeline", () => {
+    for (const yaml of [planOf(), applyOf()]) {
+      expect(yaml).not.toMatch(/eyJ[A-Za-z0-9_-]{10,}/);
+      expect(yaml).not.toContain("ORCH_STATE_TOKEN=");
+      expect(yaml).toContain('TF_HTTP_PASSWORD="$ORCH_STATE_TOKEN"');
+    }
+    // the stack on the platform never hands out the GitLab job token as the state's password (the plan artifact is fetched with it, which is another line)
+    const job = jobsOf(applyOf())["apply:db"] as Job;
+    const settings = job.script.filter((line: string) => line.startsWith("export TF_HTTP"));
+    expect(settings).toHaveLength(2);
+    expect(settings.join("\n")).not.toContain("CI_JOB_TOKEN");
+    expect(settings.join("\n")).not.toContain("gitlab-ci-token");
+    expect(job.variables).not.toHaveProperty("TF_HTTP_PASSWORD");
+  });
+
+  test("structural: every tool job of a stack on the platform signs in, has the id_token and ends within the token", () => {
+    const all = { ...jobsOf(planOf()), ...jobsOf(applyOf()) };
+    const mine = Object.entries(all).filter(([name]) => /^(plan|apply):db$/.test(name));
+    expect(mine.map(([name]) => name).sort()).toEqual(["apply:db", "plan:db"]);
+    for (const [name, job] of mine) {
+      expect(job.script, name).toContain('login="$(orch ci login --state)"');
+      expect(job.script, name).toContain(SETTINGS);
+      expect(job.id_tokens, name).toHaveProperty("ORCH_ID_TOKEN");
+      expect(job.variables, name).toHaveProperty("ORCH_API_URL");
+      expect(job.timeout, name).toBe("1h");
+    }
+  });
+
+  test("the stock image has no orch: until the tool has an image that holds it, the pipeline is refused", () => {
+    const stock = [stack("db", { state: "orch" })];
+    expect(
+      failure(() => generatePipeline(plan({ stacks: stock, select: ["db"] }))).problems,
+    ).toEqual([
+      'stack "db" keeps its state on the platform, so its jobs run orch: pass images.terraform (an image with terraform and orch)',
+    ]);
+    expect(
+      failure(() =>
+        generatePipeline(apply({ stacks: stock, select: ["db"], planJobs: { db: 1 }, platform })),
+      ).problems,
+    ).toEqual([
+      'stack "db" keeps its state on the platform, so its jobs run orch: pass images.terraform (an image with terraform and orch)',
+    ]);
+    // a pool's image stands in for it, as for an environment
+    const pool: PoolRef = {
+      name: "p",
+      tags: ["t"],
+      image: "registry.example.com/p:1",
+      enabled: true,
+      isDefault: false,
+    };
+    expect(() =>
+      generatePipeline(
+        plan({
+          stacks: [stack("db", { state: "orch", pool: "p" })],
+          select: ["db"],
+          pools: [pool],
+        }),
+      ),
+    ).not.toThrow();
+    // a stack on GitLab's state is not asked for one
+    expect(() => generatePipeline(plan({ stacks: [stack("db")], select: ["db"] }))).not.toThrow();
+  });
+
+  test("an apply says where the platform is, or is refused: it has nowhere to sign in", () => {
+    const e = failure(() => applyOf({ platform: undefined }));
+    expect(e.problems).toEqual([
+      'stack "db" keeps its state on the platform, so its jobs sign in: pass platform (apiUrl and audience)',
+    ]);
+    // a stack on GitLab's state needs none
+    expect(() =>
+      generatePipeline(apply({ stacks: [stack("net")], select: ["net"], planJobs: { net: 1 } })),
+    ).not.toThrow();
+    for (const bad of [
+      { apiUrl: "https://orch.example.com/", audience: "orch.example.com" },
+      { apiUrl: 'https://o"; id; "', audience: "orch.example.com" },
+      { apiUrl: "https://orch.example.com", audience: "" },
+      { apiUrl: "https://orch.example.com", audience: "has space" },
+    ]) {
+      expect(() => applyOf({ platform: bad }), JSON.stringify(bad)).toThrow(GenerateError);
+    }
+  });
+
+  test("lint accepts a plan and an apply with a stack on the platform", async () => {
+    const mock = createMockGitlab();
+    const project = mock.addProject({ path: "acme/infra", defaultBranch: "main", files: {} });
+    const gitlab = createGitlab({
+      baseUrl: mock.url,
+      auth: { type: "private-token", token: mock.token },
+      maxRetries: 0,
+    });
+    try {
+      for (const yaml of [planOf(), applyOf()]) {
+        expect(await gitlab.ci.lint(project.id, yaml)).toMatchObject({ valid: true, errors: [] });
+      }
+    } finally {
+      mock.stop();
+    }
+  });
+});
+
 describe("the output is a pipeline GitLab accepts", () => {
   const stops: Array<() => void> = [];
   afterEach(() => {
@@ -417,6 +655,258 @@ describe("the output is a pipeline GitLab accepts", () => {
     });
     const broken = generatePipeline(plan()).replaceAll("script:", "scrip:");
     expect((await gitlab.ci.lint(project.id, broken)).valid).toBe(false);
+  });
+});
+
+describe("worker pools in a pipeline (POOL-3)", () => {
+  const pool = (name: string, over: Partial<PoolRef> = {}): PoolRef => ({
+    name,
+    tags: [`${name}-runner`, "docker"],
+    image: null,
+    enabled: true,
+    isDefault: false,
+    ...over,
+  });
+  const prod = pool("prod");
+  const stacks = [
+    stack("net", { pool: "prod" }),
+    stack("db", { dependsOn: ["net"], tags: ["prod"], pool: "prod" }),
+    stack("plain", { dependsOn: ["net"] }),
+  ];
+  const select = ["db", "net", "plain"];
+  const tagsOf = (yaml: string) =>
+    Object.fromEntries(Object.entries(jobsOf(yaml)).map(([name, job]) => [name, job.tags]));
+
+  test("snapshot", () => {
+    expect(
+      generatePipeline(
+        plan({ stacks, select, pools: [prod, pool("dev", { isDefault: true, image: "iac:2" })] }),
+      ),
+    ).toMatchSnapshot();
+  });
+
+  test("every job of a stack on a pool asks for its tags: the plan, its estimate and its summary, and an apply", () => {
+    const cost = { image: "registry.example.com/orch/ci-cost:1.0.0", stacks: ["db"] };
+    const yaml = generatePipeline(plan({ stacks, select, pools: [prod], cost }));
+    const want = ["prod-runner", "docker"];
+    // each job spells its tags out: no anchors or aliases
+    expect(yaml).not.toMatch(/^\s*\S+: [&*]\w+$/m);
+    expect(tagsOf(yaml)).toEqual({
+      "plan:db": want,
+      "estimate:db": want,
+      "summary:db": want,
+      "plan:net": want,
+      "summary:net": want,
+      "plan:plain": undefined,
+      "summary:plain": undefined,
+    });
+    const applied = generatePipeline(
+      apply({ stacks, select, planJobs: { db: 1, net: 2, plain: 3 }, pools: [prod] }),
+    );
+    expect(tagsOf(applied)).toEqual({
+      "apply:db": want,
+      "apply:net": want,
+      "apply:plain": undefined,
+    });
+  });
+
+  test("structural: every job of every kind carries its own stack's pool tags (a job added without them fails here)", () => {
+    // the environment stack needs an image of its own (the platform's login), so the pool brings one
+    const own = pool("prod", { image: "registry.example.com/team/iac:v1" });
+    const dev = pool("dev", { isDefault: true });
+    const all = [
+      stack("net", { pool: "prod" }),
+      stack("db", { dependsOn: ["net"], tags: ["prod"], pool: "prod", environment: "staging" }),
+      stack("plain", { dependsOn: ["net"] }),
+    ];
+    const select = ["db", "net", "plain"];
+    const want: Record<string, string[]> = { net: own.tags, db: own.tags, plain: dev.tags };
+    // every option that adds a step: the estimate, the platform login, and a policy set that judges `db`
+    const planned = generatePipeline(
+      plan({
+        stacks: all,
+        select,
+        pools: [own, dev],
+        cost: { image: "registry.example.com/orch/ci-cost:1.0.0", stacks: select },
+        policy: {
+          sets: [{ name: "rules", source: "platform/policies", ref: "v1", path: ".", tag: "prod" }],
+          image: "registry.example.com/orch/ci-policy:1.0.0",
+          path: "/runs/0b9e5bd2/policy-verdict",
+        },
+      }),
+    );
+    const applied = generatePipeline(
+      apply({ stacks: all, select, planJobs: { db: 1, net: 2, plain: 3 }, pools: [own, dev] }),
+    );
+    const jobs = { ...jobsOf(planned), ...jobsOf(applied) };
+    // the fixture reaches every kind of job there is: a new kind is a reason to look here
+    expect([...new Set(Object.keys(jobs).map((n) => n.split(":")[0]))].sort()).toEqual([
+      "apply",
+      "estimate",
+      "plan",
+      "summary",
+    ]);
+    // the policy step is in the summary job's script, so it runs where the summary's tags send it
+    expect(jobs["summary:db"]?.script.join("\n")).toContain("--policy");
+    for (const [name, job] of Object.entries(jobs)) {
+      expect([name, job.tags]).toEqual([name, want[name.slice(name.indexOf(":") + 1)]]);
+    }
+  });
+
+  test("a stack that names no pool gets the default's, and a stack that names one keeps its own", () => {
+    const dev = pool("dev", { isDefault: true });
+    const yaml = generatePipeline(plan({ stacks, select, pools: [prod, dev] }));
+    expect(tagsOf(yaml)["plan:plain"]).toEqual(["dev-runner", "docker"]);
+    expect(tagsOf(yaml)["plan:db"]).toEqual(["prod-runner", "docker"]);
+  });
+
+  test("no pool named and no default is exactly the pipeline as it was, byte for byte", () => {
+    const bare = [stack("net"), stack("db", { dependsOn: ["net"] })];
+    const without = generatePipeline(plan({ stacks: bare, select: ["db", "net"] }));
+    expect(generatePipeline(plan({ stacks: bare, select: ["db", "net"], pools: [] }))).toBe(
+      without,
+    );
+    // pools that nothing refers to and that are not the default change nothing either
+    expect(generatePipeline(plan({ stacks: bare, select: ["db", "net"], pools: [prod] }))).toBe(
+      without,
+    );
+    const applyWithout = generatePipeline(
+      apply({ stacks: bare, select: ["net"], planJobs: { net: 1 } }),
+    );
+    expect(
+      generatePipeline(
+        apply({ stacks: bare, select: ["net"], planJobs: { net: 1 }, pools: [prod] }),
+      ),
+    ).toBe(applyWithout);
+  });
+
+  test("the pool's image is the tool job's image as given, and the helper's images are not touched", () => {
+    const withImage = pool("img", { image: "registry.example.com/team/iac:v1" });
+    const yaml = generatePipeline(
+      plan({
+        stacks: [stack("net", { pool: "img" })],
+        select: ["net"],
+        pools: [withImage],
+      }),
+    );
+    const jobs = jobsOf(yaml);
+    expect(jobs["plan:net"]?.image).toEqual({
+      name: "registry.example.com/team/iac:v1",
+      entrypoint: [""],
+    });
+    expect(jobs["summary:net"]?.image.name).toBe("registry.example.com/orch/ci-helper:1.0.0");
+    // without an image the tool's own is used, as before
+    const plainPool = generatePipeline(
+      plan({ stacks: [stack("net", { pool: "prod" })], select: ["net"], pools: [prod] }),
+    );
+    expect(jobsOf(plainPool)["plan:net"]?.image.name).toBe("hashicorp/terraform:1.9.8");
+  });
+
+  test("a pool image stands in for the image the tool or the environment would otherwise need", () => {
+    const withImage = pool("img", { image: "registry.example.com/team/iac:v1" });
+    const needy = [
+      stack("env", { pool: "img", environment: "staging" }),
+      stack("tg", { pool: "img", tool: "terragrunt", version: "0.67.0" }),
+    ];
+    const yaml = generatePipeline(
+      plan({ stacks: needy, select: ["env", "tg"], pools: [withImage] }),
+    );
+    expect(jobsOf(yaml)["plan:env"]?.image.name).toBe("registry.example.com/team/iac:v1");
+    expect(jobsOf(yaml)["plan:tg"]?.image.name).toBe("registry.example.com/team/iac:v1");
+    // and without the pool's image the same stacks are refused, as before
+    const e = failure(() =>
+      generatePipeline(plan({ stacks: needy, select: ["env", "tg"], pools: [prod, pool("img")] })),
+    );
+    expect(e.problems).toHaveLength(2);
+  });
+
+  test("a pool that is not there or is switched off refuses the pipeline by name: never shared runners", () => {
+    const lost = [stack("a", { pool: "gone" }), stack("b", { pool: "off" }), stack("c")];
+    const e = failure(() =>
+      generatePipeline(
+        plan({ stacks: lost, select: ["a", "b", "c"], pools: [pool("off", { enabled: false })] }),
+      ),
+    );
+    expect(e.problems).toEqual([
+      'stack "a" names the worker pool "gone", which the organization does not have',
+      'stack "b" names the worker pool "off", which is disabled',
+    ]);
+    // a caller that passes no pools at all cannot run a stack that asks for one
+    expect(failure(() => generatePipeline(plan({ stacks: lost, select: ["a"] }))).problems).toEqual(
+      ['stack "a" names the worker pool "gone", which the organization does not have'],
+    );
+    expect(
+      failure(() => generatePipeline(apply({ stacks: lost, select: ["a"], planJobs: { a: 1 } })))
+        .problems,
+    ).toHaveLength(1);
+    // a default that is switched off does not send a stack with no pool to shared runners either
+    const odd = pool("odd", { enabled: false, isDefault: true });
+    expect(
+      failure(() => generatePipeline(plan({ stacks: [stack("c")], select: ["c"], pools: [odd] })))
+        .problems,
+    ).toEqual(['stack "c" uses the default worker pool "odd", which is disabled']);
+  });
+
+  test("only the stacks selected are judged: another stack's lost pool is not this pipeline's problem", () => {
+    const yaml = generatePipeline(
+      plan({ stacks: [stack("a", { pool: "gone" }), stack("c")], select: ["c"] }),
+    );
+    expect(Object.keys(jobsOf(yaml))).toEqual(["plan:c", "summary:c"]);
+  });
+
+  test("a pool with no tags, or tags and an image that could reach a job's configuration, is refused", () => {
+    const bad: [string, PoolRef][] = [
+      ["no tags", pool("p", { tags: [] })],
+      ["a variable", pool("p", { tags: ["$SECRET"] })],
+      ["a second tag in one", pool("p", { tags: ["a, b"] })],
+      ["a newline", pool("p", { tags: ["a\nscript: x"] })],
+      ["a leading dash", pool("p", { tags: ["-x"] })],
+      ["an empty tag", pool("p", { tags: [""] })],
+      ["an image with a variable", pool("p", { image: "$IMAGE" })],
+      ["an image with a space", pool("p", { image: "a b" })],
+      ["an image with credentials", pool("p", { image: "u:pw@registry.example.com/i" })],
+    ];
+    for (const [what, p] of bad) {
+      const e = failure(() =>
+        generatePipeline(plan({ stacks: [stack("a", { pool: "p" })], select: ["a"], pools: [p] })),
+      );
+      expect([what, e.problems.length]).toEqual([what, 1]);
+      expect(e.problems[0]).toContain('worker pool "p"');
+      // none of the offered value is repeated: a tag or image is not worth a log line
+      expect(e.message).not.toContain("SECRET");
+      expect(e.message).not.toContain("pw@");
+    }
+  });
+
+  test("a tag that YAML would read as another type stays a string", () => {
+    const odd = pool("odd", { tags: ["true", "123", "null", "1e3"] });
+    const yaml = generatePipeline(
+      plan({ stacks: [stack("a", { pool: "odd" })], select: ["a"], pools: [odd] }),
+    );
+    expect(jobsOf(yaml)["plan:a"]?.tags).toEqual(["true", "123", "null", "1e3"]);
+  });
+
+  test("lint accepts a pipeline with tags and a pool image", async () => {
+    const mock = createMockGitlab();
+    const project = mock.addProject({ path: "acme/infra", defaultBranch: "main", files: {} });
+    try {
+      const gitlab = createGitlab({
+        baseUrl: mock.url,
+        auth: { type: "private-token", token: mock.token },
+        maxRetries: 0,
+      });
+      const withImage = pool("img", { image: "registry.example.com/team/iac:v1" });
+      const yaml = generatePipeline(
+        plan({
+          stacks: [stack("a", { pool: "img" }), stack("b", { pool: "prod" })],
+          select: ["a", "b"],
+          pools: [withImage, prod],
+        }),
+      );
+      expect(await gitlab.ci.lint(project.id, yaml)).toMatchObject({ valid: true, errors: [] });
+    } finally {
+      mock.stop();
+    }
   });
 });
 
@@ -1252,4 +1742,383 @@ exit \${FAKE_CONFTEST_EXIT:-0}
       expect(r.posted).toBeUndefined();
     },
   );
+});
+
+describe("cost in a plan pipeline (COST-4)", () => {
+  const IMAGE = "registry.example.com/orch/ci-cost:1.0.0";
+  const stacks = [
+    stack("net"),
+    stack("db", { dependsOn: ["net"], tags: ["prod"] }),
+    stack("app", { dependsOn: ["db"], tags: ["prod"] }),
+  ];
+  const base = () => plan({ stacks, select: ["app", "db", "net"] });
+  const withCost = (over: Partial<NonNullable<PlanInput["cost"]>> = {}) =>
+    plan({
+      stacks,
+      select: ["app", "db", "net"],
+      cost: { image: IMAGE, stacks: ["app", "db"], ...over },
+    });
+
+  test("snapshot", () => {
+    expect(generatePipeline(withCost())).toMatchSnapshot();
+  });
+
+  test("a costed stack is estimated in a job of its own, between the plans and the summaries", () => {
+    const yaml = generatePipeline(withCost());
+    expect(stagesOf(yaml)).toEqual(["wave-0", "wave-1", "wave-2", "estimate", "summary"]);
+    const jobs = jobsOf(yaml);
+    expect(
+      Object.keys(jobs)
+        .filter((j) => j.startsWith("estimate:"))
+        .sort(),
+    ).toEqual(["estimate:app", "estimate:db"]);
+    const db = jobs["estimate:db"] as Job;
+    expect(db.stage).toBe("estimate");
+    expect(db.image).toEqual({ name: IMAGE, entrypoint: [""] });
+    expect(db.needs).toEqual([{ job: "plan:db", artifacts: true }]);
+    // an estimate is an extra: the job never fails the pipeline, and cost.json is how it says it has one
+    expect(db.allow_failure).toBe(true);
+    expect(db.artifacts.paths).toEqual(["cost.json"]);
+    const text = db.script.join("\n");
+    expect(text).toContain("infracost diff --path stacks/db/plan.json --format json");
+    expect(text).toContain('[ -n "$INFRACOST_API_KEY" ]');
+  });
+
+  test("the estimate job holds the runner's Infracost key and nothing of the platform's or the cloud's", () => {
+    const yaml = generatePipeline(withCost());
+    const jobs = jobsOf(yaml);
+    const job = jobs["estimate:db"] as Job;
+    expect(job.id_tokens).toBeUndefined();
+    expect(job.variables).toBeUndefined();
+    expect(job.script.join("\n")).not.toMatch(/ORCH_|CI_JOB_TOKEN/);
+    // the key is named in that job and no other; no value of it is anywhere
+    for (const [name, j] of Object.entries(jobs)) {
+      const mentions = JSON.stringify(j).includes("INFRACOST_API_KEY");
+      expect([name, mentions]).toEqual([name, name.startsWith("estimate:")]);
+    }
+  });
+
+  test("the summary of a costed stack waits for its estimate and posts it with the counts; the others are untouched", () => {
+    const without = jobsOf(generatePipeline(base()));
+    const jobs = jobsOf(generatePipeline(withCost()));
+    const db = jobs["summary:db"] as Job;
+    expect(needsOf(db)).toEqual(["plan:db", "estimate:db"]);
+    expect(db.needs[1]).toEqual({ job: "estimate:db", artifacts: true });
+    const text = db.script.join("\n");
+    expect(text).toContain("if [ -s cost.json ]");
+    expect(text).toContain("--slurpfile cost cost.json");
+    // the estimate is merged into the summary before it is posted
+    expect(text.indexOf("--slurpfile")).toBeLessThan(text.indexOf("--data @summary.json"));
+    expect(jobs["summary:net"]).toEqual(without["summary:net"]);
+    // plans are never touched
+    for (const n of ["app", "db", "net"]) expect(jobs[`plan:${n}`]).toEqual(without[`plan:${n}`]);
+    // and the summary job's own image is still the helper's (or the policy's), not the estimator's
+    expect(db.image.name).toBe("registry.example.com/orch/ci-helper:1.0.0");
+  });
+
+  test("no costed stack is a pipeline exactly as without cost, and needs no image", () => {
+    expect(generatePipeline(withCost({ stacks: [], image: "Not An Image" }))).toBe(
+      generatePipeline(base()),
+    );
+    // a stack that is not selected has no job
+    expect(generatePipeline(withCost({ stacks: ["queue", "ghost"], image: "Not An Image" }))).toBe(
+      generatePipeline(base()),
+    );
+  });
+
+  test("a costed stack with no usable image is an error", () => {
+    for (const image of ["Not An Image", "", "x;rm -rf /"]) {
+      const e = failure(() => generatePipeline(withCost({ image })));
+      expect(e.problems, image).toEqual([expect.stringContaining("cost.image")]);
+    }
+  });
+
+  test("with a policy as well, each job keeps its own image: the estimator never needs conftest", () => {
+    const yaml = generatePipeline({
+      ...withCost(),
+      policy: {
+        sets: [{ name: "r", source: "platform/policies", ref: "v1", path: ".", tag: "prod" }],
+        image: "registry.example.com/orch/ci-policy:1.0.0",
+        path: "/runs/0b9e5bd2/policy-verdict",
+      },
+    });
+    const jobs = jobsOf(yaml);
+    expect((jobs["summary:db"] as Job).image.name).toBe(
+      "registry.example.com/orch/ci-policy:1.0.0",
+    );
+    expect((jobs["estimate:db"] as Job).image.name).toBe(IMAGE);
+    expect(needsOf(jobs["summary:db"] as Job)).toEqual(["plan:db", "estimate:db"]);
+  });
+
+  test("an apply pipeline has no estimate in it", () => {
+    expect(
+      generatePipeline(
+        apply({ stacks, select: ["app", "db", "net"], planJobs: { app: 3, db: 2, net: 1 } }),
+      ),
+    ).not.toContain("infracost");
+  });
+});
+
+describe("the cost filter", () => {
+  const jq = Bun.which("jq");
+  // what Infracost writes: the totals are strings, the currency a code
+  const infracost = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      version: "0.2",
+      currency: "USD",
+      totalMonthlyCost: "1234.5",
+      pastTotalMonthlyCost: "1000",
+      diffTotalMonthlyCost: "234.5",
+      projects: [],
+      ...over,
+    });
+  const run = async (input: string) => {
+    const proc = Bun.spawn([jq as string, "-e", "-c", "--arg", "tool", "infracost", COST_FILTER], {
+      stdin: new TextEncoder().encode(input),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = (await new Response(proc.stdout).text()).trim();
+    return { code: await proc.exited, out };
+  };
+
+  test.skipIf(!jq)(
+    "reads the delta, the total and the currency, as numbers, and names the tool",
+    async () => {
+      const r = await run(infracost());
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.out)).toEqual({
+        monthlyDelta: 234.5,
+        monthlyTotal: 1234.5,
+        currency: "USD",
+        tool: "infracost",
+      });
+    },
+  );
+
+  test.skipIf(!jq)(
+    "numbers are read as well as strings, and a saving is a negative delta",
+    async () => {
+      const r = await run(infracost({ totalMonthlyCost: 10, diffTotalMonthlyCost: -90.25 }));
+      expect(JSON.parse(r.out)).toMatchObject({ monthlyDelta: -90.25, monthlyTotal: 10 });
+    },
+  );
+
+  test.skipIf(!jq)(
+    "anything that is not a usable estimate is no output at all, never a guess",
+    async () => {
+      const bad: [string, string][] = [
+        ["no delta", infracost({ diffTotalMonthlyCost: undefined })],
+        ["a null delta", infracost({ diffTotalMonthlyCost: null })],
+        ["a delta that is not a number", infracost({ diffTotalMonthlyCost: "n/a" })],
+        ["no total", infracost({ totalMonthlyCost: undefined })],
+        ["a negative total", infracost({ totalMonthlyCost: "-1" })],
+        ["a delta above a trillion", infracost({ diffTotalMonthlyCost: "2e12" })],
+        ["a delta below minus a trillion", infracost({ diffTotalMonthlyCost: "-2e12" })],
+        ["an infinite delta", infracost({ diffTotalMonthlyCost: "1e999" })],
+        ["no currency", infracost({ currency: undefined })],
+        ["a lower-case currency", infracost({ currency: "usd" })],
+        ["a long currency", infracost({ currency: "USDD" })],
+        ["a numeric currency", infracost({ currency: 840 })],
+        ["not an object", "[]"],
+        ["not JSON", "oops"],
+        ["empty", ""],
+      ];
+      for (const [what, input] of bad) {
+        const r = await run(input);
+        expect([what, r.code !== 0, r.out]).toEqual([what, true, ""]);
+      }
+    },
+  );
+});
+
+describe("the estimate and summary lines of a costed stack, as the runner's shell runs them", () => {
+  const jq = Bun.which("jq");
+  const sh = !!jq;
+  let root: string;
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "orch-cost-"));
+    await mkdir(join(root, "bin"), { recursive: true });
+    // infracost: records its arguments and key, prints the canned answer, exits as asked
+    await writeFile(
+      join(root, "bin/infracost"),
+      `#!/bin/sh
+echo "$@" > "$WORK/infracost.args"
+echo "key=$INFRACOST_API_KEY" > "$WORK/infracost.env"
+[ -n "$FAKE_INFRACOST_OUT" ] && printf '%s' "$FAKE_INFRACOST_OUT"
+exit \${FAKE_INFRACOST_EXIT:-0}
+`,
+      { mode: 0o755 },
+    );
+    // curl: records what is posted, like the policy test's
+    await writeFile(
+      join(root, "bin/curl"),
+      `#!/bin/sh
+data=""
+while [ $# -gt 0 ]; do
+  case "$1" in --data) data="\${2#@}"; shift;; esac
+  shift
+done
+[ -n "$FAKE_POST_FAILS" ] && exit 22
+cp "$data" "$WORK/posted.json"
+`,
+      { mode: 0o755 },
+    );
+  });
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const job = (name: "estimate:db" | "summary:db") =>
+    jobsOf(
+      generatePipeline(
+        plan({
+          stacks: [stack("db", { tags: ["prod"] })],
+          select: ["db"],
+          cost: { image: "registry.example.com/orch/ci-cost:1", stacks: ["db"] },
+        }),
+      ),
+    )[name] as Job;
+  const ANSWER = JSON.stringify({
+    currency: "EUR",
+    totalMonthlyCost: "300.50",
+    diffTotalMonthlyCost: "42",
+  });
+
+  async function inJob(
+    lines: string[],
+    env: Record<string, string> = {},
+    files: Record<string, string> = {},
+  ) {
+    const work = await mkdtemp(join(root, "job-"));
+    await mkdir(join(work, "stacks/db"), { recursive: true });
+    await writeFile(join(work, "stacks/db/plan.json"), '{"resource_changes":[]}');
+    for (const [f, text] of Object.entries(files)) await writeFile(join(work, f), text);
+    const codes: number[] = [];
+    for (const line of lines) {
+      const proc = Bun.spawn(["sh", "-c", line], {
+        cwd: work,
+        stderr: "pipe",
+        env: {
+          PATH: `${join(root, "bin")}:${process.env.PATH}`,
+          WORK: work,
+          ORCH_API_URL: "https://orch.example.com",
+          ORCH_TOKEN: "orch-token",
+          ...env,
+        },
+      });
+      codes.push(await proc.exited);
+    }
+    const read = (f: string) => readFile(join(work, f), "utf8").catch(() => undefined);
+    return { codes, work, read };
+  }
+  const estimate = (env: Record<string, string> = {}) =>
+    inJob(job("estimate:db").script as string[], { INFRACOST_API_KEY: "ico-key", ...env });
+
+  test.skipIf(!sh)(
+    "an estimate is cost.json with the four fields, and the job ends well",
+    async () => {
+      const r = await estimate({ FAKE_INFRACOST_OUT: ANSWER });
+      expect(r.codes.every((c) => c === 0)).toBe(true);
+      expect(JSON.parse((await r.read("cost.json")) as string)).toEqual({
+        monthlyDelta: 42,
+        monthlyTotal: 300.5,
+        currency: "EUR",
+        tool: "infracost",
+      });
+      expect(await r.read("infracost.args")).toContain("--path stacks/db/plan.json");
+      // the runner's key reaches the tool through the environment, as it is
+      expect(await r.read("infracost.env")).toBe("key=ico-key\n");
+    },
+  );
+
+  test.skipIf(!sh)(
+    "no key, a tool that fails, one that is missing, or one that says nothing usable: no cost.json, and the job still ends well",
+    async () => {
+      const cases: [string, Record<string, string>][] = [
+        ["no key", { INFRACOST_API_KEY: "", FAKE_INFRACOST_OUT: ANSWER }],
+        ["a failing tool", { FAKE_INFRACOST_OUT: ANSWER, FAKE_INFRACOST_EXIT: "1" }],
+        ["no answer", {}],
+        ["garbage", { FAKE_INFRACOST_OUT: "<html>" }],
+        [
+          "a total that is not a number",
+          {
+            FAKE_INFRACOST_OUT:
+              '{"currency":"USD","totalMonthlyCost":"x","diffTotalMonthlyCost":"1"}',
+          },
+        ],
+        ["a tool that is not installed", { PATH: "/usr/bin:/bin", FAKE_INFRACOST_OUT: ANSWER }],
+      ];
+      for (const [what, env] of cases) {
+        // a stale file from a retried job must not survive either
+        const r = await estimate(env);
+        expect([what, r.codes.every((c) => c === 0), await r.read("cost.json")]).toEqual([
+          what,
+          true,
+          undefined,
+        ]);
+      }
+      const none = await estimate({ INFRACOST_API_KEY: "" });
+      expect(await none.read("infracost.args")).toBeUndefined();
+    },
+  );
+
+  const summary = (files: Record<string, string>, env: Record<string, string> = {}) =>
+    // after the login: the summary, the merge, the post
+    inJob((job("summary:db").script as string[]).slice(2), env, files);
+  const COST = JSON.stringify({
+    monthlyDelta: 42,
+    monthlyTotal: 300.5,
+    currency: "EUR",
+    tool: "infracost",
+  });
+
+  test.skipIf(!sh)("the summary is posted with the estimate when there is one", async () => {
+    const r = await summary({ "cost.json": COST });
+    expect(r.codes.every((c) => c === 0)).toBe(true);
+    const posted = JSON.parse((await r.read("posted.json")) as string);
+    expect(posted).toMatchObject({ stack: "db", add: 0, change: 0, destroy: 0 });
+    expect(posted.cost).toEqual(JSON.parse(COST));
+  });
+
+  test.skipIf(!sh)(
+    "with no estimate, or an unreadable one, the summary is posted as it was, with no cost",
+    async () => {
+      for (const files of [{}, { "cost.json": "" }, { "cost.json": "{not json" }] as Record<
+        string,
+        string
+      >[]) {
+        const r = await summary(files);
+        expect([JSON.stringify(files), r.codes.every((c) => c === 0)]).toEqual([
+          JSON.stringify(files),
+          true,
+        ]);
+        const posted = JSON.parse((await r.read("posted.json")) as string);
+        expect(posted.stack).toBe("db");
+        expect("cost" in posted).toBe(false);
+      }
+    },
+  );
+});
+
+describe("the cost doc (COST-6)", () => {
+  test("shows the estimate and merge commands exactly as the generator emits them", async () => {
+    const doc = await Bun.file(new URL("../../../docs/cost-gates.md", import.meta.url)).text();
+    const jobs = jobsOf(
+      generatePipeline(
+        plan({
+          stacks: [stack("db", { tags: ["prod"] })],
+          select: ["db"],
+          cost: { image: "registry.example.com/orch/ci-cost:1.0.0", stacks: ["db"] },
+        }),
+      ),
+    );
+    const estimate = (jobs["estimate:db"] as Job).script;
+    const merge = (jobs["summary:db"] as Job).script.filter((l: string) =>
+      l.startsWith("if [ -s cost.json ]"),
+    );
+    expect(estimate).toHaveLength(1);
+    expect(merge).toHaveLength(1);
+    for (const line of [...estimate, ...merge]) expect(doc).toContain(`\n${line}\n`);
+  });
 });

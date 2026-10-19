@@ -189,6 +189,14 @@ describe("coverage", () => {
     [`POST ${path}/bulk`]: `${family}.bulk`,
   });
 
+  /** The four routes that say how one secret rotates. */
+  const rotationGuards = (path: string, family: string) => ({
+    [`GET ${path}/:varId/rotation`]: `${family}.rotation.read`,
+    [`PUT ${path}/:varId/rotation`]: `${family}.rotation.manage`,
+    [`DELETE ${path}/:varId/rotation`]: `${family}.rotation.manage`,
+    [`POST ${path}/:varId/rotation/rotate`]: `${family}.rotation.run`,
+  });
+
   test("the guard of every route, written out", () => {
     const guards = Object.fromEntries(
       app.routes.map((r) => [`${r.method} ${r.path}`, detailOf(r)["x-guard"]]),
@@ -200,6 +208,7 @@ describe("coverage", () => {
       [`POST ${O}`]: "organization.create",
       [`GET ${O}/:orgId`]: "organization.read",
       [`GET ${O}/:orgId/access`]: "organization.read",
+      [`GET ${O}/:orgId/members`]: "member.read",
       [`PATCH ${O}/:orgId`]: "organization.update",
       [`DELETE ${O}/:orgId`]: "organization.delete",
       [`GET ${P}`]: "organization.read",
@@ -228,12 +237,20 @@ describe("coverage", () => {
       [`GET ${P}/:projectId/sync-targets/:targetId/runs/:runId`]: "sync.run.read",
       [`GET ${P}/:projectId/sync-targets/:targetId/last-run`]: "sync.run.read",
       [`GET ${P}/:projectId/sync-targets/:targetId/drift`]: "sync.target.read",
+      [`GET ${P}/:projectId/leases`]: "lease.read",
+      [`POST ${P}/:projectId/leases`]: "lease.issue",
+      [`DELETE ${P}/:projectId/leases/:leaseId`]: "lease.revoke",
+      [`GET ${P}/:projectId/findings`]: "finding.read",
+      [`GET ${P}/:projectId/findings/:findingId`]: "finding.read",
+      [`POST ${P}/:projectId/findings/:findingId/dismiss`]: "finding.dismiss",
+      [`POST ${P}/:projectId/findings/:findingId/reopen`]: "finding.reopen",
       [`GET ${P}/:projectId/pipeline`]: "pipeline.read",
       [`POST ${P}/:projectId/pipeline/preview`]: "pipeline.apply",
       [`POST ${P}/:projectId/pipeline`]: "pipeline.apply",
       [`GET ${O}/:orgId/pipeline-upgrades`]: "pipeline.upgrade",
       [`POST ${O}/:orgId/pipeline-upgrades/plan`]: "pipeline.upgrade",
       [`POST ${O}/:orgId/pipeline-upgrades`]: "pipeline.upgrade",
+      [`GET ${O}/:orgId/template-registry`]: "template.registry.read",
       [`GET ${P}/:projectId/pipeline-runs`]: "pipeline.read",
       [`GET ${P}/:projectId/pipeline-runs/latest`]: "pipeline.read",
       [`POST ${P}/:projectId/pipeline-runs/:runId/retry`]: "pipeline.retry",
@@ -242,6 +259,17 @@ describe("coverage", () => {
       [`GET ${P}/:projectId/runs/:runId`]: "run.read",
       [`POST ${P}/:projectId/runs/:runId/plan-summary`]: "run.summary",
       [`POST ${P}/:projectId/runs/:runId/policy-verdict`]: "run.summary",
+      [`GET ${P}/:projectId/state/:stack`]: "state.read",
+      [`GET ${P}/:projectId/state/:stack/resources`]: "state.list",
+      [`GET ${P}/:projectId/state/:stack/versions`]: "state.list",
+      [`POST ${P}/:projectId/state/:stack`]: "state.write",
+      [`DELETE ${P}/:projectId/state/:stack`]: "state.write",
+      [`LOCK ${P}/:projectId/state/:stack`]: "state.write",
+      [`UNLOCK ${P}/:projectId/state/:stack`]: "state.write",
+      [`POST ${P}/:projectId/state/:stack/lock`]: "state.write",
+      [`DELETE ${P}/:projectId/state/:stack/lock`]: "state.write",
+      [`POST ${P}/:projectId/state/:stack/import`]: "state.import",
+      [`POST ${P}/:projectId/state/:stack/force-unlock`]: "state.force_unlock",
       [`POST ${P}/:projectId/runs/:runId/apply`]: "run.apply",
       [`GET ${O}/:orgId/connections`]: "connection.read",
       [`POST ${O}/:orgId/connections`]: "connection.create",
@@ -263,12 +291,33 @@ describe("coverage", () => {
       [`GET ${O}/:orgId/policy-sets`]: "policy.set.read",
       [`POST ${O}/:orgId/policy-sets`]: "policy.set.create",
       [`DELETE ${O}/:orgId/policy-sets/:setId`]: "policy.set.delete",
+      [`GET ${O}/:orgId/cost-limits`]: "cost.limit.read",
+      [`PUT ${O}/:orgId/cost-limits`]: "cost.limit.set",
+      [`DELETE ${O}/:orgId/cost-limits/:limitId`]: "cost.limit.delete",
+      [`GET ${O}/:orgId/secret-gate`]: "secret.gate.read",
+      [`PUT ${O}/:orgId/secret-gate`]: "secret.gate.update",
+      [`GET ${O}/:orgId/pools`]: "pool.read",
+      [`GET ${O}/:orgId/pools/:poolId`]: "pool.read",
+      [`POST ${O}/:orgId/pools`]: "pool.create",
+      [`PATCH ${O}/:orgId/pools/:poolId`]: "pool.update",
+      [`DELETE ${O}/:orgId/pools/:poolId`]: "pool.delete",
+      [`GET ${O}/:orgId/projects/:projectId/pools/:poolId/status`]: "pool.status",
+      [`GET ${O}/:orgId/sso`]: "sso.read",
+      [`PUT ${O}/:orgId/sso`]: "sso.manage",
+      [`PATCH ${O}/:orgId/sso`]: "sso.manage",
+      [`DELETE ${O}/:orgId/sso`]: "sso.manage",
+      [`POST ${O}/:orgId/sso/test`]: "sso.manage",
+      [`POST ${O}/:orgId/sso/enable`]: "sso.manage",
+      [`POST ${O}/:orgId/sso/disable`]: "sso.manage",
       [`GET ${P}/:projectId/notifications`]: "notification.subscription.read",
       [`PUT ${P}/:projectId/notifications/:sinkId`]: "notification.subscription.update",
       [`DELETE ${P}/:projectId/notifications/:sinkId`]: "notification.subscription.update",
       ...variableGuards(`${O}/:orgId/variables`, "variable.org", "secret.reveal.org"),
       ...variableGuards(`${P}/:projectId/variables`, "variable", "secret.reveal"),
       ...variableGuards(`${E}/:envId/variables`, "variable", "secret.reveal"),
+      ...rotationGuards(`${O}/:orgId/variables`, "variable.org"),
+      ...rotationGuards(`${P}/:projectId/variables`, "variable"),
+      ...rotationGuards(`${E}/:envId/variables`, "variable"),
       [`GET ${E}/:envId/resolved-variables`]: "variable.read",
       [`GET ${E}/:envId/resolved-variables/values`]: "secret.reveal",
       [`POST ${O}/:orgId/variable-search`]: "variable.org.read",
@@ -279,16 +328,21 @@ describe("coverage", () => {
     const marked = (key: string) =>
       app.routes.filter((r) => detailOf(r)[key] !== undefined).map((r) => `${r.method} ${r.path}`);
     expect(marked("x-public").sort()).toEqual([
+      "DELETE /auth/identities/:id",
       "GET /auth/callback",
       "GET /auth/cli",
+      "GET /auth/identities",
       "GET /auth/login",
       "GET /auth/me",
+      "GET /auth/sso/:slug/login",
+      "GET /auth/sso/callback",
       "GET /health",
       "GET /metrics",
       "GET /ready",
       "POST /auth/ci/exchange",
       "POST /auth/cli/token",
       "POST /auth/logout",
+      "POST /auth/sso/:slug/link",
       "POST /webhooks/gitlab/:connectionId",
     ]);
     expect(marked("x-signed-in").sort()).toEqual([
@@ -312,10 +366,18 @@ describe("coverage", () => {
       "GET /auth/login": "login",
       "GET /auth/callback": "login",
       "GET /auth/cli": "login",
+      "GET /auth/sso/:slug/login": "login",
+      "GET /auth/sso/callback": "login",
+      "POST /auth/sso/:slug/link": "login",
       "POST /auth/cli/token": "login",
       "POST /auth/ci/exchange": "ci_exchange",
       "POST /webhooks/gitlab/:connectionId": "webhook",
       "POST /tokens": "token_create",
+      "POST /organizations/:orgId/variables/:varId/rotation/rotate": "rotation_run",
+      "POST /organizations/:orgId/projects/:projectId/variables/:varId/rotation/rotate":
+        "rotation_run",
+      [`POST ${V}/variables/:varId/rotation/rotate`]: "rotation_run",
+      "POST /organizations/:orgId/projects/:projectId/leases": "lease_issue",
       "GET /organizations/:orgId/variables/:varId/value": "reveal",
       "GET /organizations/:orgId/projects/:projectId/variables/:varId/value": "reveal",
       [`GET ${V}/variables/:varId/value`]: "reveal",
@@ -351,7 +413,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(117);
+    expect(routes.length).toBe(167);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([
@@ -462,6 +524,38 @@ describe("who may write", () => {
     expect(res.status).toBe(201);
     // Roles come from GitLab membership (AUTH-5): until then the creator cannot even read it.
     expect((await call("frank", "GET", `/organizations/${res.json.id}`)).status).toBe(404);
+  });
+
+  test("/auth/me says who may create organizations, so a screen can offer it", async () => {
+    const asked = async (who: Who) => (await call(who, "GET", "/auth/me")).json.platformAdmin;
+    expect(await asked("frank")).toBe(true);
+    for (const who of ["alice", "bob", "carol", "erin"] as const)
+      expect(await asked(who)).toBe(false);
+  });
+});
+
+describe("/auth/me with a principal that is not the cookie's person", () => {
+  test("it says what the session's own person may do, not what the other caller may", async () => {
+    // a call that carries alice's cookie but is authenticated as frank (as a bearer token would)
+    const asFrank = sessionPrincipal({
+      db: t.db,
+      platformAdmins: [people.frank.gitlabId],
+    });
+    const mixed = createApp({
+      logger: createLogger({ write: () => {} }),
+      db: t.db,
+      principal: (request) =>
+        asFrank(
+          new Request(request.url, { headers: { cookie: `orch_session=${people.frank.token}` } }),
+        ),
+      ready: async () => {},
+    });
+    const res = await mixed.handle(
+      new Request("http://localhost/auth/me", {
+        headers: { cookie: `orch_session=${people.alice.token}` },
+      }),
+    );
+    expect(await res.json()).toMatchObject({ username: "alice", platformAdmin: false });
   });
 });
 

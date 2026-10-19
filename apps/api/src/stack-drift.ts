@@ -1,5 +1,6 @@
 import { IAC_TAGS } from "@orch/core";
 import {
+  allPools,
   attachRunPipeline,
   audit,
   auditedStacks,
@@ -62,8 +63,8 @@ async function reach(deps: RunDeps, organizationId: string, project: number, bra
  * when its `drift_every` is up since a check of it was last asked for (less five minutes), or it has
  * never been; what a check finds is recorded when its summary arrives (the plan-summary route). At
  * most a run's worth are asked for at once (the ones that have waited longest), the rest at the next
- * tick. Stack files with errors are
- * left out, but a stack graph that cannot be built plans nothing, as for a merge request. A pipeline
+ * tick. Stack files with errors, and stacks whose pipeline cannot be generated (a pool that was
+ * deleted or disabled), are left out, but a stack graph that cannot be built plans nothing, as for a merge request. A pipeline
  * GitLab refuses (a default branch whose `.gitlab-ci.yml` lacks the parent snippet) leaves no run,
  * and is not tried again before the stack's period is up. A project no connection reaches is skipped
  * until the next tick; any other failure fails the job so the queue retries it. Checks of one
@@ -100,6 +101,23 @@ export const stackDriftCheckHandler =
       const rows = await lockStackDrift(tx, at.organizationId, at.projectId);
       if (!rows) return;
       const asked = new Map(rows.map((r) => [r.stack, r.requestedAt.getTime()]));
+      // a drift check is judged by no policy or cost limit, but it runs where the stack's pool says
+      const pools = await allPools(tx, at.organizationId);
+      const request = (runId: string, select: string[]) =>
+        planRequest(deps.config, at, scan.stacks, select, runId, [], [], pools);
+      // A stack whose pipeline cannot be generated (its pool was deleted or disabled) is left out, not
+      // recorded: it must not take a place in the run, or hold back the stacks that can be checked.
+      const left: { stack: string; problem: string | undefined }[] = [];
+      const generates = (stack: string) => {
+        try {
+          generatePipeline(request(NO_RUN, [stack]));
+          return true;
+        } catch (error) {
+          if (!(error instanceof GenerateError)) throw error;
+          left.push({ stack, problem: error.problems[0] });
+          return false;
+        }
+      };
       // the stacks that have waited longest go first (never asked: first), so that when more are due
       // than a run holds, the same ones are not chosen at every tick
       const due = scheduled
@@ -107,6 +125,7 @@ export const stackDriftCheckHandler =
           const last = asked.get(s.name);
           return last === undefined || now.getTime() - last >= s.every - SLACK_MS;
         })
+        .filter((s) => generates(s.name))
         .sort(
           (a, b) =>
             (asked.get(a.name) ?? 0) - (asked.get(b.name) ?? 0) || (a.name < b.name ? -1 : 1),
@@ -114,11 +133,16 @@ export const stackDriftCheckHandler =
         .slice(0, MAX_RUN_STACKS)
         .map((s) => s.name)
         .sort();
+      if (left.length > 0) {
+        ctx.log.warn("stacks left out of the drift check: their pipeline cannot be generated", {
+          project: project.id,
+          stacks: left.slice(0, 3),
+        });
+      }
       if (due.length === 0) return;
 
-      const request = (runId: string) => planRequest(deps.config, at, scan.stacks, due, runId);
       try {
-        generatePipeline(request(NO_RUN));
+        generatePipeline(request(NO_RUN, due));
       } catch (error) {
         if (!(error instanceof GenerateError)) throw error;
         ctx.log.warn("the drift pipeline cannot be generated", {
@@ -154,7 +178,7 @@ export const stackDriftCheckHandler =
             gitlab,
             gitlabProjectId,
             project.defaultBranch,
-            generatePipeline(request(run.id)),
+            generatePipeline(request(run.id, due)),
           );
           await attachRunPipeline(sp, {
             ...at,

@@ -8,6 +8,8 @@ import { connectionKeyContext, createConnection, openConnection } from "./connec
 import { createSink, openSink } from "./notifications";
 import { createEnvironment, createOrganization, createProject } from "./repo";
 import { KEY_TABLES, keyUsage, rewrapAll, stillOnOldKeys } from "./rewrap";
+import { createSsoProvider, openSsoSecret, ssoKeyContext } from "./sso";
+import { putState, readState, stateKeyContext } from "./state";
 import { createTestDb, type TestDb } from "./testing";
 import { createVariable, openPending, revealVariable, sealPending } from "./variables";
 
@@ -30,6 +32,13 @@ const ORG_VALUE = "org-value-SECRET-2";
 const TOKEN = "glpat-TOKEN-SECRET-3";
 const SINK = "https://hooks.example.com/SECRET-4";
 const PENDING = "pending-value-SECRET-5";
+const IDP = "idp-client-SECRET-6";
+const STATE = JSON.stringify({
+  version: 4,
+  serial: 1,
+  lineage: "L",
+  outputs: { x: "state-SECRET-7" },
+});
 const OPS: BulkOp[] = [{ op: "set", key: "C", value: PENDING }];
 const actor = { kind: "user", id: "u1" };
 
@@ -70,9 +79,36 @@ async function seed(t: TestDb, keys: KeyProvider) {
     host: "hooks.example.com",
     secret: SINK,
   });
+  const idp = await createSsoProvider(t.db, keys, {
+    organizationId,
+    issuer: "https://idp.example.com",
+    clientId: "orch",
+    clientSecret: IDP,
+    emailDomains: ["example.com"],
+    roleMap: [],
+  });
   const at = { organizationId, projectId, environmentId, id: crypto.randomUUID() };
   const pending = await sealPending(t.db, keys, at, OPS);
-  return { organizationId, project, variable, orgVariable, connection, sink, at, pending };
+  const stack = { organizationId, projectId, stackName: "net" };
+  await putState(t.db, keys, stack, {
+    serial: 1,
+    lineage: "L",
+    content: STATE,
+    createdBy: "ci:test",
+    resources: [],
+  });
+  return {
+    organizationId,
+    project,
+    variable,
+    orgVariable,
+    connection,
+    sink,
+    idp,
+    at,
+    pending,
+    stack,
+  };
 }
 type World = Awaited<ReturnType<typeof seed>>;
 
@@ -84,7 +120,9 @@ async function readAll(t: TestDb, keys: KeyProvider, w: World) {
       ?.value,
     connection: (await openConnection(t.db, keys, w.organizationId, w.connection.id))?.token,
     sink: (await openSink(t.db, keys, w.organizationId, w.sink.id))?.secret,
+    idp: await openSsoSecret(t.db, keys, w.idp.id),
     pending: await openPending(t.db, keys, w.at, w.pending),
+    state: (await readState(t.db, keys, w.stack))?.content,
   };
 }
 /** Makes every update of `table` fail, as a database going wrong would. */
@@ -103,7 +141,9 @@ const EXPECTED = {
   org: ORG_VALUE,
   connection: TOKEN,
   sink: SINK,
+  idp: IDP,
   pending: OPS,
+  state: STATE,
 };
 const wraps = async (t: TestDb) =>
   (
@@ -111,6 +151,8 @@ const wraps = async (t: TestDb) =>
       SELECT 'v' AS t, id, dek_key_id, dek_wrapped FROM variable_keys
       UNION ALL SELECT 'c', id, dek_key_id, dek_wrapped FROM connections
       UNION ALL SELECT 's', id, dek_key_id, dek_wrapped FROM notification_sinks
+      UNION ALL SELECT 'o', id, dek_key_id, dek_wrapped FROM sso_providers
+      UNION ALL SELECT 'x', id, dek_key_id, dek_wrapped FROM state_versions
       ORDER BY 1, 2`)
   ).map((r: Record<string, unknown>) => [
     r.t,
@@ -127,7 +169,13 @@ describe("moving data keys to a new master key", () => {
 
     const report = await rewrapAll(t.db, k1k2);
     expect(report).toEqual({
-      rewrapped: { variable_keys: 2, connections: 1, notification_sinks: 1 },
+      rewrapped: {
+        variable_keys: 2,
+        connections: 1,
+        notification_sinks: 1,
+        sso_providers: 1,
+        state_versions: 1,
+      },
       failed: [],
     });
     expect(await readAll(t, k2, w)).toEqual(EXPECTED);
@@ -137,6 +185,8 @@ describe("moving data keys to a new master key", () => {
       variable_keys: { k2: 2 },
       connections: { k2: 1 },
       notification_sinks: { k2: 1 },
+      sso_providers: { k2: 1 },
+      state_versions: { k2: 1 },
     });
   });
 
@@ -146,7 +196,13 @@ describe("moving data keys to a new master key", () => {
     await rewrapAll(t.db, k1k2);
     const before = await wraps(t);
     const again = await rewrapAll(t.db, k1k2);
-    expect(again.rewrapped).toEqual({ variable_keys: 0, connections: 0, notification_sinks: 0 });
+    expect(again.rewrapped).toEqual({
+      variable_keys: 0,
+      connections: 0,
+      notification_sinks: 0,
+      sso_providers: 0,
+      state_versions: 0,
+    });
     expect(again.failed).toEqual([]);
     expect(await wraps(t)).toEqual(before);
   });
@@ -155,8 +211,14 @@ describe("moving data keys to a new master key", () => {
     const t = await fresh();
     const worlds: World[] = [];
     for (let i = 0; i < 4; i++) worlds.push(await seed(t, k1));
-    const report = await rewrapAll(t.db, k1k2, 3); // 8 variable keys, 4 connections, 4 sinks
-    expect(report.rewrapped).toEqual({ variable_keys: 8, connections: 4, notification_sinks: 4 });
+    const report = await rewrapAll(t.db, k1k2, 3); // 8 variable keys, 4 connections, 4 sinks, 4 providers, 4 states
+    expect(report.rewrapped).toEqual({
+      variable_keys: 8,
+      connections: 4,
+      notification_sinks: 4,
+      sso_providers: 4,
+      state_versions: 4,
+    });
     for (const w of worlds) expect(await readAll(t, k2, w)).toEqual(EXPECTED);
     // an exact multiple of the page size ends too
     const u = await fresh();
@@ -166,16 +228,24 @@ describe("moving data keys to a new master key", () => {
       variable_keys: 4,
       connections: 2,
       notification_sinks: 2,
+      sso_providers: 2,
+      state_versions: 2,
     });
   });
 
   test("rows that stay behind do not hold the pages back: each is reported once", async () => {
     const t = await fresh();
     for (let i = 0; i < 3; i++) await seed(t, only("k0", 9));
-    const report = await rewrapAll(t.db, k1k2, 2); // 6 variable keys, 3 connections, 3 sinks, all failing
-    expect(report.rewrapped).toEqual({ variable_keys: 0, connections: 0, notification_sinks: 0 });
-    expect(report.failed).toHaveLength(12);
-    expect(new Set(report.failed.map((f) => f.id)).size).toBe(12);
+    const report = await rewrapAll(t.db, k1k2, 2); // 6 variable keys, 3 connections, 3 sinks, 3 providers, 3 states, all failing
+    expect(report.rewrapped).toEqual({
+      variable_keys: 0,
+      connections: 0,
+      notification_sinks: 0,
+      sso_providers: 0,
+      state_versions: 0,
+    });
+    expect(report.failed).toHaveLength(18);
+    expect(new Set(report.failed.map((f) => f.id)).size).toBe(18);
   });
 
   test("the order rows happen to be stored in does not decide which are moved", async () => {
@@ -183,7 +253,7 @@ describe("moving data keys to a new master key", () => {
     const worlds: World[] = [];
     for (let i = 0; i < 4; i++) worlds.push(await seed(t, k1));
     // an update stores the row again at the end of the table: now the oldest id is read last
-    for (const table of ["variable_keys", "connections", "notification_sinks"]) {
+    for (const table of KEY_TABLES) {
       await t.db.execute(
         sql.raw(
           `UPDATE ${table} SET dek_key_id = dek_key_id WHERE id = (SELECT id FROM ${table} ORDER BY id LIMIT 1)`,
@@ -191,7 +261,13 @@ describe("moving data keys to a new master key", () => {
       );
     }
     const report = await rewrapAll(t.db, k1k2, 3);
-    expect(report.rewrapped).toEqual({ variable_keys: 8, connections: 4, notification_sinks: 4 });
+    expect(report.rewrapped).toEqual({
+      variable_keys: 8,
+      connections: 4,
+      notification_sinks: 4,
+      sso_providers: 4,
+      state_versions: 4,
+    });
     for (const w of worlds) expect(await readAll(t, k2, w)).toEqual(EXPECTED);
   });
 
@@ -205,10 +281,18 @@ describe("moving data keys to a new master key", () => {
       variable_keys: { k2: 2 },
       connections: { k1: 1 },
       notification_sinks: { k1: 1 },
+      sso_providers: { k1: 1 },
+      state_versions: { k1: 1 },
     });
     await t.db.execute(sql`DROP TRIGGER no_updates ON connections`);
     const again = await rewrapAll(t.db, k1k2);
-    expect(again.rewrapped).toEqual({ variable_keys: 0, connections: 1, notification_sinks: 1 });
+    expect(again.rewrapped).toEqual({
+      variable_keys: 0,
+      connections: 1,
+      notification_sinks: 1,
+      sso_providers: 1,
+      state_versions: 1,
+    });
     expect(await readAll(t, k2, w)).toEqual(EXPECTED);
   });
 
@@ -229,12 +313,16 @@ describe("moving data keys to a new master key", () => {
     const lost = await seed(t, only("k0", 9)); // wrapped by a master key that is no longer given
     const before = await wraps(t);
     const report = await rewrapAll(t.db, k1k2);
-    expect(report.rewrapped).toEqual({ variable_keys: 2, connections: 1, notification_sinks: 1 });
-    expect(report.failed).toHaveLength(4);
+    expect(report.rewrapped).toEqual({
+      variable_keys: 2,
+      connections: 1,
+      notification_sinks: 1,
+      sso_providers: 1,
+      state_versions: 1,
+    });
+    expect(report.failed).toHaveLength(6);
     expect(new Set(report.failed.map((f) => f.code))).toEqual(new Set(["unknown_key"]));
-    expect(new Set(report.failed.map((f) => f.table))).toEqual(
-      new Set(["variable_keys", "connections", "notification_sinks"]),
-    );
+    expect(new Set(report.failed.map((f) => f.table))).toEqual(new Set(KEY_TABLES));
     expect(await readAll(t, k2, good)).toEqual(EXPECTED);
     // what failed is exactly what it was
     const after = await wraps(t);
@@ -265,7 +353,13 @@ describe("moving data keys to a new master key", () => {
         ["notification_sinks", b.sink.id, "decrypt_failed"],
       ].sort(),
     );
-    expect(report.rewrapped).toEqual({ variable_keys: 4, connections: 1, notification_sinks: 1 });
+    expect(report.rewrapped).toEqual({
+      variable_keys: 4,
+      connections: 1,
+      notification_sinks: 1,
+      sso_providers: 2,
+      state_versions: 2,
+    });
     const usage = await keyUsage(t.db);
     expect(usage.connections).toEqual({ k2: 1, k1: 1 });
     expect(usage.notification_sinks).toEqual({ k2: 1, k1: 1 });
@@ -281,8 +375,14 @@ describe("moving data keys to a new master key", () => {
     };
     const before = await wraps(t);
     const report = await rewrapAll(t.db, broken);
-    expect(report.rewrapped).toEqual({ variable_keys: 0, connections: 0, notification_sinks: 0 });
-    expect(report.failed).toHaveLength(4);
+    expect(report.rewrapped).toEqual({
+      variable_keys: 0,
+      connections: 0,
+      notification_sinks: 0,
+      sso_providers: 0,
+      state_versions: 0,
+    });
+    expect(report.failed).toHaveLength(6);
     expect(await wraps(t)).toEqual(before);
     expect(await readAll(t, k1, w)).toEqual(EXPECTED);
   });
@@ -293,8 +393,12 @@ describe("moving data keys to a new master key", () => {
     for (let i = 0; i < 3; i++) worlds.push(await seed(t, k1));
     const [a, b] = await Promise.all([rewrapAll(t.db, k1k2, 2), rewrapAll(t.db, k1k2, 2)]);
     const moved = (r: typeof a) =>
-      r.rewrapped.variable_keys + r.rewrapped.connections + r.rewrapped.notification_sinks;
-    expect(moved(a) + moved(b)).toBe(12); // 6 variable keys, 3 connections, 3 sinks, each by one run
+      r.rewrapped.variable_keys +
+      r.rewrapped.connections +
+      r.rewrapped.notification_sinks +
+      r.rewrapped.sso_providers +
+      r.rewrapped.state_versions;
+    expect(moved(a) + moved(b)).toBe(18); // 6 variable keys, 3 connections, 3 sinks, 3 providers, 3 states, each by one run
     expect(a.failed).toEqual([]);
     expect(b.failed).toEqual([]);
     for (const w of worlds) expect(await readAll(t, k2, w)).toEqual(EXPECTED);
@@ -311,7 +415,11 @@ describe("moving data keys to a new master key", () => {
         ? "connections"
         : context.includes('"notification_sink:')
           ? "notification_sinks"
-          : "variable_keys";
+          : context.includes('"sso-provider:')
+            ? "sso_providers"
+            : context.includes('"state-version:')
+              ? "state_versions"
+              : "variable_keys";
     return {
       currentKeyId: "k2",
       wrap: async (plain, aad) => {
@@ -334,12 +442,20 @@ describe("moving data keys to a new master key", () => {
       t.db,
       racing(t, (table) => `UPDATE ${table} SET dek_key_id = 'k2'`),
     );
-    expect(report.rewrapped).toEqual({ variable_keys: 0, connections: 0, notification_sinks: 0 });
+    expect(report.rewrapped).toEqual({
+      variable_keys: 0,
+      connections: 0,
+      notification_sinks: 0,
+      sso_providers: 0,
+      state_versions: 0,
+    });
     expect(report.failed).toEqual([]);
     expect(await keyUsage(t.db)).toEqual({
       variable_keys: { k2: 2 },
       connections: { k2: 1 },
       notification_sinks: { k2: 1 },
+      sso_providers: { k2: 1 },
+      state_versions: { k2: 1 },
     });
   });
 
@@ -354,18 +470,28 @@ describe("moving data keys to a new master key", () => {
           `UPDATE ${table} SET dek_wrapped = set_byte(dek_wrapped, 20, get_byte(dek_wrapped, 20) # 255)`,
       ),
     );
-    expect(report.rewrapped).toEqual({ variable_keys: 0, connections: 0, notification_sinks: 0 });
+    expect(report.rewrapped).toEqual({
+      variable_keys: 0,
+      connections: 0,
+      notification_sinks: 0,
+      sso_providers: 0,
+      state_versions: 0,
+    });
     expect(report.failed).toEqual([]);
     // nothing of ours was written: they are all still on the key the other writer left them on
     expect(await keyUsage(t.db)).toEqual({
       variable_keys: { k1: 2 },
       connections: { k1: 1 },
       notification_sinks: { k1: 1 },
+      sso_providers: { k1: 1 },
+      state_versions: { k1: 1 },
     });
   });
 
-  test("the context of a connection key is the connection's own", () => {
+  test("the context of a connection key is the connection's own, and so are a provider's and a state version's", () => {
     expect(connectionKeyContext("abc")).toBe("connection:abc");
+    expect(ssoKeyContext("abc")).toBe("sso-provider:abc");
+    expect(stateKeyContext("abc")).toBe("state-version:abc");
   });
 
   test("usage counts what each master key wraps, and what is still on an old one", async () => {
@@ -377,12 +503,23 @@ describe("moving data keys to a new master key", () => {
       variable_keys: { k1: 2, k2: 2 },
       connections: { k1: 1, k2: 1 },
       notification_sinks: { k1: 1, k2: 1 },
+      sso_providers: { k1: 1, k2: 1 },
+      state_versions: { k1: 1, k2: 1 },
     });
-    expect(stillOnOldKeys(usage, "k2")).toBe(4);
-    expect(stillOnOldKeys(usage, "k1")).toBe(4);
-    expect(stillOnOldKeys(usage, "k9")).toBe(8);
+    expect(stillOnOldKeys(usage, "k2")).toBe(6);
+    expect(stillOnOldKeys(usage, "k1")).toBe(6);
+    expect(stillOnOldKeys(usage, "k9")).toBe(12);
     expect(
-      stillOnOldKeys({ variable_keys: {}, connections: {}, notification_sinks: {} }, "k2"),
+      stillOnOldKeys(
+        {
+          variable_keys: {},
+          connections: {},
+          notification_sinks: {},
+          sso_providers: {},
+          state_versions: {},
+        },
+        "k2",
+      ),
     ).toBe(0);
   });
 });
@@ -421,7 +558,7 @@ describe("the rotate-master-key command", () => {
     expect(before.code).toBe(1); // not done: everything is still on k1
     expect(last(before.out)).toMatchObject({
       current: "k2",
-      remaining: 4,
+      remaining: 6,
       usage: expect.arrayContaining([{ table: "connections", wrappedBy: "k1", count: 1 }]),
     });
 
@@ -434,6 +571,8 @@ describe("the rotate-master-key command", () => {
         { table: "variable_keys", count: 2 },
         { table: "connections", count: 1 },
         { table: "notification_sinks", count: 1 },
+        { table: "sso_providers", count: 1 },
+        { table: "state_versions", count: 1 },
       ],
     });
     expect((await run(t, both, "--status")).code).toBe(0);
@@ -450,15 +589,17 @@ describe("the rotate-master-key command", () => {
     expect(r.code).toBe(1);
     const said = (msg: string) => logged(r.out).find((l) => l.msg === msg);
     expect(said("master key rotation finished")).toMatchObject({
-      remaining: 4,
+      remaining: 6,
       rewrapped: [
         { table: "variable_keys", count: 2 },
         { table: "connections", count: 1 },
         { table: "notification_sinks", count: 1 },
+        { table: "sso_providers", count: 1 },
+        { table: "state_versions", count: 1 },
       ],
     });
     const failed = (said("some data keys could not be moved")?.failed ?? []) as { code: string }[];
-    expect(failed).toHaveLength(4);
+    expect(failed).toHaveLength(6);
     expect(new Set(failed.map((f) => f.code))).toEqual(new Set(["unknown_key"]));
     expect(r.out + r.err).not.toContain(b64(1));
     expect(r.out + r.err).not.toContain(b64(2));

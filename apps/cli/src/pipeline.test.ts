@@ -20,10 +20,11 @@ import {
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { createMockGitlab } from "@orch/gitlab/mock";
-import { loadTemplates, type Template } from "@orch/pipelines";
+import { componentFile, componentPath, loadTemplates, type Template } from "@orch/pipelines";
 import { and, eq } from "drizzle-orm";
 import { CliError, runCli } from "./cli";
 import { pipelineCommands } from "./pipeline";
+import { templateCommands } from "./template";
 
 const keys = envKeyProvider(`k1:${Buffer.alloc(32, 6).toString("base64")}`);
 
@@ -151,7 +152,7 @@ async function orch(argv: string[], run: Run = {}) {
       return run.answer;
     },
     version: "0.0.0",
-    commands: pipelineCommands(),
+    commands: { ...pipelineCommands(), ...templateCommands() },
   });
   printed.push(...out, ...err);
   return { code, out, err };
@@ -228,6 +229,20 @@ async function world(
       return res.ok ? await res.text() : null;
     },
   };
+}
+
+/** A catalog project with the component of `bun-app`, tagged 1.0.0 (and the given further releases). */
+let catalogs = 0;
+async function publishCatalog(...more: string[]) {
+  const [bun] = await catalog();
+  if (!bun) throw new Error("no bun-app template");
+  const path = `fx/catalog${++catalogs}`;
+  mock.addProject({
+    path,
+    files: { [componentPath(bun.manifest)]: componentFile(bun), "README.md": "# c\n" },
+  });
+  for (const tag of ["1.0.0", ...more]) mock.addTag(path, tag);
+  return path;
 }
 
 const BUN_LINE = /^ {2}bun-app 1\.0\.0 {2}high {2}\S.*bun.*$/;
@@ -394,12 +409,17 @@ describe("setup", () => {
       ["--param-json", 'a="text"'],
       "--param-json takes a number, true or false; give text with --param",
     ],
-    [["--mode", "both"], "unknown mode 'both'; use inline or include"],
+    [["--mode", "both"], "unknown mode 'both'; use inline, include or component"],
     [["--include-ref", "main"], "--include-ref needs --include-project"],
     [["--mode", "include"], "--mode include needs --include-project"],
+    [["--mode", "component"], "--mode component needs --include-project"],
+    [
+      ["--mode", "component", "--include-project", "fx/catalog"],
+      "--mode component needs --include-ref, the release of the catalog project (1.2.3, 1.2, 1 or a commit SHA)",
+    ],
     [
       ["--mode", "inline", "--include-project", "fx/templates"],
-      "--include-project goes with --mode include",
+      "--include-project goes with --mode include or component",
     ],
   ])("%j is a usage error and asks the API nothing", async (flags, message) => {
     const w = await world();
@@ -473,6 +493,37 @@ describe("setup", () => {
     expect(w.commits()).toBe(0);
   });
 
+  test("component mode is sent: a dry run shows the thin file, an apply opens one merge request, and a branch is the API's refusal", async () => {
+    const w = await world();
+    const catalog = await publishCatalog();
+    const flags = ["--mode", "component", "--include-project", catalog, "--include-ref", "1.0.0"];
+    const dry = await orch(["pipeline", "setup", "bun-app", ...w.args, "--dry-run", ...flags]);
+    expect(dry.code).toBe(0);
+    expect(dry.err[0]).toBe(`${w.label}: bun-app 1.0.0, component: would add .gitlab-ci.yml`);
+    expect(dry.out.join("\n")).toContain(`component: $CI_SERVER_FQDN/${catalog}/bun-app@1.0.0`);
+    expect(w.commits()).toBe(0);
+
+    const refused = await orch([
+      "pipeline",
+      "setup",
+      "bun-app",
+      ...w.args,
+      "--yes",
+      ...flags.slice(0, 4),
+      "--include-ref",
+      "main",
+    ]);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toHaveLength(1);
+    expect(w.commits()).toBe(0);
+
+    const done = await orch(["pipeline", "setup", "bun-app", ...w.args, "--yes", ...flags]);
+    expect(done.code).toBe(0);
+    expect(done.out[0]).toContain("opened merge request !1");
+    expect(w.commits()).toBe(1);
+    expect((await orch(["pipeline", "detect", ...w.args])).out[0]).toContain("(component)");
+  });
+
   test("a guardrail the pipeline breaks stops it before anything is asked or committed", async () => {
     const w = await world({ environments: ["prod"] });
     await w.target({ prod: "production" }, { project: "fx/live" });
@@ -492,6 +543,85 @@ describe("setup", () => {
     const res = await orch(["pipeline", "setup", "bun-app", ...w.args, "--dry-run"]);
     expect(res.code).toBe(0);
     expect(w.commits()).toBe(0);
+  });
+});
+
+describe("template ls", () => {
+  const ls = (...args: string[]) => orch(["template", "ls", "--org", "acme", ...args]);
+
+  test("lists the releases and components, and who uses the catalog and whether they are behind", async () => {
+    const catalog = await publishCatalog();
+    const w = await world();
+    const set = await orch([
+      "pipeline",
+      "setup",
+      "bun-app",
+      ...w.args,
+      "--yes",
+      "--mode",
+      "component",
+      "--include-project",
+      catalog,
+      "--include-ref",
+      "1.0.0",
+    ]);
+    expect(set.code).toBe(0);
+
+    const now = await ls("--catalog", catalog);
+    expect(now.code).toBe(0);
+    const [head, comp, used, user] = now.out.join("\n").split("\n");
+    expect(head).toBe(`${catalog}: 1 release, latest 1.0.0`);
+    expect(comp).toMatch(/^ {2}bun-app {2}1\.0\.0 {2}inputs: .*bunVersion/);
+    expect(used).toBe("used by:");
+    expect(user).toBe(`  ${w.name}  component 1.0.0  up to date`);
+
+    mock.addTag(catalog, "1.1.0");
+    const later = await ls("--catalog", catalog);
+    expect(later.out.join("\n")).toContain(`${catalog}: 2 releases, latest 1.1.0`);
+    expect(later.out.join("\n")).toContain(
+      `  ${w.name}  component 1.0.0  behind the latest release (1.1.0)`,
+    );
+
+    const json = JSON.parse((await ls("--catalog", catalog, "--json")).out.join("")) as {
+      latest: string;
+      consumers: { projectName: string; standing: string }[];
+    };
+    expect(json.latest).toBe("1.1.0");
+    expect(json.consumers).toMatchObject([{ projectName: w.name, standing: "behind" }]);
+  });
+
+  test("says so for a catalog with no releases, and an unreadable component is named", async () => {
+    mock.addProject({ path: "fx/bare", files: { "templates/broken.yml": "nope" } });
+    expect((await ls("--catalog", "fx/bare")).out).toEqual([
+      "fx/bare: no releases (a release is a tag such as 1.2.3)",
+    ]);
+    mock.addTag("fx/bare", "1.0.0");
+    const lines = (await ls("--catalog", "fx/bare")).out.join("\n").split("\n");
+    expect(lines[0]).toBe("fx/bare: 1 release, latest 1.0.0");
+    expect(lines[1]).toMatch(/^ {2}broken {2}1\.0\.0 {2}cannot be read: the file /);
+  });
+
+  test("usage errors ask nothing; a project GitLab cannot show and a member are the API's refusals", async () => {
+    const before = mock.requests.length;
+    for (const args of [[], ["--catalog", "fx/x", "extra"], ["list", "--catalog", "fx/x"]]) {
+      const res = await orch([
+        "template",
+        ...(args[0] === "list" ? args : ["ls", "--org", "acme", ...args]),
+      ]);
+      expect([res.code, res.err]).toEqual([
+        2,
+        ["error: usage: orch template ls --catalog <group/project> [options]"],
+      ]);
+    }
+    expect(mock.requests).toHaveLength(before);
+    const missing = await ls("--catalog", "fx/not-there");
+    expect(missing.code).toBe(1);
+    expect(missing.err).toHaveLength(1);
+    const member = await orch(["template", "ls", "--org", "acme", "--catalog", "fx/bare"], {
+      token: tokens.reporter,
+    });
+    expect(member.code).toBe(1);
+    expect(member.err).toHaveLength(1);
   });
 });
 

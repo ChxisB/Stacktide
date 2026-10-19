@@ -25,6 +25,15 @@ describe("signed out", () => {
     expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
   });
 
+  test("an organization's own provider is offered by its slug, and only once one is typed", async () => {
+    mount(backend.anonymous());
+    await screen.findByRole("link", { name: "Sign in with GitLab" });
+    expect(screen.queryByRole("link", { name: "Sign in with single sign-on" })).toBeNull();
+    await userEvent.setup().type(await screen.findByLabelText("Organization slug"), " acme/x ");
+    const link = await screen.findByRole("link", { name: "Sign in with single sign-on" });
+    expect(link.getAttribute("href")).toBe("/auth/sso/acme%2Fx/login?return_to=/");
+  });
+
   test("a session that has ended is a visitor too", async () => {
     const { client } = await backend.signIn("Gone Soon");
     await client.auth.logout.post({});

@@ -1,6 +1,6 @@
 import { call, session } from "./api";
 import { CliError, type Command, parse, say } from "./cli";
-import { every, onlyOrNamed, resolveProject } from "./target";
+import { gitlabConnectionOf, resolveProject } from "./target";
 
 const USAGE = "usage: orch pipeline detect [options] | orch pipeline setup <template> [options]";
 const FILE = ".gitlab-ci.yml";
@@ -8,7 +8,7 @@ const FILE = ".gitlab-ci.yml";
 const PARAM_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const SHOWN = 3;
 
-const MODES = ["inline", "include"] as const;
+const MODES = ["inline", "include", "component"] as const;
 
 /** `name=value` from `--param` (text) or `--param-json` (a number or true/false), as the one map the API takes. */
 function paramsOf(text: string[], json: string[]) {
@@ -145,28 +145,29 @@ export function pipelineCommands(): Record<string, Command> {
 
         const mode = values.mode ?? (values["include-project"] ? "include" : undefined);
         if (mode !== undefined && !MODES.some((m) => m === mode)) {
-          throw new CliError(`unknown mode '${mode}'; use ${MODES.join(" or ")}`, 2);
+          throw new CliError(`unknown mode '${mode}'; use inline, include or component`, 2);
         }
         if (values["include-ref"] && !values["include-project"]) {
           throw new CliError("--include-ref needs --include-project", 2);
         }
-        if (mode === "include" && !values["include-project"]) {
-          throw new CliError("--mode include needs --include-project", 2);
+        if (mode !== undefined && mode !== "inline" && !values["include-project"]) {
+          throw new CliError(`--mode ${mode} needs --include-project`, 2);
+        }
+        if (mode === "component" && !values["include-ref"]) {
+          throw new CliError(
+            "--mode component needs --include-ref, the release of the catalog project (1.2.3, 1.2, 1 or a commit SHA)",
+            2,
+          );
         }
         if (mode === "inline" && values["include-project"]) {
-          throw new CliError("--include-project goes with --mode include", 2);
+          throw new CliError("--include-project goes with --mode include or component", 2);
         }
         const params = paramsOf(values.param ?? [], values["param-json"] ?? []);
-        const connectionId = await onlyOrNamed(
-          "GitLab connection",
-          "--connection",
+        const connectionId = await gitlabConnectionOf(
+          apiUrl,
+          client,
+          project.orgId,
           values.connection,
-          () =>
-            every(apiUrl, (cursor) =>
-              client
-                .organizations({ orgId: project.orgId })
-                .connections.get({ query: { limit: 100, cursor } }),
-            ).then((all) => all.filter((c) => c.type === "gitlab")),
         );
         const include = values["include-project"]
           ? {

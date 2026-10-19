@@ -280,6 +280,77 @@ describe("pipelines", () => {
     mock.stop();
   });
 
+  test("a job's artifact is read by its path; one that was never made, or another job's, is missing", async () => {
+    const { mock, api } = ready();
+    const p = await api.pipelines.trigger("g/p", "main");
+    const ids = mock.jobIds(p.id);
+    mock.addArtifact(p.id, "build", "reports/out.json", '{"a":1}');
+
+    expect(
+      await api.pipelines.artifact("g/p", ids.build as number, "reports/out.json", 100),
+    ).toEqual({
+      status: "ok",
+      text: '{"a":1}',
+    });
+    expect(
+      await api.pipelines.artifact("g/p", ids.build as number, "reports/none.json", 100),
+    ).toEqual({
+      status: "missing",
+    });
+    expect(
+      await api.pipelines.artifact("g/p", ids.test as number, "reports/out.json", 100),
+    ).toEqual({
+      status: "missing",
+    });
+    expect(await api.pipelines.artifact("g/p", 1, "reports/out.json", 100)).toEqual({
+      status: "missing",
+    });
+    // past the cap it is not read, and says so
+    expect(await api.pipelines.artifact("g/p", ids.build as number, "reports/out.json", 3)).toEqual(
+      {
+        status: "too_large",
+      },
+    );
+    expect(() => mock.addArtifact(1, "build", "x", "y")).toThrow("no pipeline 1");
+    expect(() => mock.addArtifact(p.id, "deploy", "x", "y")).toThrow("no job deploy");
+    mock.stop();
+  });
+
+  test("a stack's Terraform state is read by name: the newest text, none is missing, a long one is not read", async () => {
+    const { mock, api } = ready();
+    mock.addTerraformState("g/p", "net", '{"version":4}');
+    expect(await api.terraformState.get("g/p", "net", 100)).toEqual({
+      status: "ok",
+      text: '{"version":4}',
+    });
+    expect(await api.terraformState.get("g/p", "dns", 100)).toEqual({ status: "missing" });
+    expect(await api.terraformState.get("g/p", "net", 3)).toEqual({ status: "too_large" });
+    mock.addTerraformState("g/p", "net", '{"version":4,"serial":2}'); // the next version replaces it
+    expect(await api.terraformState.get("g/p", "net", 100)).toEqual({
+      status: "ok",
+      text: '{"version":4,"serial":2}',
+    });
+    // GitLab answers 404 for a project that is not there as for a state that is not: both are `missing`
+    expect(await api.terraformState.get("g/none", "net", 100)).toEqual({ status: "missing" });
+    expect(() => mock.addTerraformState("g/none", "net", "{}")).toThrow("no project g/none");
+    mock.stop();
+  });
+
+  test("a state name is one path segment, whatever it holds", async () => {
+    const { mock, api } = ready();
+    mock.addTerraformState("g/p", "a/b", "x");
+    expect(await api.terraformState.get("g/p", "a/b", 100)).toEqual({ status: "ok", text: "x" });
+    mock.stop();
+  });
+
+  test("an artifact path cannot climb out of the job", async () => {
+    const { mock, api } = ready();
+    await expect(api.pipelines.artifact("g/p", 1, "../../variables", 100)).rejects.toThrow(
+      TypeError,
+    );
+    mock.stop();
+  });
+
   test("a parent pipeline lists the child pipelines its trigger jobs started, whose jobs are their own", async () => {
     const { mock, api } = ready();
     const parent = await api.pipelines.trigger("g/p", "main");
@@ -388,6 +459,42 @@ describe("pipelines", () => {
     mock.stop();
   });
 
+  describe("an include of one of GitLab's own templates", () => {
+    const SCAN = "include:\n  - template: Jobs/Secret-Detection.gitlab-ci.yml\n";
+    const lint = async (text: string) => {
+      const { mock, api } = ready();
+      const r = await api.ci.lint("g/p", text);
+      mock.stop();
+      return r.errors;
+    };
+
+    test("brings its job in the stage `test`, and the file's own keys win over it", async () => {
+      expect(await lint(SCAN)).toEqual([]);
+      expect(await lint(`${SCAN}secret_detection:\n  stage: check\nstages: [check]\n`)).toEqual([]);
+      // a job of ours is not forced to have the template's script
+      expect(await lint(`${SCAN}build:\n  tags: [big]\n`)).toEqual([
+        "jobs:build config should implement the script:, run:, or trigger: keyword",
+      ]);
+    });
+
+    test("a template GitLab does not have is an error, not a silent no-op", async () => {
+      expect(
+        await lint("include:\n  - template: Jobs/Nope.gitlab-ci.yml\nbuild:\n  script: [x]\n"),
+      ).toEqual(["Included file `Jobs/Nope.gitlab-ci.yml` is empty or does not exist!"]);
+    });
+
+    test("a job in a stage the pipeline does not declare is refused, which is why a pipeline with its own stages moves the job", async () => {
+      expect(await lint(`${SCAN}stages: [build]\nbuild:\n  stage: build\n  script: [x]\n`)).toEqual(
+        [
+          "jobs:secret_detection chosen stage does not exist; available stages are .pre, build, .post",
+        ],
+      );
+      expect(await lint("build:\n  stage: nowhere\n  script: [x]\n")).toEqual([
+        "jobs:build chosen stage does not exist; available stages are .pre, build, test, deploy, .post",
+      ]);
+    });
+  });
+
   describe("an include of a file in another project", () => {
     const FILE = `spec:
   inputs:
@@ -475,6 +582,80 @@ build:
         (await collect(api.pipelines.jobs("g/thin", run.id))).map((j) => [j.name, j.stage]),
       ).toEqual([["build", "deploy"]]);
       mock.stop();
+    });
+
+    describe("a component of a catalog project", () => {
+      let seq = 0;
+      const comp = (name: string, stage: string) =>
+        `spec:\n  inputs:\n    stage:\n      default: ${stage}\n---\n${name}:\n  stage: $[[ inputs.stage ]]\n  script:\n    - echo ${name}\n`;
+      const use = (at: string, inputs = "") =>
+        `include:\n  - component: $CI_SERVER_FQDN/g/catalog/${at}\n${inputs ? `    inputs:\n${inputs}` : ""}`;
+      const world = async () => {
+        const { mock, api } = setup();
+        mock.addProject({
+          path: "g/catalog",
+          files: {
+            "templates/one.yml": comp("uno", "test"),
+            "templates/two/template.yml": comp("two", "test"),
+          },
+        });
+        mock.addTag("g/catalog", "1.0.0", { "templates/one.yml": comp("one", "test") });
+        mock.addTag("g/catalog", "1.2.0");
+        const p = mock.addProject({ path: "g/p" });
+        const lint = async (text: string) => (await api.ci.lint(p.id, text)).errors;
+        return { mock, api, lint };
+      };
+
+      test("a release, a partial release, ~latest, a SHA and a branch each resolve to that snapshot of the project", async () => {
+        const { mock, api, lint } = await world();
+        const jobsAt = async (at: string) => {
+          const thin = mock.addProject({
+            path: `g/thin${++seq}`,
+            files: { ".gitlab-ci.yml": use(at) },
+          });
+          const run = await api.pipelines.trigger(thin.id, "main");
+          return (await collect(api.pipelines.jobs(thin.id, run.id))).map((j) => j.name);
+        };
+        // 1.0.0 has `one` alone; 1.2.0 and main also have `two` (the directory form) and `one` renamed `uno`
+        expect(await lint(use("one@1.0.0"))).toEqual([]);
+        expect(await lint(use("two@1.0.0"))).toEqual([
+          "Component `g/catalog/two` does not exist at `1.0.0`",
+        ]);
+        expect(await lint(use("two@1.2.0"))).toEqual([]);
+        for (const at of ["one@1", "one@1.2", "one@~latest", "one@main"])
+          expect(await lint(use(at))).toEqual([]);
+        expect(await lint(use("two@1"))).toEqual([]);
+        expect(await lint(use("two@1.0"))).toEqual([
+          "Component `g/catalog/two` does not exist at `1.0`",
+        ]);
+        const sha = mock.tagSha("g/catalog", "1.2.0");
+        expect(await lint(use(`two@${sha}`))).toEqual([]);
+        // a tag is a snapshot: later commits to the default branch do not change what it holds
+        expect(await jobsAt("one@1.0.0")).toEqual(["one"]);
+        expect(await jobsAt("one@1.2.0")).toEqual(["uno"]);
+        mock.stop();
+      });
+
+      test("says what is wrong with the component, as lint errors", async () => {
+        const { mock, lint } = await world();
+        expect(await lint(use("one@1.0.0").replace("g/catalog", "g/nope"))).toEqual([
+          "Project `g/nope` not found or access denied! Make sure any includes in the pipeline configuration are correctly defined.",
+        ]);
+        expect(await lint(use("one@9.9.9"))).toEqual([
+          "Project `g/catalog` reference `9.9.9` does not exist!",
+        ]);
+        expect(await lint(use("none@1.0.0"))).toEqual([
+          "Component `g/catalog/none` does not exist at `1.0.0`",
+        ]);
+        expect(await lint("include:\n  - component: just-a-name\n")).toEqual([
+          "Component `just-a-name` is not of the form <fqdn>/<project>/<name>@<version>",
+        ]);
+        expect(await lint(use("one@1.0.0", "      stage: test\n      extra: 1\n"))).toEqual([
+          "unknown input arguments: extra",
+        ]);
+        expect(await lint(use("one@1.0.0", "      stage: test\n"))).toEqual([]);
+        mock.stop();
+      });
     });
 
     test("an include that fails reports its own error and nothing about the main file's jobs", async () => {
@@ -973,6 +1154,85 @@ describe("members", () => {
       name: "Mock token user",
       active: true,
     });
+    mock.stop();
+  });
+});
+
+describe("tags", () => {
+  test("lists the tags of a project, newest name first, and reads the tree and a file at a tag", async () => {
+    const { mock, api } = setup();
+    mock.addProject({ path: "g/catalog", files: { "templates/a.yml": "now\n" } });
+    const first = mock.addTag("g/catalog", "1.0.0", { "templates/a.yml": "then\n" });
+    mock.addTag("g/catalog", "1.2.0");
+    mock.addTag("g/catalog", "1.10.0", { "templates/b.yml": "b\n" });
+
+    const tags = await collect(api.repository.tags("g/catalog"));
+    expect(tags.map((t) => t.name)).toEqual(["1.2.0", "1.10.0", "1.0.0"]);
+    expect(tags.find((t) => t.name === "1.0.0")?.commitId).toBe(first);
+
+    expect((await api.repository.getFile("g/catalog", "templates/a.yml", "1.0.0")).content).toBe(
+      "then\n",
+    );
+    expect((await api.repository.getFile("g/catalog", "templates/a.yml", "1.2.0")).content).toBe(
+      "now\n",
+    );
+    expect((await api.repository.getFile("g/catalog", "templates/a.yml", first)).content).toBe(
+      "then\n",
+    );
+    const paths = async (ref: string) =>
+      (await collect(api.repository.tree("g/catalog", { ref, path: "templates" }))).map(
+        (e) => e.path,
+      );
+    expect(await paths("1.10.0")).toEqual(["templates/b.yml"]);
+    expect(await paths("1.2.0")).toEqual(["templates/a.yml"]);
+
+    await expect(collect(api.repository.tags("g/none"))).rejects.toMatchObject({
+      kind: "not_found",
+    });
+    mock.stop();
+  });
+
+  test("a project without tags lists none", async () => {
+    const { mock, api } = setup();
+    mock.addProject({ path: "g/plain" });
+    expect(await collect(api.repository.tags("g/plain"))).toEqual([]);
+    mock.stop();
+  });
+
+  test("access tokens: a rotation ends the old secret at once and expires in a week unless told", async () => {
+    const { mock, api } = setup();
+    mock.addProject({ path: "g/tok" });
+    const first = await api.accessTokens.create("g/tok", {
+      name: "ci",
+      scopes: ["api"],
+      expiresAt: "2999-01-01",
+    });
+    expect(mock.accessTokenValid(first.token as string)).toBe(true);
+    const second = await api.accessTokens.rotate("g/tok", first.id);
+    expect(mock.accessTokenValid(first.token as string)).toBe(false);
+    expect(mock.accessTokenValid(second.token as string)).toBe(true);
+    const week = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+    expect(second.expiresAt).toBe(week);
+    // GitLab will not rotate what is revoked
+    await expect(api.accessTokens.rotate("g/tok", first.id)).rejects.toMatchObject({
+      kind: "invalid",
+    });
+    // a revoked token stays revoked, and a second revoke is no error
+    await api.accessTokens.revoke("g/tok", second.id);
+    await api.accessTokens.revoke("g/tok", second.id);
+    expect(mock.accessTokenValid(second.token as string)).toBe(false);
+    // an expired date is not valid either
+    const old = await api.accessTokens.create("g/tok", {
+      name: "old",
+      scopes: ["api"],
+      expiresAt: "2000-01-01",
+    });
+    expect(old.active).toBe(false);
+    expect(mock.accessTokenValid(old.token as string)).toBe(false);
+    // a malformed date is refused
+    await expect(
+      api.accessTokens.rotate("g/tok", old.id, { expiresAt: "tomorrow" }),
+    ).rejects.toMatchObject({ kind: "invalid" });
     mock.stop();
   });
 });

@@ -2,18 +2,25 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { createLogger } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
+  allCostLimits,
+  allPools,
   auditEvents,
   createConnection,
   createOrganization,
   createPolicySet,
+  createPool,
   createProject,
+  deleteCostLimit,
   deletePolicySet,
+  deletePool,
   getRun,
   latestRunOfMergeRequest,
   listPolicySets,
   listRuns,
   planPipelinesOfRun,
   runOfPipeline,
+  setCostLimit,
+  updatePool,
   WEBHOOK_QUEUE,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
@@ -746,7 +753,204 @@ describe("policy in the plan", () => {
       [],
       [],
       "r",
+      [],
+      [],
+      [],
     );
     expect(req.policy).toBeUndefined();
+  });
+});
+
+describe("cost in the plan", () => {
+  const COST_IMAGE = "ghcr.io/example/orch-cost:1";
+  // `net` carries the tag; `app` (which depends on it, so is planned with it) does not
+  const TAGGED = {
+    ...FILES,
+    "stacks/net/stack.yml": "name: net\ntool: terraform\nversion: 1.9.0\ntags: [prod]\n",
+  };
+  const limit = (tag: string | null, organizationId = o1) =>
+    setCostLimit(t.db, {
+      organizationId,
+      tag,
+      maxMonthlyDelta: 100,
+      warnAt: null,
+      currency: "USD",
+    });
+  afterEach(async () => {
+    for (const org of [o1, o2]) {
+      for (const l of await allCostLimits(t.db, org)) await deleteCostLimit(t.db, org, l.id);
+    }
+  });
+  const plannedWith = async (costImage: string | undefined) => {
+    const w = await world({ files: TAGGED });
+    await w.change("stacks/net/main.tf");
+    await w.open();
+    await handle(
+      w,
+      {},
+      mrPlanHandler({ db: t.db, gitlab: async () => client(), config: { ...config, costImage } }),
+    );
+    return w;
+  };
+  const jobsOf = async (w: World) => {
+    const run = await w.latest();
+    const pipelines = await planPipelinesOfRun(t.db, o1, w.project.id, run?.id as string);
+    const yaml = mock.pipelineVariables(pipelines[0] as number)?.[0]?.value ?? "";
+    return {
+      yaml,
+      jobs: Bun.YAML.parse(yaml) as Record<string, { image?: { name: string }; needs?: unknown[] }>,
+    };
+  };
+
+  test("a stack a tag's limit reaches is estimated, and the stacks it does not reach are not", async () => {
+    await limit("prod");
+    const { jobs } = await jobsOf(await plannedWith(COST_IMAGE));
+    expect(Object.keys(jobs).filter((j) => j.startsWith("estimate:"))).toEqual(["estimate:net"]);
+    expect(jobs["estimate:net"]?.image?.name).toBe(COST_IMAGE);
+    expect(jobs["summary:net"]?.needs).toHaveLength(2);
+    expect(jobs["summary:app"]?.needs).toHaveLength(1);
+  });
+
+  test("the organization's own limit reaches every stack of the plan", async () => {
+    await limit(null);
+    const { jobs } = await jobsOf(await plannedWith(COST_IMAGE));
+    expect(Object.keys(jobs).filter((j) => j.startsWith("estimate:"))).toEqual([
+      "estimate:net",
+      "estimate:app",
+    ]);
+  });
+
+  test("with no limit, only another organization's, or one for a tag no stack has, nothing is estimated", async () => {
+    expect((await jobsOf(await plannedWith(COST_IMAGE))).yaml).not.toContain("infracost");
+    await limit(null, o2);
+    expect((await jobsOf(await plannedWith(COST_IMAGE))).yaml).not.toContain("infracost");
+    await limit("staging");
+    expect((await jobsOf(await plannedWith(COST_IMAGE))).yaml).not.toContain("infracost");
+  });
+
+  test("with no image to estimate with, the plan is made without an estimate (its apply is denied, COST-3), and the note says why", async () => {
+    await limit(null);
+    const w = await plannedWith(undefined);
+    expect(await w.runs()).toBe(1);
+    expect((await jobsOf(w)).yaml).not.toContain("infracost");
+    const body = w.notes()[0]?.body ?? "";
+    expect(body).toContain("ORCH_COST_IMAGE");
+    expect(body).toContain("- `net`");
+    expect(body).toContain("- `app`");
+  });
+
+  test("the note about a missing image names only the stacks a limit reaches, and there is none when no limit does", async () => {
+    await limit("prod");
+    const body = (await plannedWith(undefined)).notes()[0]?.body ?? "";
+    expect(body).toContain("ORCH_COST_IMAGE");
+    expect(body).toContain("- `net`");
+    expect(body).not.toContain("- `app`");
+    await deleteCostLimit(t.db, o1, (await allCostLimits(t.db, o1))[0]?.id as string);
+    expect((await plannedWith(undefined)).notes()[0]?.body ?? "").not.toContain("ORCH_COST_IMAGE");
+  });
+
+  test("an image that is not one is not planned, and the note says so", async () => {
+    await limit(null);
+    const w = await plannedWith("Not An Image");
+    expect(await w.runs()).toBe(0);
+    expect(w.posts()).toBe(0);
+    const body = w.notes()[0]?.body ?? "";
+    expect(body).toContain("The pipeline could not be generated:");
+    expect(body).toContain("cost.image");
+  });
+
+  test("the run keeps the tags each stack had in the commit, whatever the limits are", async () => {
+    const w = await plannedWith(COST_IMAGE);
+    const run = await w.latest();
+    expect(run?.stacks.map((s) => [s.stack, s.tags])).toEqual([
+      ["app", []],
+      ["net", ["prod"]],
+    ]);
+  });
+
+  test("a drift check is not estimated", async () => {
+    // planRequest without limits, as stack-drift.ts calls it
+    const { planRequest } = await import("./mr-plan");
+    const req = planRequest(
+      { ...config, costImage: COST_IMAGE },
+      { organizationId: o1, projectId: "p" },
+      [],
+      [],
+      "r",
+      [],
+      [],
+      [],
+    );
+    expect(req.cost).toBeUndefined();
+  });
+});
+
+describe("worker pools in the plan", () => {
+  const POOLED = {
+    ...FILES,
+    "stacks/net/stack.yml": "name: net\ntool: terraform\nversion: 1.9.0\npool: prod\n",
+  };
+  const pool = (organizationId: string, name: string, over: Record<string, unknown> = {}) =>
+    t.db.transaction((tx) =>
+      createPool(tx, { organizationId, name, tags: [`${name}-runner`], ...over }),
+    );
+  afterEach(async () => {
+    for (const org of [o1, o2]) {
+      const all = await allPools(t.db, org);
+      // the default goes first: it cannot be deleted while it is one
+      for (const p of all.filter((x) => x.isDefault)) {
+        await t.db.transaction((tx) => updatePool(tx, org, p.id, { isDefault: false }));
+      }
+      for (const p of all) await t.db.transaction((tx) => deletePool(tx, org, p.id));
+    }
+  });
+  const plannedIn = async (files: Record<string, string>) => {
+    const w = await world({ files });
+    await w.change("stacks/net/main.tf");
+    await w.open();
+    await handle(w);
+    return w;
+  };
+  const tagsOf = async (w: World) => {
+    const run = await w.latest();
+    const pipelines = await planPipelinesOfRun(t.db, o1, w.project.id, run?.id as string);
+    const yaml = mock.pipelineVariables(pipelines[0] as number)?.[0]?.value ?? "";
+    const jobs = Bun.YAML.parse(yaml) as Record<string, { tags?: string[] }>;
+    return Object.fromEntries(Object.entries(jobs).map(([name, j]) => [name, j.tags]));
+  };
+
+  test("a stack that names a pool, and one that falls to the default, run on their pools' runners", async () => {
+    await pool(o1, "prod");
+    await pool(o1, "dev", { isDefault: true });
+    const tags = await tagsOf(await plannedIn(POOLED));
+    expect(tags["plan:net"]).toEqual(["prod-runner"]);
+    expect(tags["summary:net"]).toEqual(["prod-runner"]);
+    // `app` names none: it takes the default
+    expect(tags["plan:app"]).toEqual(["dev-runner"]);
+  });
+
+  test("another organization's pools are not this one's: its default does not reach a stack here", async () => {
+    await pool(o2, "other", { isDefault: true });
+    await pool(o1, "prod");
+    const tags = await tagsOf(await plannedIn(POOLED));
+    expect(tags["plan:net"]).toEqual(["prod-runner"]);
+    expect(tags["plan:app"]).toBeUndefined();
+  });
+
+  test("with no pools the pipeline has no tags", async () => {
+    const tags = await tagsOf(await plannedIn(FILES));
+    expect(Object.values(tags).filter((x) => x !== undefined)).toEqual([]);
+  });
+
+  test("a stack that names a pool the organization lacks, or has switched off, is not planned and the note names it", async () => {
+    const missing = await plannedIn(POOLED);
+    expect(await missing.runs()).toBe(0);
+    expect(missing.posts()).toBe(0);
+    expect(missing.notes()[0]?.body).toContain("The pipeline could not be generated:");
+    expect(missing.notes()[0]?.body).toContain("the organization does not have");
+    await pool(o1, "prod", { enabled: false });
+    const off = await plannedIn(POOLED);
+    expect(await off.runs()).toBe(0);
+    expect(off.notes()[0]?.body).toContain("which is disabled");
   });
 });

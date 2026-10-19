@@ -128,6 +128,15 @@ export function gitlabContract(
         await failsWith("not_found", t.api.repository.getBranch(t.project, `${name}-none`));
       });
 
+      test("lists tags as a name and a commit (a sandbox may have none); an unknown project is not_found", async () => {
+        const tags = await collect(t.api.repository.tags(t.project));
+        for (const tag of tags) {
+          expect(tag.name.length).toBeGreaterThan(0);
+          expect(tag.commitId).toMatch(/^[0-9a-f]{40}$/);
+        }
+        await failsWith("not_found", collect(t.api.repository.tags(`${t.project}-none`)));
+      });
+
       test("commits several files at once and reads them back, tree and content", async () => {
         const branch = await newBranch();
         const root = `orch-contract/${branch}`;
@@ -285,6 +294,13 @@ export function gitlabContract(
         expect(await t.api.pipelines.get(t.project, p.id)).toMatchObject({ id: p.id, ref: branch });
         const jobs = await collect(t.api.pipelines.jobs(t.project, p.id));
         expect(jobs.map((j) => `${j.stage}:${j.name}`)).toEqual(["test:contract"]);
+        // a job that has made no artifacts has no such file: missing, not an error
+        const jobId = jobs[0]?.id ?? 0;
+        expect(
+          await t.api.pipelines.artifact(t.project, jobId, "gl-contract-report.json", 1000),
+        ).toEqual({
+          status: "missing",
+        });
 
         expect((await t.api.pipelines.cancel(t.project, p.id)).id).toBe(p.id);
         expect((await t.api.pipelines.retry(t.project, p.id)).id).toBe(p.id);
@@ -439,11 +455,93 @@ export function gitlabContract(
       });
     });
 
+    describe("project access tokens", () => {
+      // Every token made or rotated here is revoked at the end, so a real sandbox is left as it was found.
+      const made: number[] = [];
+      afterAll(async () => {
+        if (!t) return;
+        const left: unknown[] = [];
+        for (const id of made) {
+          await t.api.accessTokens.revoke(t.project, id).catch((e) => {
+            if (!(e instanceof GitlabError && e.kind === "not_found")) left.push(e);
+          });
+        }
+        if (left.length) throw new AggregateError(left, "contract tokens could not be revoked");
+      });
+      const week = () => new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+      const make = async () => {
+        const token = await t.api.accessTokens.create(t.project, {
+          name: `orch-contract-${Bun.randomUUIDv7().slice(-12)}`,
+          scopes: ["read_api"],
+          accessLevel: 10,
+          expiresAt: week(),
+        });
+        made.push(token.id);
+        return token;
+      };
+
+      test("creates a token whose secret is shown once; reading it back does not show it", async () => {
+        const created = await make();
+        expect(created.token).toMatch(/\S{8,}/);
+        expect(created).toMatchObject({ scopes: ["read_api"], active: true, revoked: false });
+        const read = await t.api.accessTokens.get(t.project, created.id);
+        expect(read).toMatchObject({ id: created.id, name: created.name, active: true });
+        expect(read.token).toBeNull();
+        // neither JSON nor a log line carries the secret
+        expect(JSON.stringify(created)).not.toContain(created.token as string);
+      });
+
+      test("rotating gives a new token with the same name and scopes and ends the old one at once", async () => {
+        const old = await make();
+        const next = await t.api.accessTokens.rotate(t.project, old.id, { expiresAt: week() });
+        made.push(next.id);
+        expect(next.id).not.toBe(old.id);
+        expect(next.token).toMatch(/\S{8,}/);
+        expect(next.token).not.toBe(old.token);
+        expect(next).toMatchObject({ name: old.name, scopes: old.scopes, active: true });
+        expect(await t.api.accessTokens.get(t.project, old.id)).toMatchObject({ active: false });
+        expect(await t.api.accessTokens.get(t.project, next.id)).toMatchObject({ active: true });
+      });
+
+      test("revoking ends a token; one that is not there is not_found for every call", async () => {
+        const token = await make();
+        await t.api.accessTokens.revoke(t.project, token.id);
+        expect(await t.api.accessTokens.get(t.project, token.id)).toMatchObject({ active: false });
+        const none = 2_000_000_000;
+        await failsWith("not_found", t.api.accessTokens.get(t.project, none));
+        await failsWith("not_found", t.api.accessTokens.rotate(t.project, none));
+        await failsWith("not_found", t.api.accessTokens.revoke(t.project, none));
+      });
+
+      test("an id that is not a token id is refused before anything is sent", async () => {
+        for (const id of [0, -1, 1.5, Number.NaN]) {
+          await expect(t.api.accessTokens.get(t.project, id)).rejects.toBeInstanceOf(TypeError);
+        }
+      });
+    });
+
     describe("the token", () => {
       test("reports its scopes and expiry", async () => {
         const info = await t.api.users.tokenInfo();
         expect(info.scopes.length).toBeGreaterThan(0);
         expect(info.expiresAt === null || /^\d{4}-\d{2}-\d{2}/.test(info.expiresAt)).toBe(true);
+      });
+    });
+
+    describe("runners", () => {
+      test("lists a project's runners as domain objects (a sandbox may have none, or the token may not be a maintainer); an unknown project is not_found", async () => {
+        const listed = await collect(t.api.runners.list(t.project)).catch((e) => {
+          expect(e).toBeInstanceOf(GitlabError);
+          expect((e as GitlabError).kind).toBe("forbidden");
+          return [];
+        });
+        for (const r of listed) {
+          expect(Number.isInteger(r.id)).toBe(true);
+          expect(typeof r.online).toBe("boolean");
+          expect(typeof r.paused).toBe("boolean");
+          expect(Object.keys(r).sort()).toEqual(["id", "online", "paused", "status", "type"]);
+        }
+        await failsWith("not_found", collect(t.api.runners.list("no-such-group/none")));
       });
     });
 

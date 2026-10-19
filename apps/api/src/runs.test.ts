@@ -9,6 +9,8 @@ import {
   moveRunStack,
   type NewStack,
   runs,
+  setCostLimit,
+  storePlanSummary,
   syncStacks,
   upsertUser,
 } from "@orch/db";
@@ -290,6 +292,134 @@ describe("creating a run", () => {
         )
       ).status,
     ).toBe(201);
+  });
+});
+
+describe("what a run's plans cost", () => {
+  const summary = (monthlyDelta: number | null) => ({
+    add: 1,
+    change: 0,
+    destroy: 0,
+    resources: [],
+    ...(monthlyDelta === null
+      ? {}
+      : { cost: { monthlyDelta, monthlyTotal: 900, currency: "USD", tool: "infracost" } }),
+  });
+  const limit = (org: string, tag: string | null, maxMonthlyDelta: number) =>
+    setCostLimit(t.db, {
+      organizationId: org,
+      tag,
+      maxMonthlyDelta,
+      warnAt: null,
+      currency: "USD",
+    });
+
+  test("each stack says what it is estimated to cost and what the limit that reaches it makes of that, as the apply would judge it now", async () => {
+    const run = await createRun(t.db, {
+      organizationId: ids.o1,
+      projectId: ids.p1,
+      ref: "feature/cost",
+      sha: SHA,
+      stacks: ["net", "app", "db"],
+      tags: { net: ["prod"] },
+    });
+    const store = (name: string, delta: number | null) =>
+      storePlanSummary(t.db, ids.o1, ids.p1, run.id, name, summary(delta));
+    await store("net", 42);
+    await store("app", 42);
+    await limit(ids.o1, null, 100);
+    await limit(ids.o1, "prod", 30);
+    // a limit of another organization reaches nothing here
+    await limit(ids.o2, null, 1);
+
+    const read = (await call("bob", "GET", `${runsPath()}/${run.id}`)).json;
+    const cost = (name: string) => read.stacks.find((s: { name: string }) => s.name === name).cost;
+    const estimate = { monthlyDelta: 42, monthlyTotal: 900, currency: "USD", tool: "infracost" };
+    // the stack's own tag has the stricter limit; the others have the organization's
+    expect(cost("net")).toEqual({
+      estimate,
+      limit: { tag: "prod", maxMonthlyDelta: 30, warnAt: null, currency: "USD" },
+      verdict: "deny",
+      rules: ["cost-over-limit"],
+    });
+    expect(cost("app")).toEqual({
+      estimate,
+      limit: { tag: null, maxMonthlyDelta: 100, warnAt: null, currency: "USD" },
+      verdict: "pass",
+      rules: [],
+    });
+    // nothing has summarized this plan: its estimator may still run, so nothing is said yet
+    expect(cost("db")).toBeNull();
+    const listed = (await call("bob", "GET", `${runsPath()}?limit=100`)).json.items;
+    expect(listed.find((r: { id: string }) => r.id === run.id)).toEqual(read);
+
+    // the limits as they are now: raised, the same plan passes
+    await limit(ids.o1, "prod", 50);
+    const later = (await call("bob", "GET", `${runsPath()}/${run.id}`)).json;
+    expect(later.stacks.find((s: { name: string }) => s.name === "net").cost).toMatchObject({
+      verdict: "pass",
+      rules: [],
+    });
+  });
+
+  test("a run made through the API keeps the tags the project's stacks have, so its limit is the one an apply would use", async () => {
+    const p4 = (await createProject(t.db, { organizationId: ids.o1, name: "p4" })).id;
+    await syncStacks(t.db, ids.o1, p4, [{ ...stack("gold-net"), tags: ["gold"] }, stack("plain")], {
+      prune: false,
+    });
+    await limit(ids.o1, "gold", 10);
+    const made = (
+      await call("carol", "POST", runsPath(ids.o1, p4), valid({ stacks: ["gold-net", "plain"] }))
+    ).json;
+    for (const name of ["gold-net", "plain"]) {
+      await storePlanSummary(t.db, ids.o1, p4, made.id, name, summary(42));
+    }
+    const read = (await call("bob", "GET", `${runsPath(ids.o1, p4)}/${made.id}`)).json;
+    const cost = (name: string) => read.stacks.find((s: { name: string }) => s.name === name).cost;
+    expect(cost("gold-net")).toMatchObject({ limit: { tag: "gold" }, verdict: "deny" });
+    expect(cost("plain")).toMatchObject({ limit: { tag: null } });
+  });
+
+  test("an estimate with no limit is shown and judged by nothing; a limit with no estimate denies; neither says nothing", async () => {
+    const run = await createRun(t.db, {
+      organizationId: ids.o2,
+      projectId: ids.q1,
+      ref: "feature/cost",
+      sha: SHA,
+      stacks: ["net", "only-q1"],
+      tags: { net: ["lonely"] },
+    });
+    await storePlanSummary(t.db, ids.o2, ids.q1, run.id, "net", summary(5));
+    await storePlanSummary(t.db, ids.o2, ids.q1, run.id, "only-q1", summary(null));
+    const read = (await call("dave", "GET", `${runsPath(ids.o2, ids.q1)}/${run.id}`)).json;
+    const cost = (name: string) => read.stacks.find((s: { name: string }) => s.name === name).cost;
+    // o2's limit is the organization's own: 1 a month, so a plan with no estimate is denied
+    expect(cost("only-q1")).toMatchObject({
+      estimate: null,
+      verdict: "deny",
+      rules: ["cost-unavailable"],
+    });
+    expect(cost("net")).toMatchObject({ verdict: "deny", rules: ["cost-over-limit"] });
+
+    // no limit at all (another organization's are not this one's): the estimate stands alone
+    const o3 = (await createOrganization(t.db, { slug: "three", name: "Three" })).id;
+    const p3 = (await createProject(t.db, { organizationId: o3, name: "p3" })).id;
+    await syncStacks(t.db, o3, p3, [stack("solo")], { prune: false });
+    roleTable.set(people.erin.gitlabId, { orgRoles: { [o3]: "viewer" }, projectRoles: {} });
+    const bare = await createRun(t.db, {
+      organizationId: o3,
+      projectId: p3,
+      ref: "feature/cost",
+      sha: SHA,
+      stacks: ["solo"],
+    });
+    await storePlanSummary(t.db, o3, p3, bare.id, "solo", summary(5));
+    const seen = (await call("erin", "GET", `${runsPath(o3, p3)}/${bare.id}`)).json;
+    expect(seen.stacks[0].cost).toMatchObject({ limit: null, verdict: "pass" });
+    // a stack no limit reaches and nothing estimated says nothing at all
+    await storePlanSummary(t.db, o3, p3, bare.id, "solo", summary(null));
+    const none = (await call("erin", "GET", `${runsPath(o3, p3)}/${bare.id}`)).json;
+    expect(none.stacks[0].cost).toBeNull();
   });
 });
 

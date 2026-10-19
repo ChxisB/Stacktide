@@ -1,6 +1,7 @@
-import { DomainError, type Logger, POLICY_RULE, RUN_STATES } from "@orch/core";
+import { type CostLimit, DomainError, type Logger, POLICY_RULE, RUN_STATES } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import {
+  allCostLimits,
   auditedStacks,
   connectionOfRun,
   createRun,
@@ -17,11 +18,12 @@ import {
   storePolicyVerdict,
 } from "@orch/db";
 import { GitlabError } from "@orch/gitlab";
-import type { Tool } from "@orch/iac";
+import type { Platform, Tool } from "@orch/iac";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { noKeys, WHY } from "../connections";
+import { costViewOf } from "../cost-view";
 import { guardPlugin } from "../guard";
 import type { Principal } from "../principal";
 import { applyRun } from "../run-apply";
@@ -64,12 +66,40 @@ const runSchema = z.object({
       error: z.string().nullable(),
       /** When it last changed state. */
       updatedAt: z.iso.datetime(),
+      /**
+       * What its plan is estimated to cost and what the cost limit that reaches it makes of that, judged
+       * as an apply would judge it now. Null until the plan has a summary, and when there is neither an
+       * estimate nor a limit. An estimate, not a bill.
+       */
+      cost: z
+        .object({
+          estimate: z
+            .object({
+              monthlyDelta: z.number(),
+              monthlyTotal: z.number(),
+              currency: z.string(),
+              tool: z.string(),
+            })
+            .nullable(),
+          limit: z
+            .object({
+              tag: z.string().nullable(),
+              maxMonthlyDelta: z.number(),
+              warnAt: z.number().nullable(),
+              currency: z.string(),
+            })
+            .nullable(),
+          verdict: z.enum(["pass", "warn", "deny"]),
+          /** Names of the rules that denied or warned. */
+          rules: z.array(z.string()),
+        })
+        .nullable(),
     }),
   ),
   ...stamps,
 });
 
-const dto = (r: RunWithStacks): z.infer<typeof runSchema> => ({
+const dto = (r: RunWithStacks, limits: readonly CostLimit[]): z.infer<typeof runSchema> => ({
   id: r.id,
   organizationId: r.organizationId,
   projectId: r.projectId,
@@ -82,6 +112,7 @@ const dto = (r: RunWithStacks): z.infer<typeof runSchema> => ({
     status: s.status as (typeof RUN_STATES)[number],
     error: s.error,
     updatedAt: iso(s.updatedAt),
+    cost: costViewOf(s, limits),
   })),
   createdAt: iso(r.createdAt),
   // a run has no state of its own, so it last changed when its newest stack did
@@ -117,6 +148,8 @@ export const MAX_SUMMARY_BYTES = 1024 * 1024;
 // shortcut: a summary lists at most 500 resources (the counts are whole); upgrade when a plan really changes more and a reader needs them all.
 const MAX_LISTED = 500;
 const count = z.number().int().min(0).max(1_000_000);
+/** A trillion: the database's check says the same. */
+const MAX_AMOUNT = 1e12;
 
 const summaryBody = z.strictObject({
   stack: z.string().min(1).max(63),
@@ -140,6 +173,17 @@ const summaryBody = z.strictObject({
       }),
     )
     .max(MAX_LISTED),
+  // What the plan job's estimator said (COST-1). Amounts are finite (z.number refuses NaN and
+  // infinity, which JSON can only write as 1e999), a delta may be negative, a total cannot; the
+  // currency is a code that is never converted, the tool a name that is shown to people.
+  cost: z
+    .strictObject({
+      monthlyDelta: z.number().min(-MAX_AMOUNT).max(MAX_AMOUNT),
+      monthlyTotal: z.number().min(0).max(MAX_AMOUNT),
+      currency: z.string().regex(/^[A-Z]{3}$/, "not a currency code"),
+      tool: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,39}$/, "not a tool name"),
+    })
+    .optional(),
 });
 
 // A rule name is the one thing of a policy's finding that travels (never its message, which may quote
@@ -212,10 +256,12 @@ export const runRoutes = ({
   logger,
   keys,
   images,
+  platform,
 }: RouteDeps & {
   logger: Logger;
   keys?: KeyProvider;
   images?: Partial<Record<Tool, string>> | undefined;
+  platform?: Platform | undefined;
 }) => {
   // Only the CI job the platform recorded as this stack's summary job (from the pipeline's events),
   // on the run's own ref. A token holds `run.summary` for every job without an environment, so the
@@ -255,7 +301,8 @@ export const runRoutes = ({
         // shortcut: these checks and the insert are not one snapshot; a project deleted between them
         // fails the insert (a 500), and a stack a rescan just removed is recorded; upgrade with IAC-6, which fails a stack it cannot find.
         if (!(await getProject(db, orgId, projectId))) throw notFound("Project");
-        const known = new Set((await listStacks(db, orgId, projectId)).map((s) => s.name));
+        const registered = await listStacks(db, orgId, projectId);
+        const known = new Set(registered.map((s) => s.name));
         const unknown = body.stacks.filter((n) => !known.has(n));
         if (unknown.length > 0) {
           throw new DomainError(
@@ -268,7 +315,13 @@ export const runRoutes = ({
           );
         }
         const run = await db.transaction(async (tx) => {
-          const run = await createRun(tx, { ...body, organizationId: orgId, projectId });
+          const run = await createRun(tx, {
+            ...body,
+            organizationId: orgId,
+            projectId,
+            // the tags the project's stacks have; an apply reads the commit's, which can differ (docs/cost-gates.md)
+            tags: Object.fromEntries(registered.map((s) => [s.name, s.tags])),
+          });
           await audit(tx, {
             action: "run.create",
             resourceType: "run",
@@ -286,7 +339,8 @@ export const runRoutes = ({
           return run;
         });
         set.status = 201;
-        return dto(run);
+        // nothing of a new run is summarized, so no limit is read to judge it
+        return dto(run, []);
       },
       {
         params,
@@ -301,11 +355,12 @@ export const runRoutes = ({
       "",
       async ({ params: { orgId, projectId }, query }) => {
         if (!(await getProject(db, orgId, projectId))) throw notFound("Project");
+        const limits = await allCostLimits(db, orgId);
         return paged(query, {
           key: z.tuple([z.uuid()]),
           keyOf: (r: RunWithStacks) => [r.id],
           fetch: (after, limit) => listRuns(db, orgId, projectId, { before: after?.[0], limit }),
-          dto,
+          dto: (r) => dto(r, limits),
         });
       },
       {
@@ -320,7 +375,7 @@ export const runRoutes = ({
       async ({ params: { orgId, projectId, runId } }) => {
         const run = await getRun(db, orgId, projectId, runId);
         if (!run) throw notFound("Run");
-        return dto(run);
+        return dto(run, await allCostLimits(db, orgId));
       },
       {
         params: params.extend({ runId: z.uuid() }),
@@ -356,6 +411,7 @@ export const runRoutes = ({
               change: body.change,
               destroy: body.destroy,
               resources: body.resources.length,
+              costed: body.cost !== undefined,
             },
           });
           // A drift run's plan is the finding; an episode's start and end are the only news.
@@ -484,7 +540,7 @@ export const runRoutes = ({
             connectionId,
             set.headers["x-request-id"],
           );
-          await applyRun({ db, log: logger, images }, gitlab, {
+          await applyRun({ db, log: logger, images, platform }, gitlab, {
             at: { organizationId: orgId, projectId, gitlabProjectId: project.gitlabProjectId },
             run,
             stacks: body.stacks,
@@ -495,7 +551,10 @@ export const runRoutes = ({
           throw applyProblem(error);
         }
         set.status = 202;
-        return dto((await getRun(db, orgId, projectId, runId)) ?? run);
+        return dto(
+          (await getRun(db, orgId, projectId, runId)) ?? run,
+          await allCostLimits(db, orgId),
+        );
       },
       {
         params: params.extend({ runId: z.uuid() }),

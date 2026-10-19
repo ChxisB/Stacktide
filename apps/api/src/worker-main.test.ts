@@ -47,7 +47,7 @@ describe("worker entrypoint", () => {
     };
     const withKeys = await run({ ORCH_MASTER_KEYS: keys });
     expect(withKeys).toContain(
-      '"queues":["audit.purge","change_request.expire","sync.apply","sync.auto","sync.drift.tick","sync.drift","notify.deliver","audit.forward","gitlab.event"]',
+      '"queues":["audit.purge","change_request.expire","sync.apply","sync.auto","sync.drift.tick","sync.drift","notify.deliver","audit.forward","rotation.tick","lease.sweep","gitlab.event"]',
     );
     expect(withKeys).not.toContain(keys);
     const without = await run({});
@@ -135,6 +135,40 @@ describe("worker entrypoint", () => {
     const child = start({ DATABASE_URL: t.url, DRIFT_CHECK_SECONDS: "30" });
     expect(await child.proc.exited).not.toBe(0);
     expect(await child.err).toContain("DRIFT_CHECK_SECONDS");
+  });
+
+  test("the rotation schedule is stated with keys, off at 0, and a value in between is refused", async () => {
+    const keys = `k1:${Buffer.alloc(32, 7).toString("base64")}`;
+    const run = async (extra: Record<string, string>) => {
+      const child = start({ DATABASE_URL: t.url, ORCH_MASTER_KEYS: keys, ...extra });
+      await Bun.sleep(500);
+      child.proc.kill("SIGTERM");
+      await child.proc.exited;
+    };
+    const rotation = async () =>
+      (await t.db.select().from(schedules)).find((s) => s.name === "rotation.tick");
+    await run({});
+    expect(await rotation()).toMatchObject({
+      intervalSeconds: 300,
+      queue: "rotation.tick",
+      enabled: true,
+    });
+    await run({ ROTATION_CHECK_SECONDS: "120" });
+    expect(await rotation()).toMatchObject({ intervalSeconds: 120, enabled: true });
+    await run({ ROTATION_CHECK_SECONDS: "0" });
+    expect((await rotation())?.enabled).toBe(false);
+    // a lease is a live token: it is ended on time with rotation off too
+    expect(
+      (await t.db.select().from(schedules)).find((s) => s.name === "lease.sweep"),
+    ).toMatchObject({
+      intervalSeconds: 60,
+      queue: "lease.sweep",
+      enabled: true,
+    });
+
+    const child = start({ DATABASE_URL: t.url, ROTATION_CHECK_SECONDS: "30" });
+    expect(await child.proc.exited).not.toBe(0);
+    expect(await child.err).toContain("ROTATION_CHECK_SECONDS");
   });
 
   test("the audit purge is scheduled without keys, off at 0, and a value in between is refused", async () => {

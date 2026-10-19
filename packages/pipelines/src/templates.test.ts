@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parse } from "yaml";
 import { loadTemplates } from "./loader";
-import { render } from "./render";
+import { render, SECRET_DETECTION_TEMPLATE } from "./render";
 
 const catalog = await loadTemplates();
 const names = catalog.map((t) => `${t.manifest.name}@${t.manifest.version}`);
@@ -101,4 +101,36 @@ describe("the starter templates", () => {
       expect(taken).toEqual([]);
     });
   });
+});
+
+describe("the starter templates with secret detection on (SCAN-5)", () => {
+  const starters = names.map((n) => n.split("@")[0] ?? "");
+  const on = (name: string) => {
+    const t = catalog.find((c) => c.manifest.name === name);
+    if (!t) throw new Error(`no template ${name}`);
+    return render(t, [{ params: { secretDetection: true } }]);
+  };
+
+  test.each(starters)("%s renders with GitLab's template and its job", (name) => {
+    expect(on(name)).toMatchSnapshot();
+  });
+
+  test.each(starters)("%s: off is what it always rendered, byte for byte", (name) => {
+    const t = catalog.find((c) => c.manifest.name === name);
+    if (!t) throw new Error(`no template ${name}`);
+    expect(render(t, [{ params: { secretDetection: false } }])).toBe(render(t));
+    expect(render(t)).not.toContain("secret_detection");
+  });
+
+  test.each(starters)(
+    "%s: the job is in a stage the pipeline declares and takes nothing from `default`",
+    (name) => {
+      const doc = parse(on(name)) as Record<string, Record<string, unknown>>;
+      expect(doc.include).toEqual([{ template: SECRET_DETECTION_TEMPLATE }] as never);
+      // the starters name their stages and none has GitLab's own `test`
+      expect(doc.stages as unknown as string[]).toContain(doc.secret_detection?.stage as string);
+      // `default` holds each starter's image, services and install step: none of it is for the analyzer's image
+      expect(doc.secret_detection?.inherit).toEqual({ default: false });
+    },
+  );
 });

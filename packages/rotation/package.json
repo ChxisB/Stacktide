@@ -1,0 +1,13 @@
+{
+  "name": "@orch/rotation",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "dependencies": {
+    "@orch/core": "workspace:*",
+    "@orch/gitlab": "workspace:*"
+  }
+}

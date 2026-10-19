@@ -13,8 +13,10 @@ export * from "./auto-sync";
 export * from "./change-requests";
 export * from "./ci";
 export * from "./connections";
+export * from "./cost-limits";
 export * from "./imports";
 export * from "./jobs";
+export * from "./leases";
 export * from "./merge-request-notes";
 export * from "./metrics";
 export * from "./notifications";
@@ -24,16 +26,22 @@ export * from "./pipeline-runs";
 export * from "./policy";
 export * from "./repo";
 export * from "./rewrap";
+export * from "./rotations";
 export * from "./runs";
 export * from "./schedules";
 export * from "./schema";
+export * from "./secret-findings";
+export * from "./sso";
 export * from "./stack-drift";
 export * from "./stacks";
+export * from "./state";
+export * from "./state-locks";
 export * from "./sync-drift";
 export * from "./sync-runs";
 export * from "./sync-targets";
 export * from "./variables";
 export * from "./webhooks";
+export * from "./worker-pools";
 
 /** `max` caps the pool; Bun opens several connections per client by default. */
 export function createDb(url: string, max = 10) {

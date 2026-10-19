@@ -169,7 +169,8 @@ describe("a valid id_token", () => {
     expect(rest).toEqual({
       type: "Bearer",
       expiresAt: expect.any(String),
-      scopes: ["project.read", "run.summary"],
+      // a protected ref with no environment may also take and end leases (ROT-11)
+      scopes: ["project.read", "run.summary", "lease.issue", "lease.revoke"],
       organizationId: ids.o1,
       projectId: ids.p1,
     });
@@ -187,7 +188,7 @@ describe("a valid id_token", () => {
       gitlabJobId: 777,
       ref: "main",
       refProtected: true,
-      scopes: ["project.read", "run.summary"],
+      scopes: ["project.read", "run.summary", "lease.issue", "lease.revoke"],
     });
     expect(JSON.stringify(row)).not.toContain(token); // only the hash is kept
   });
@@ -211,8 +212,9 @@ describe("a valid id_token", () => {
     expect(await tokenRows()).toBe(before);
   });
 
-  test("a job id is optional", async () => {
-    const { token } = await exchangeOk({ job_id: undefined });
+  test("a job id is optional, and a job without one takes no lease (the cap has no job to count it against)", async () => {
+    const { token, scopes } = await exchangeOk({ job_id: undefined });
+    expect(scopes).toEqual(["project.read", "run.summary"]);
     const [row] = await t.db
       .select()
       .from(ciTokens)
@@ -251,6 +253,85 @@ describe("a valid id_token", () => {
       environmentId: ids.stagingP1,
     });
     expect(JSON.stringify(event)).not.toContain(token);
+  });
+});
+
+describe("a token asked for state (STATE-3)", () => {
+  const asked = async (over: Record<string, unknown> = {}) => {
+    const res = await send("/auth/ci/exchange", "POST", {
+      body: { id_token: await idToken(over), state: true },
+    });
+    expect(res.status).toBe(201);
+    return res.json as {
+      token: string;
+      scopes: string[];
+      expiresAt: string;
+      environmentId?: string;
+    };
+  };
+
+  test("reads state, and writes it only on a protected ref with a job id; it is not a lease or environment token", async () => {
+    expect((await asked()).scopes).toEqual(["project.read", "state.read", "state.write"]);
+    expect((await asked({ ref_protected: "false", ref: "feature" })).scopes).toEqual([
+      "project.read",
+      "state.read",
+    ]);
+    expect((await asked({ job_id: undefined })).scopes).toEqual(["project.read", "state.read"]);
+    // a plain exchange is what it was: `state: false` is no different from leaving it out
+    const plain = await send("/auth/ci/exchange", "POST", {
+      body: { id_token: await idToken(), state: false },
+    });
+    expect(plain.json.scopes).toEqual([
+      "project.read",
+      "run.summary",
+      "lease.issue",
+      "lease.revoke",
+    ]);
+    const wrong = await send("/auth/ci/exchange", "POST", {
+      body: { id_token: await idToken(), state: "yes" },
+    });
+    expect(wrong.status).toBe(422);
+  });
+
+  test("is tied to no environment, whatever environment the job runs in, and holds nothing of one's", async () => {
+    const got = await asked({ environment: "production", environment_protected: "true" });
+    expect(got.environmentId).toBeUndefined();
+    expect(got.scopes).not.toContain("secret.reveal");
+    expect(got.scopes).not.toContain("environment.read");
+    const [row] = await t.db
+      .select()
+      .from(ciTokens)
+      .where(eq(ciTokens.tokenHash, hashToken(got.token)));
+    expect(row?.environmentId).toBeNull();
+    // it reads its project, and not an environment
+    expect((await send(project(), "GET", { bearer: got.token })).status).toBe(200);
+    expect((await send(envPath(ids.productionP1), "GET", { bearer: got.token })).status).toBe(403);
+    // an environment that is not registered, or a protected one from an unprotected ref, is no reason to refuse it
+    expect(
+      (await asked({ environment: "nowhere", ref_protected: "false", ref: "feature" })).scopes,
+    ).toEqual(["project.read", "state.read"]);
+  });
+
+  test("lasts as long as the job, up to an hour", async () => {
+    const long = await asked({ exp: seconds() + 7200 });
+    const minutes = (Date.parse(long.expiresAt) - Date.now()) / 60_000;
+    expect(minutes).toBeGreaterThan(59);
+    expect(minutes).toBeLessThanOrEqual(60);
+    // never longer than the job's own token
+    const short = await asked({ exp: seconds() + 120 });
+    expect((Date.parse(short.expiresAt) - Date.now()) / 1000).toBeLessThanOrEqual(120);
+  });
+
+  test("is recorded as a state token", async () => {
+    const before = (await exchangeEvents()).length;
+    const { token } = await asked();
+    const events = await exchangeEvents();
+    expect(events).toHaveLength(before + 1);
+    expect(events.at(-1)?.metadata).toMatchObject({
+      state: true,
+      scopes: ["project.read", "state.read", "state.write"],
+    });
+    expect(JSON.stringify(events.at(-1))).not.toContain(token);
   });
 });
 
@@ -540,9 +621,17 @@ describe("the issued token as a credential", () => {
       subject: {
         kind: "ci",
         orgRoles: {},
+        // `lease.issue` needs a developer; the scopes are what hold it to leases and its own reads
+        projectRoles: { [ids.p1]: "developer" },
+        scopes: ["project.read", "run.summary", "lease.issue", "lease.revoke"],
+        environmentId: undefined,
+      },
+    });
+    // an unprotected ref has no leases, and so stays a reporter
+    expect(await as({ ref_protected: "false", ref: "feature" })).toMatchObject({
+      subject: {
         projectRoles: { [ids.p1]: "reporter" },
         scopes: ["project.read", "run.summary"],
-        environmentId: undefined,
       },
     });
     expect(await as({ environment: "staging", environment_protected: "false" })).toMatchObject({

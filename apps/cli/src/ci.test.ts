@@ -13,6 +13,7 @@ import {
   createEnvironment,
   createOrganization,
   createProject,
+  syncStacks,
   upsertUser,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
@@ -286,6 +287,66 @@ describe("orch ci login", () => {
     expect(text).not.toContain("ORCH_ENV");
     expect(err.join("\n")).toContain("environment: name:");
     await evalled(text);
+  });
+
+  test("--state signs the job in for Terraform state alone: its own variable, nothing of the environment's", async () => {
+    await syncStacks(
+      t.db,
+      ids.org,
+      ids.web,
+      [
+        {
+          name: "net",
+          path: "net",
+          tool: "tofu",
+          version: null,
+          tags: [],
+          dependsOn: [],
+          watch: [],
+          applyOn: "command",
+          backend: "http",
+        },
+      ],
+      { prune: true },
+    );
+    const { code, out, err } = await login({}, ["--state"]);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).not.toMatch(/ORCH_TOKEN|ORCH_ENV/);
+    expect(err.join("\n")).not.toContain("warning");
+    const proc = Bun.spawn(
+      [
+        "sh",
+        "-c",
+        `eval "$1"; printf '%s\\n' "$ORCH_API_URL" "$ORCH_ORG" "$ORCH_PROJECT" "$ORCH_STATE_TOKEN"`,
+        "sh",
+        text,
+      ],
+      { env: { PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" },
+    );
+    const [lines, exit] = [await new Response(proc.stdout).text(), await proc.exited];
+    expect(exit).toBe(0);
+    const [apiUrl, org, project, token] = lines.split("\n") as [string, string, string, string];
+    credentials.push(token);
+    expect([apiUrl, org, project]).toEqual([api, ids.org, ids.web]);
+    expect(token).toMatch(/^orchci_/);
+
+    // what Terraform's http backend does with it: the token as the password
+    const address = `${apiUrl}/organizations/${org}/projects/${project}/state/net`;
+    const authorization = `Basic ${btoa(`orch:${token}`)}`;
+    const body = JSON.stringify({ version: 4, serial: 1, lineage: "l" });
+    const send = (method: string, sent?: string) =>
+      fetch(address, {
+        method,
+        headers: { authorization, ...(sent && { "content-type": "application/json" }) },
+        body: sent,
+      });
+    expect((await send("POST", body)).status).toBe(200);
+    expect(await (await send("GET")).text()).toBe(body);
+    // and it is not the environment's token
+    const env = { ORCH_API_URL: api, ORCH_ORG: org, ORCH_PROJECT: project, ORCH_TOKEN: token };
+    expect((await orch(["export", "--env", ids.dev], { env })).code).toBe(1);
+    expect((await send("DELETE")).status).toBe(200);
   });
 
   test("a newline after the id_token, as a variable often has, is not part of it", async () => {

@@ -19,6 +19,7 @@ import {
   ValueField,
   variablesAt,
 } from "./variable-parts";
+import { Rotation } from "./variable-rotation";
 
 /** How long a revealed value stays on screen. */
 export const REVEAL_MS = 15_000;
@@ -143,6 +144,7 @@ type Panel =
   | { kind: "edit"; cell: Cell; env: Env }
   | { kind: "delete"; cell: Cell; env: Env }
   | { kind: "history"; cell: Cell; env: Env }
+  | { kind: "rotation"; cell: Cell; env: Env }
   | { kind: "import" };
 
 function AddVariable({
@@ -493,6 +495,7 @@ function Grid({
                             edit={() => setPanel({ kind: "edit", cell, env })}
                             remove={() => setPanel({ kind: "delete", cell, env })}
                             history={() => setPanel({ kind: "history", cell, env })}
+                            rotation={() => setPanel({ kind: "rotation", cell, env })}
                             override={() => setPanel({ kind: "add", key, scope: env.id })}
                           />
                         ) : issue ? (
@@ -559,6 +562,16 @@ function Grid({
           done={refresh}
           close={() => setPanel(undefined)}
         />
+      ) : panel?.kind === "rotation" ? (
+        <Rotation
+          key={panel.cell.id}
+          orgId={orgId}
+          projectId={projectId}
+          cell={panel.cell}
+          env={panel.env}
+          changed={reload}
+          close={() => setPanel(undefined)}
+        />
       ) : panel?.kind === "import" ? (
         <Import
           orgId={orgId}
@@ -590,6 +603,7 @@ function CellView({
   edit,
   remove,
   history,
+  rotation,
   override,
 }: {
   cell: Cell;
@@ -600,6 +614,7 @@ function CellView({
   edit: () => void;
   remove: () => void;
   history: () => void;
+  rotation: () => void;
   override: () => void;
 }) {
   return (
@@ -644,6 +659,16 @@ function CellView({
         >
           History
         </button>
+        {cell.kind === "secret" && (
+          <button
+            type="button"
+            className="small"
+            aria-label={`Rotation of ${label}`}
+            onClick={rotation}
+          >
+            Rotation
+          </button>
+        )}
         <button
           type="button"
           className="small danger"

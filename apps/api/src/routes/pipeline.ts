@@ -16,6 +16,7 @@ import {
   newest,
   paramSchema,
   recommend,
+  secretDetectionWarnings,
   type Template,
 } from "@orch/pipelines";
 import type { GuardrailConfig } from "@orch/sync";
@@ -39,8 +40,8 @@ const configSchema = z.object({
   overrides: z.record(z.string(), z.unknown()),
   /** SHA-256 of the file as committed. */
   renderedHash: z.string(),
-  /** `inline`: the whole pipeline is the file; `include`: the file includes the template from `includeProject`. */
-  mode: z.enum(["inline", "include"]),
+  /** `inline`: the whole pipeline is the file; `include`: the file includes the template from `includeProject`; `component`: it uses the template as a component of `includeProject`, whose release or SHA is `includeRef`. */
+  mode: z.enum(["inline", "include", "component"]),
   includeProject: z.string().nullable(),
   includeRef: z.string().nullable(),
   /** The merge request that carries the file; null while the default branch already has it. */
@@ -121,8 +122,8 @@ const request = z.strictObject({
   params: z.record(z.string().max(100), z.unknown()).optional(),
   overrides: z.record(z.string().max(100), z.json()).optional(),
   environments: z.array(slug).max(50).optional(),
-  /** `inline` (the default) or `include` (PIPE-9); `include` goes with `include`, which names the templates project. */
-  mode: z.enum(["inline", "include"]).optional(),
+  /** `inline` (the default), `include` (PIPE-9) or `component` (CMP-2); the last two go with `include`, which names the templates project (and, for a component, its release or SHA as `ref`). */
+  mode: z.enum(["inline", "include", "component"]).optional(),
   include: z
     .strictObject({
       project: z.string().min(1).max(255),
@@ -243,6 +244,10 @@ export const pipelineRoutes = ({
         return {
           config: config ? configDto(config) : null,
           recommendations: recommend(project.detectedTypes, catalog),
+          // GitLab's runner API reports no executor (POOL-4 lists runners by tag and state only), so the executors are never known here
+          warnings: secretDetectionWarnings({
+            secretDetection: config?.params.secretDetection === true,
+          }),
           templates: newest(catalog).map(templateDto),
         };
       },
@@ -260,6 +265,8 @@ export const pipelineRoutes = ({
                 reason: z.string(),
               }),
             ),
+            /** What to know about the project's setup, e.g. that its runners may not run secret detection (SCAN-5). */
+            warnings: z.array(z.string()),
             /** Every template a pipeline can be made from. */
             templates: z.array(templateSchema),
           }),
@@ -294,7 +301,7 @@ export const pipelineRoutes = ({
             text: z.string(),
             renderedHash: z.string(),
             existing: existingSchema,
-            mode: z.enum(["inline", "include"]),
+            mode: z.enum(["inline", "include", "component"]),
             template: z.object({ name: z.string(), version: z.string() }),
             validation: validationSchema,
             /** The generated file on the default branch now, for a diff; null when there is none or it was written by hand. */

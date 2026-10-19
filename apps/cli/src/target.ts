@@ -116,10 +116,38 @@ async function named(ctx: Context, flags: TargetFlags) {
 const missing = (what: string, flag: string, variable: string) =>
   new CliError(`no ${what}: pass ${flag}, set ${variable} or put it in .orch.json`, 2);
 
-async function projectOf(apiUrl: string, client: Api, org: string, project: string) {
-  const orgId = await idOf("organization", org, () =>
+const orgIdOf = (apiUrl: string, client: Api, org: string) =>
+  idOf("organization", org, () =>
     every(apiUrl, (cursor) => client.organizations.get({ query: { limit: 100, cursor } })),
   );
+
+/** The organization a command is about: `--org`, `ORCH_ORG` or `.orch.json`. */
+export async function resolveOrganization(
+  ctx: Context,
+  apiUrl: string,
+  client: Api,
+  flags: Pick<TargetFlags, "org">,
+) {
+  const { org } = await named(ctx, flags);
+  if (!org) throw missing("organization", "--org", "ORCH_ORG");
+  return { orgId: await orgIdOf(apiUrl, client, org), label: org };
+}
+
+/** The organization's GitLab connection `ref` names, or its only one. */
+export const gitlabConnectionOf = (
+  apiUrl: string,
+  client: Api,
+  orgId: string,
+  ref: string | undefined,
+) =>
+  onlyOrNamed("GitLab connection", "--connection", ref, () =>
+    every(apiUrl, (cursor) =>
+      client.organizations({ orgId }).connections.get({ query: { limit: 100, cursor } }),
+    ).then((all) => all.filter((c) => c.type === "gitlab")),
+  );
+
+async function projectOf(apiUrl: string, client: Api, org: string, project: string) {
+  const orgId = await orgIdOf(apiUrl, client, org);
   const projectId = await idOf("project", project, () =>
     every(apiUrl, (cursor) =>
       client.organizations({ orgId }).projects.get({ query: { limit: 100, cursor } }),

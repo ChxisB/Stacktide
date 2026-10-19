@@ -152,18 +152,22 @@ export const mrCommandHandler =
         return;
       }
       try {
-        const started = await applyRun({ db: deps.db, log: ctx.log, images: deps.images }, gitlab, {
-          at,
-          run: before,
-          stacks: command.stack === undefined ? undefined : [command.stack],
-          when: "command",
-          audit: (tx, event) =>
-            audit(
-              tx,
-              { actor },
-              { ...event, metadata: { ...event.metadata, via: "note", noteId: e.noteId } },
-            ),
-        });
+        const started = await applyRun(
+          { db: deps.db, log: ctx.log, images: deps.images, platform: deps.config },
+          gitlab,
+          {
+            at,
+            run: before,
+            stacks: command.stack === undefined ? undefined : [command.stack],
+            when: "command",
+            audit: (tx, event) =>
+              audit(
+                tx,
+                { actor },
+                { ...event, metadata: { ...event.metadata, via: "note", noteId: e.noteId } },
+              ),
+          },
+        );
         await say(`Apply started for ${inline(started.join(", "))}.`);
       } catch (error) {
         if (!(error instanceof DomainError)) throw error;

@@ -5,7 +5,7 @@ import { createTestDb, type TestDb } from "@orch/db/testing";
 import { eq, inArray } from "drizzle-orm";
 import { Elysia } from "elysia";
 import { createApp } from "./app";
-import { unauditedRoutes } from "./audit";
+import { auditPlugin, unauditedRoutes } from "./audit";
 import { devPrincipal } from "./principal";
 
 let t: TestDb;
@@ -258,9 +258,10 @@ describe("declared audit", () => {
   });
 
   test("noAudit needs a reason", () => {
-    expect(() => new Elysia().use(setup().app).post("/x", () => 1, { noAudit: " " })).toThrow(
-      TypeError,
-    );
+    // the plugin alone: the whole app's type is too deep for the compiler to extend once it has this many routes
+    expect(() =>
+      new Elysia().use(auditPlugin(devPrincipal)).post("/x", () => 1, { noAudit: " " }),
+    ).toThrow(TypeError);
   });
 });
 

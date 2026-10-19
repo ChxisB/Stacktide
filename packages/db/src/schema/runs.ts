@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   bigint,
   check,
+  doublePrecision,
   foreignKey,
   index,
   integer,
@@ -72,6 +73,9 @@ export const runStacks = pgTable(
     organizationId: uuid().notNull(),
     projectId: uuid().notNull(),
     stack: text().notNull(),
+    // The stack's tags in the commit the run was made from: which cost limit (and so what the merge
+    // request note and the run show) judges its plan. Names, never values.
+    tags: text().array().notNull().default(sql`'{}'::text[]`),
     status: text().notNull().default("queued"),
     error: text(),
     // The GitLab jobs of the stack's plan and of the job that posts its summary, found from the
@@ -86,6 +90,13 @@ export const runStacks = pgTable(
     planDestroy: integer(),
     planResources: jsonb(),
     summarizedAt: timestamp({ withTimezone: true }),
+    // What the plan would cost per month, as the estimator its job ran said (COST-1): the change the
+    // plan makes, the total after it, the currency (never converted) and the tool's name. An estimate,
+    // not a bill. All four set together, by the same summary, or none; forgotten with a retried plan job.
+    costMonthlyDelta: doublePrecision(),
+    costMonthlyTotal: doublePrecision(),
+    costCurrency: text(),
+    costTool: text(),
     // What the policy sets that reach the stack said of its plan (POL-3): `pass`, `warn` or `deny`,
     // with the names of the rules that fired, never what they said (a message may quote the plan).
     // Null: not judged (yet). All set together, by the verdict the plan's summary job posts.
@@ -124,6 +135,19 @@ export const runStacks = pgTable(
         and (${t.policyVerdict} is null or ${t.policyVerdict} in ('pass', 'warn', 'deny'))
         and coalesce(length(${t.policyDenied}::text), 0) <= 100000
         and coalesce(length(${t.policyWarned}::text), 0) <= 100000`,
+    ),
+    // NaN and infinity compare above any limit in Postgres, so the bounds refuse them too.
+    check(
+      "run_stacks_cost_check",
+      sql`(${t.costMonthlyDelta} is null) = (${t.costMonthlyTotal} is null)
+        and (${t.costMonthlyDelta} is null) = (${t.costCurrency} is null)
+        and (${t.costMonthlyDelta} is null) = (${t.costTool} is null)
+        and (${t.costMonthlyDelta} is null or (
+          ${t.summarizedAt} is not null
+          and abs(${t.costMonthlyDelta}) <= 1e12
+          and ${t.costMonthlyTotal} between 0 and 1e12
+          and ${t.costCurrency} ~ '^[A-Z]{3}$'
+          and ${t.costTool} ~ '^[a-z0-9][a-z0-9._-]{0,39}$'))`,
     ),
     // The size bound is for the text of the stored value, which Bun.sql stores as a JSON string (every quote
     // escaped twice over): 500 addresses of 1024 quote marks come to about 2.3 million characters.

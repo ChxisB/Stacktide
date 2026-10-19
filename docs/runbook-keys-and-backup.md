@@ -8,8 +8,8 @@ deployment yet, so do the first restore and the first rotation on a copy, not on
 
 | Thing | Lives in | Protected by |
 |---|---|---|
-| Secret variable values, connection tokens, sink URLs and secrets, pending change-request values | the database, as AES-256-GCM ciphertext | a **data key** (DEK) per project / organization / connection / sink |
-| Each data key | the database (`variable_keys`, `connections`, `notification_sinks`), **wrapped** | the **master key** |
+| Secret variable values, connection tokens, sink URLs and secrets, pending change-request values, **Terraform state** (every kept version of a stack that uses `state: orch`) | the database, as AES-256-GCM ciphertext | a **data key** (DEK) per project / organization / connection / sink / state version |
+| Each data key | the database (`variable_keys`, `connections`, `notification_sinks`, `sso_providers`, `state_versions`), **wrapped** | the **master key** |
 | The master keys | `ORCH_MASTER_KEYS` in the environment of the api and the worker | whoever can read that environment |
 
 A dump of the database therefore holds ciphertext and wrapped data keys, and the audit log, but **no master key**.
@@ -33,6 +33,9 @@ exists (also not one that appears meanwhile), so a file that exists is a whole d
 new as the server (Postgres 18).
 
 - Do it on a schedule you choose (cron, a CI schedule). The platform does not schedule backups.
+- The dump holds Terraform state too, up to the newest 20 versions of each stack and up to 16 MiB each, so it grows
+  with your state, not only with your secrets. State that GitLab holds (stacks not on `state: orch`) is not in this
+  database and not in this backup.
 - Keep copies off the host the database runs on. A dump holds every encrypted secret and the audit log: treat it as
   you would treat the database.
 - The connection string is visible to other users of the host in `ps` while `pg_dump` runs. Where that matters, keep
@@ -59,10 +62,21 @@ leaves the database as it was. Then:
    key the dump's data keys are wrapped by; `keys:rotate --status` below tells you which those are).
 3. Run the migrations (`bun packages/db/src/migrate.ts`) if the release you run is newer than the backup's. For the
    same release it changes nothing.
-4. Check: sign in, open a project, reveal one secret you know the value of, and run `--status` (below).
+4. Check: sign in, open a project, reveal one secret you know the value of, and run `--status` (below). If you keep
+   Terraform state here, run a plan of one stack that uses it: it must open the state and report what you expect.
 
 A restore with the wrong keys does not fail loudly at start: the first read of a secret fails with a decrypt error.
 Do step 4.
+
+**Terraform state goes back to the time of the dump, and the infrastructure does not.** An apply that ran after the
+dump changed real resources and wrote a state that the restored database does not have. A plan made on the restored
+state then does not know those resources: it may propose to create them again, which fails on a name that is taken or
+duplicates the resource. Before anyone applies a stack after a restore, read its plan, and for each stack that was
+applied after the dump either import what the plan wants to create (`terraform import`) or accept the loss of the
+change. Nothing in the platform can tell you which stacks those are, except the run history, which is also restored to
+the time of the dump: use GitLab's pipeline list for the hours after it. A stack lock that was held when the dump was
+taken comes back with it; it ends with the token of the job that took it (within an hour), or an organization admin
+can force-unlock it (`docs/ci.md`).
 
 Runs and plans that were in flight when the dump was taken are in the dump as they were, and GitLab-side state
 (pipelines, merge requests) may be ahead of it. Run a sync plan for each target before trusting a drift status.
@@ -71,7 +85,8 @@ Runs and plans that were in flight when the dump was taken are in the dump as th
 
 Do this when a key may have leaked, when someone who could read the environment leaves, or on your own schedule. It
 changes how the data keys are wrapped, not the secrets: no secret is re-encrypted, no value is ever read, and the
-secrets stay readable throughout.
+secrets stay readable throughout. That holds for Terraform state too: only the data key of each state version moves
+(one row per kept version), and the state itself, up to 16 MiB a version, is neither read nor rewritten.
 
 1. Generate a new key and pick an id: `openssl rand -base64 32`.
 2. Put it **first** in `ORCH_MASTER_KEYS`, keeping the old entries after it: `k2:<new>,k1:<old>`. Roll that out to
@@ -110,6 +125,7 @@ in it as exposed and change them at their source (new tokens, new webhook URLs, 
 | `rotate-master-key` exits 1 with entries in `failed` | `unknown_key`: those rows are wrapped by a key that is not in `ORCH_MASTER_KEYS`, add it and run again. `decrypt_failed` or `bad_format`: the stored wrap is damaged or belongs to another row; restore that row from a backup |
 | `--status` stays above 0 | an instance runs with the old list; check every api and worker |
 | `restore.sh` says the database is not empty | restore into a new database; do not clear a live one |
+| After a restore a plan wants to create resources that exist | the stack was applied after the dump, so its restored state is older than the infrastructure: import them, see "Restore" |
 | `pg_dump: error: aborting because of server version mismatch` | install a `pg_dump` at least as new as the server |
 
 ## What this does not cover
@@ -117,4 +133,5 @@ in it as exposed and change them at their source (new tokens, new webhook URLs, 
 - The master keys come from the environment (ADR-0007): anyone who can read the process environment can read them. A
   KMS-backed provider is the next step and a separate decision.
 - Scheduled backups, retention of dumps, encryption of the dump file itself, and point-in-time recovery.
-- Restoring a single organization or project out of a dump.
+- Restoring a single organization or project out of a dump, or a single stack's state (the platform has no rollback of
+  state: it keeps versions and shows which exist and what they hold, read-only: `orch state ls|resources`, the State page).

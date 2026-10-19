@@ -12,6 +12,7 @@ import {
   deleteOrganization,
   getOrganization,
   listOrganizations,
+  listSsoMembers,
   type organizations,
   pgCode,
   updateOrganization,
@@ -60,6 +61,23 @@ const accessSchema = z.object({
   role: z.enum(ORG_ROLES),
   /** The organization-level actions the caller may do, for a screen choosing what to show. */
   actions: z.array(z.enum(Object.keys(RULES) as [Action, ...Action[]])),
+});
+
+/** Who holds a role through the organization's identity provider: no email and no subject, only what a person shows. */
+const memberSchema = z.object({
+  id: z.uuid(),
+  username: z.string(),
+  name: z.string(),
+  role: z.enum(ORG_ROLES),
+  /** When what the last sign-in gave them ends. */
+  expiresAt: z.iso.datetime(),
+});
+const memberDto = (m: Awaited<ReturnType<typeof listSsoMembers>>[number]) => ({
+  id: m.userId,
+  username: m.username,
+  name: m.name,
+  role: m.role,
+  expiresAt: iso(m.expiresAt),
 });
 
 const params = z.object({ orgId: z.uuid() });
@@ -129,6 +147,22 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
       },
       { params, response: { 200: accessSchema, ...readErrors }, guard: "organization.read" },
     )
+    .get(
+      "/:orgId/members",
+      ({ params: { orgId }, query }) =>
+        paged(query, {
+          key: z.tuple([z.string().max(256), z.uuid()]),
+          keyOf: (m): [string, string] => [m.username, m.userId],
+          fetch: (after, limit) => listSsoMembers(db, orgId, { after, limit }),
+          dto: memberDto,
+        }),
+      {
+        params,
+        query: pageQuery,
+        response: { 200: pageOf(memberSchema), ...readErrors },
+        guard: "member.read",
+      },
+    )
     .post(
       "",
       async ({ body, audit, set }) => {
@@ -189,12 +223,13 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
             await audit(tx, audited("organization.delete", org, { name: org.name }));
           })
           .catch((e) => {
-            // RESTRICT: projects or connections still reference it. Deleting them first is a deliberate act.
+            // RESTRICT: projects, connections, notification sinks or an identity provider still reference it.
+            // Deleting them first is a deliberate act.
             if (pgCode(e) === "23001") {
               throw new DomainError(
                 "organization_not_empty",
                 409,
-                "The organization still has projects or connections",
+                "The organization still has projects, connections, notification sinks or an identity provider",
               );
             }
             throw e;

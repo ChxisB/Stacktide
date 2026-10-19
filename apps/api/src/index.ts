@@ -10,7 +10,7 @@ import { guardrailEnv, guardrailsOf } from "./guardrails";
 import { hardeningEnv, hardeningOf } from "./hardening";
 import { metricsEnv } from "./metrics";
 import { devPrincipal } from "./principal";
-import { toolImageEnv, toolImages } from "./tool-images";
+import { platformOf, toolImageEnv, toolImages } from "./tool-images";
 
 const config = loadConfig(
   z
@@ -25,6 +25,8 @@ const config = loadConfig(
       ORCH_MASTER_KEYS: z.string().min(1).optional(),
       // Image repository per tool, for the pipeline an apply starts (as the worker's).
       ...toolImageEnv,
+      // Where CI jobs reach this API (as the worker's): the apply of a stack whose state is on the platform signs in to it.
+      ORCH_API_URL: z.string().min(1).optional(),
       ...guardrailEnv,
       ...metricsEnv,
       ...hardeningEnv,
@@ -84,6 +86,7 @@ const app = createApp({
   ci: ciFromEnv(config),
   keys,
   images: toolImages(config),
+  platform: platformOf(config.ORCH_API_URL, config.ORCH_CI_AUDIENCE),
   guardrails: guardrailsOf(config),
   metrics: config.ORCH_METRICS_TOKEN ? { token: config.ORCH_METRICS_TOKEN } : undefined,
   hardening: hardeningOf(config, auth?.secureCookies === true),

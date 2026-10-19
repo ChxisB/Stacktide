@@ -43,11 +43,13 @@ are set by the compose file and the image, not by you.
 | `GITLAB_URL` | api, worker | none | Your GitLab. With the next three, all or none. |
 | `GITLAB_OAUTH_CLIENT_ID`, `GITLAB_OAUTH_CLIENT_SECRET` | api | none | The GitLab application. |
 | `GITLAB_OAUTH_REDIRECT_URI` | api | none | `https://<host>/auth/callback`. |
+| `ORCH_SSO_REDIRECT_URI` | api | none | `https://<host>/auth/sso/callback` (https, or http on loopback only, and exactly that path, or the API will not start): turns on sign-in through an organization's identity provider ([ADR-0016](adr/0016-external-identity-providers.md), set-up in [sso.md](sso.md)). Works without the GitLab settings; an `https` address makes the session cookies `Secure`. Unset: `/auth/sso/*` answers 503. |
 | `GITLAB_MEMBERSHIP_TOKEN` | api, worker | none | `read_api` token that decides who holds a role. Unset: nobody does. |
 | `ORCH_PLATFORM_ADMIN_GITLAB_IDS` | api | none | GitLab user ids (comma separated) that may create organizations. |
 | `ORCH_CI_AUDIENCE` | api | none | The `aud` a CI job's `id_token` asks for. Unset: the token exchange answers 503. |
-| `ORCH_API_URL` | worker | none | Where CI jobs reach this API. (The web container has its own, set by the compose file.) |
+| `ORCH_API_URL` | api, worker | none | Where CI jobs reach this API. The API needs it to start the apply of a stack whose state is on the platform. (The web container has its own, set by the compose file.) |
 | `ORCH_HELPER_IMAGE`, `ORCH_POLICY_IMAGE` | worker | none | Images with `orch`, `curl`, `jq` (and `tar`, `conftest` for policy) for the jobs the worker generates ([iac.md](iac.md)). |
+| `ORCH_COST_IMAGE` | worker | none | An image with `infracost` and `jq`, for the estimate job of a stack a cost limit reaches ([iac.md](iac.md)). |
 | `ORCH_TERRAGRUNT_IMAGE`, `ORCH_TERRAFORM_IMAGE`, `ORCH_TOFU_IMAGE` | api, worker | none | Image repositories (no tag) for stacks of that tool. |
 | `STACK_DRIFT_CHECK_SECONDS` | worker | 3600 | How often stacks are looked at for drift. 0 is off, otherwise at least 60. |
 | `AUDIT_PURGE_SECONDS` | worker | 3600 | How often events past their retention are deleted. 0 is off, otherwise at least 60. |

@@ -2,8 +2,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { SignInMethods } from "./identities";
 import type { Org } from "./org";
+import { Pools } from "./pools";
 import { AddConnection, useConnections } from "./projects";
+import { SingleSignOn } from "./sso";
 import { Tokens } from "./tokens";
 import { Loading, stamp, when } from "./ui";
 
@@ -202,6 +205,9 @@ export function SettingsPage({ org }: { org: Org }) {
         </p>
       </section>
       {actions.includes("connection.read") && <Connections orgId={org.id} actions={actions} />}
+      {actions.includes("pool.read") && <Pools orgId={org.id} actions={actions} />}
+      {actions.includes("sso.read") && <SingleSignOn orgId={org.id} actions={actions} />}
+      <SignInMethods />
       <Tokens />
     </div>
   );

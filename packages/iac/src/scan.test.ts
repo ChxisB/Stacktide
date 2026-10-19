@@ -31,7 +31,7 @@ describe("scanStacks", () => {
       repo({
         "infra/network/stack.yml": manifest(
           "network",
-          "version: 1.9.8\ntags: [prod]\ndepends_on: [base]\nwatch: [modules/**]\napply_on: merge\nenvironment: staging\ndrift_every: 1d\n",
+          "version: 1.9.8\ntags: [prod]\ndepends_on: [base]\nwatch: [modules/**]\napply_on: merge\nenvironment: staging\npool: prod-runners\nstate: orch\ndrift_every: 1d\n",
         ),
         "infra/network/main.tf": HTTP,
         "infra/base/stack.yml": manifest("base"),
@@ -62,6 +62,8 @@ describe("scanStacks", () => {
         watch: ["modules/**"],
         applyOn: "merge",
         environment: "staging",
+        pool: "prod-runners",
+        state: "orch",
         driftEverySeconds: 86_400,
         backend: "http",
       },

@@ -1,0 +1,2 @@
+ALTER TABLE "organizations" ADD COLUMN "secret_gate" text DEFAULT 'off' NOT NULL;--> statement-breakpoint
+ALTER TABLE "organizations" ADD CONSTRAINT "organizations_secret_gate_check" CHECK ("organizations"."secret_gate" in ('off', 'warn', 'deny'));

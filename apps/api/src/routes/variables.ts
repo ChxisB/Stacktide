@@ -326,14 +326,14 @@ const params = z.object({
   projectId: z.uuid().optional(),
   envId: z.uuid().optional(),
 });
-const itemParams = params.extend({ varId: z.uuid() });
-type Params = z.infer<typeof params>;
+export const itemParams = params.extend({ varId: z.uuid() });
+export type Params = z.infer<typeof params>;
 
 const sealed = { 500: problemSchema, 503: problemSchema } as const;
-const reads = { ...readErrors, ...sealed } as const;
-const writes = { ...writeErrors, ...sealed } as const;
+export const reads = { ...readErrors, ...sealed } as const;
+export const writes = { ...writeErrors, ...sealed } as const;
 
-interface Level {
+export interface Level {
   level: VariableLevel;
   prefix: string;
   /** The guard actions: the organization's variables are held to a stricter set. */
@@ -346,6 +346,9 @@ interface Level {
     restore: string;
     import: string;
     bulk: string;
+    rotationRead: string;
+    rotationManage: string;
+    rotationRun: string;
   };
   /** Throws the 404 for a parent that is not there. */
   parent: (db: RouteDeps["db"], p: Params) => Promise<unknown>;
@@ -359,9 +362,12 @@ const projectActions = {
   restore: "variable.restore",
   import: "variable.import",
   bulk: "variable.bulk",
+  rotationRead: "variable.rotation.read",
+  rotationManage: "variable.rotation.manage",
+  rotationRun: "variable.rotation.run",
 };
 // `as const satisfies`: the literal prefixes are what lets the typed client see these routes (the web UI uses them)
-const organizationLevel = {
+export const organizationLevel = {
   level: "organization",
   prefix: "/organizations/:orgId/variables",
   actions: {
@@ -373,11 +379,14 @@ const organizationLevel = {
     restore: "variable.org.restore",
     import: "variable.org.import",
     bulk: "variable.org.bulk",
+    rotationRead: "variable.org.rotation.read",
+    rotationManage: "variable.org.rotation.manage",
+    rotationRun: "variable.org.rotation.run",
   },
   parent: async (db, p) =>
     (await getOrganization(db, p.orgId)) ?? Promise.reject(notFound("Organization")),
 } as const satisfies Level;
-const projectLevel = {
+export const projectLevel = {
   level: "project",
   prefix: "/organizations/:orgId/projects/:projectId/variables",
   actions: projectActions,
@@ -385,7 +394,7 @@ const projectLevel = {
     (p.projectId && (await getProject(db, p.orgId, p.projectId))) ||
     Promise.reject(notFound("Project")),
 } as const satisfies Level;
-const environmentLevel = {
+export const environmentLevel = {
   level: "environment",
   prefix: "/organizations/:orgId/projects/:projectId/environments/:envId/variables",
   actions: projectActions,
@@ -394,18 +403,18 @@ const environmentLevel = {
     Promise.reject(notFound("Environment")),
 } as const satisfies Level;
 
-const scopeOf = (p: Params): Scope => ({
+export const scopeOf = (p: Params): Scope => ({
   organizationId: p.orgId,
   projectId: p.projectId,
   environmentId: p.envId,
 });
-const actorOf = (principal: Principal | undefined) => {
+export const actorOf = (principal: Principal | undefined) => {
   if (!principal) throw unauthenticated();
   return { kind: principal.kind, id: principal.id };
 };
 
 /** Where and what, by name: never a value (the audit trail screens keys, this keeps to ids and names). */
-const audited = (
+export const audited = (
   action: string,
   level: VariableLevel,
   v: VariableInfo,

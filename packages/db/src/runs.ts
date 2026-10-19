@@ -1,4 +1,10 @@
-import { canTransition, isFinishedRun, type RunAction, type RunState } from "@orch/core";
+import {
+  type CostResult,
+  canTransition,
+  isFinishedRun,
+  type RunAction,
+  type RunState,
+} from "@orch/core";
 import { and, desc, eq, getTableColumns, inArray, isNotNull, lt, ne, sql } from "drizzle-orm";
 import type { Executor } from "./repo";
 import { pipelineRuns, runPipelines, runStacks, runs } from "./schema";
@@ -14,6 +20,8 @@ export type NewRun = Pick<
 > & {
   /** Names of the stacks to run. The caller has checked that they exist. */
   stacks: readonly string[];
+  /** Each stack's tags in the commit, by stack name; a stack left out has none. */
+  tags?: Readonly<Record<string, readonly string[]>>;
 };
 
 // shortcut: a run holds at most 100 stacks (what the run route accepts and the merge request planner
@@ -55,7 +63,7 @@ const withStacks = async (db: Executor, rows: (typeof runs.$inferSelect)[]) => {
 
 /** A run with each of its stacks `queued`. All or nothing. */
 export async function createRun(db: Executor, input: NewRun): Promise<RunWithStacks> {
-  const { stacks, ...fields } = input;
+  const { stacks, tags, ...fields } = input;
   if (stacks.length === 0) throw new Error("a run needs at least one stack");
   return db.transaction(async (tx) => {
     const run = (await tx.insert(runs).values(fields).returning())[0];
@@ -68,6 +76,7 @@ export async function createRun(db: Executor, input: NewRun): Promise<RunWithSta
           organizationId: run.organizationId,
           projectId: run.projectId,
           stack,
+          tags: [...(tags?.[stack] ?? [])],
         })),
       )
       .returning(stackColumns);
@@ -241,7 +250,7 @@ export async function recordStackJobs(
   stack: string,
   jobs: { planJobId?: number | undefined; summaryJobId?: number | undefined },
 ): Promise<void> {
-  // A retried plan job is a new plan: the policy's verdict was of the old one, so it goes (POL-3).
+  // A retried plan job is a new plan: the policy's verdict and the cost estimate were of the old one, so they go (POL-3, COST-1).
   // The summary job's retry posts a new one; until then the stack is not judged, and apply waits.
   const forgotten = <T>(column: T) =>
     sql`case when ${runStacks.planJobId} is distinct from ${jobs.planJobId} then null else ${column} end`;
@@ -254,6 +263,11 @@ export async function recordStackJobs(
           policyDenied: forgotten(runStacks.policyDenied),
           policyWarned: forgotten(runStacks.policyWarned),
           policyAt: forgotten(runStacks.policyAt),
+          // the estimate was of the old plan, as the verdict was (COST-1)
+          costMonthlyDelta: forgotten(runStacks.costMonthlyDelta),
+          costMonthlyTotal: forgotten(runStacks.costMonthlyTotal),
+          costCurrency: forgotten(runStacks.costCurrency),
+          costTool: forgotten(runStacks.costTool),
         }),
     ...(jobs.summaryJobId === undefined ? {} : { summaryJobId: jobs.summaryJobId }),
   };
@@ -270,7 +284,28 @@ export interface PlanSummary {
   destroy: number;
   /** At most 500: the counts say how many there are. */
   resources: readonly { address: string; actions: readonly string[] }[];
+  /** The estimator's answer, when the plan job had one (COST-1); posting none removes an earlier one. */
+  cost?: PlanCost | undefined;
 }
+
+/** What a plan is estimated to cost per month, in one currency that is never converted. */
+export type PlanCost = CostResult;
+
+/** The estimate a stack's plan summary carried, or `null` when it had none (the columns are all set or all null). */
+export const planCostOf = (
+  s: Pick<RunStack, "costMonthlyDelta" | "costMonthlyTotal" | "costCurrency" | "costTool">,
+): PlanCost | null =>
+  s.costMonthlyDelta === null ||
+  s.costMonthlyTotal === null ||
+  s.costCurrency === null ||
+  s.costTool === null
+    ? null
+    : {
+        monthlyDelta: s.costMonthlyDelta,
+        monthlyTotal: s.costMonthlyTotal,
+        currency: s.costCurrency,
+        tool: s.costTool,
+      };
 
 /**
  * Stores what a stack's plan would do, replacing an earlier summary (a job may post twice), while
@@ -293,6 +328,10 @@ export async function storePlanSummary(
       planDestroy: summary.destroy,
       planResources: summary.resources,
       summarizedAt: new Date(),
+      costMonthlyDelta: summary.cost?.monthlyDelta ?? null,
+      costMonthlyTotal: summary.cost?.monthlyTotal ?? null,
+      costCurrency: summary.cost?.currency ?? null,
+      costTool: summary.cost?.tool ?? null,
     })
     .where(
       and(

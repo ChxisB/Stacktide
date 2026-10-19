@@ -56,6 +56,7 @@ const allowed: Record<string, string[]> = {
   "organization.read": ORG_ALL,
   "organization.update": ["org admin", "org owner"],
   "organization.delete": ["org owner"],
+  "member.read": ["org admin", "org owner"], // who holds a role through the identity provider
   "project.create": ["org admin", "org owner"],
   "project.read": REPORTER_UP,
   "project.update": MAINTAINER_UP,
@@ -72,6 +73,9 @@ const allowed: Record<string, string[]> = {
   "variable.restore": MAINTAINER_UP,
   "variable.import": MAINTAINER_UP,
   "variable.bulk": MAINTAINER_UP,
+  "variable.rotation.read": REPORTER_UP,
+  "variable.rotation.manage": MAINTAINER_UP,
+  "variable.rotation.run": MAINTAINER_UP,
   // The organization's own variables: org rules, so a project maintainer holds none of them.
   "variable.org.read": ORG_ALL,
   "variable.org.create": ["org admin", "org owner"],
@@ -81,6 +85,9 @@ const allowed: Record<string, string[]> = {
   "variable.org.restore": ["org admin", "org owner"],
   "variable.org.import": ["org admin", "org owner"],
   "variable.org.bulk": ["org admin", "org owner"],
+  "variable.org.rotation.read": ORG_ALL,
+  "variable.org.rotation.manage": ["org admin", "org owner"],
+  "variable.org.rotation.run": ["org admin", "org owner"],
   // Org rules, so a project maintainer holds none of them.
   "connection.create": ["org admin", "org owner"],
   "connection.read": ["org admin", "org owner"],
@@ -99,6 +106,7 @@ const allowed: Record<string, string[]> = {
   "pipeline.read": REPORTER_UP,
   "pipeline.apply": ["org admin", "org owner"],
   "pipeline.upgrade": ["org admin", "org owner"],
+  "template.registry.read": ["org admin", "org owner"],
   "pipeline.retry": MAINTAINER_UP,
   "run.read": REPORTER_UP,
   "run.create": DEVELOPER_UP,
@@ -114,6 +122,19 @@ const allowed: Record<string, string[]> = {
   "policy.set.read": ORG_ALL,
   "policy.set.create": ["org admin", "org owner"],
   "policy.set.delete": ["org admin", "org owner"],
+  "cost.limit.read": ORG_ALL,
+  "cost.limit.set": ["org admin", "org owner"],
+  "cost.limit.delete": ["org admin", "org owner"],
+  "secret.gate.read": ORG_ALL,
+  "secret.gate.update": ["org admin", "org owner"],
+  "pool.read": ORG_ALL,
+  "pool.create": ["org admin", "org owner"],
+  "pool.update": ["org admin", "org owner"],
+  "pool.delete": ["org admin", "org owner"],
+  "pool.status": ["org admin", "org owner"],
+  // An identity provider (SSO-5) decides who may sign in and with which role: admins may see how it is set up, only an owner changes it.
+  "sso.read": ["org admin", "org owner"],
+  "sso.manage": ["org owner"],
   "audit.read": ["org admin", "org owner"],
   "audit.export": ["org admin", "org owner"],
   "audit.retention.read": ["org admin", "org owner"],
@@ -127,6 +148,20 @@ const allowed: Record<string, string[]> = {
   "change_request.create": DEVELOPER_UP,
   "change_request.approve": MAINTAINER_UP,
   "change_request.reject": MAINTAINER_UP,
+  // A lease is a read token for the repository made with the organization's connection: a developer's, not a reporter's (who sees the project in the platform, not necessarily its code). Listing shows who holds what and never a value.
+  "lease.issue": DEVELOPER_UP,
+  "lease.read": REPORTER_UP,
+  "lease.revoke": DEVELOPER_UP,
+  // Findings (SCAN-4): where a leaked secret was seen, never what it was. Any member reads them; calling one a false alarm is a maintainer's, since it also takes it out of the gate.
+  "finding.read": REPORTER_UP,
+  "finding.dismiss": MAINTAINER_UP,
+  "finding.reopen": MAINTAINER_UP,
+  // State goes to CI jobs (STATE-3): the rule is the role a job's token is given by its scopes, and the routes refuse every caller that is not a job on top of it.
+  "state.read": REPORTER_UP,
+  "state.list": REPORTER_UP,
+  "state.write": DEVELOPER_UP,
+  "state.import": MAINTAINER_UP,
+  "state.force_unlock": ["org admin", "org owner"],
 };
 
 describe("role x action", () => {

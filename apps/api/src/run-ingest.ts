@@ -22,8 +22,8 @@ import { refreshNote } from "./mr-note";
 import { hopeless, pipelineEvent, type RunDeps } from "./pipeline-runs";
 import type { JobHandler } from "./worker";
 
-// A run's pipeline has two jobs per stack and a run at most a hundred stacks; a pipeline with more
-// jobs than this is not one a run made.
+// A run's pipeline has up to four jobs per stack (plan, estimate, summary, apply) and a run at most a
+// hundred stacks; a pipeline with more jobs than this is not one a run made.
 const MAX_JOBS = 1000;
 // The generated pipeline is one child of the pipeline the run started; an author's own
 // `.gitlab-ci.yml` may start more, and a pipeline with more than this is not one a run made.
@@ -35,7 +35,11 @@ const MAX_TRIES = 3;
 const PLAN_FROM = ["queued", "planning"] as const;
 const APPLY_FROM = ["applying"] as const;
 
-/** The names of the generated jobs (IAC-4): `plan:<stack>`, `summary:<stack>` and `apply:<stack>`. */
+/**
+ * The names of the generated jobs (IAC-4): `plan:<stack>`, `summary:<stack>` and `apply:<stack>`. The
+ * `estimate:<stack>` job (COST-4) is left out on purpose: no state of a stack follows from it, and a
+ * failed estimate shows as the plan having no cost, which the apply denies as `cost-unavailable`.
+ */
 const JOB_NAME = /^(plan|summary|apply):(.+)$/;
 
 // A child pipeline's event names the pipeline that started it. Only a hint, for finding the pipeline

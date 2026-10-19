@@ -32,9 +32,11 @@ export const pipelineConfigs = pgTable(
     params: jsonb().$type<Record<string, unknown>>().notNull().default({}),
     overrides: jsonb().$type<Record<string, unknown>>().notNull().default({}),
     renderedHash: text().notNull(),
-    // How the pipeline is delivered (PIPE-9): `inline` is the whole file; `include` is a thin file that
-    // includes the template from a templates project (a GitLab project path and, optionally, a ref).
-    mode: text().$type<"inline" | "include">().notNull().default("inline"),
+    // How the pipeline is delivered (PIPE-9, CMP-2): `inline` is the whole file; `include` is a thin file
+    // that includes the template from a templates project (a GitLab project path and, optionally, a
+    // ref); `component` is a thin file that uses it as a CI/CD component (the same project, and the
+    // release or SHA of the component as the ref, which is then required).
+    mode: text().$type<"inline" | "include" | "component">().notNull().default("inline"),
     includeProject: text(),
     includeRef: text(),
     // The merge request that carries the file (null while it is already on the default branch).
@@ -57,11 +59,12 @@ export const pipelineConfigs = pgTable(
       foreignColumns: [connections.id, connections.organizationId],
     }).onDelete("restrict"),
     check("pipeline_configs_hash_check", sql`${t.renderedHash} ~ '^[0-9a-f]{64}$'`),
-    check("pipeline_configs_mode_check", sql`${t.mode} in ('inline', 'include')`),
-    // a templates project exactly when the pipeline is delivered by include, and a ref only with one
+    check("pipeline_configs_mode_check", sql`${t.mode} in ('inline', 'include', 'component')`),
+    // a templates project exactly when the pipeline is delivered by include or component, a ref only
+    // with one, and a component always with its version
     check(
       "pipeline_configs_include_check",
-      sql`(${t.mode} = 'include') = (${t.includeProject} is not null) and (${t.includeRef} is null or ${t.includeProject} is not null)`,
+      sql`(${t.mode} in ('include', 'component')) = (${t.includeProject} is not null) and (${t.includeRef} is null or ${t.includeProject} is not null) and (${t.mode} <> 'component' or ${t.includeRef} is not null)`,
     ),
   ],
 );

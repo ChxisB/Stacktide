@@ -188,6 +188,16 @@ export async function upgradeFleet(
       });
       continue;
     }
+    if (config.mode === "component") {
+      // a component's version is a release of the catalog project, not of the template: the registry (CMP-5) lists who is behind, and an apply with the newer release moves one
+      items.push({
+        ...item,
+        code: "component",
+        message:
+          "A component pipeline moves to a newer release of its catalog project, not to a template version: see the template registry for who is behind",
+      });
+      continue;
+    }
     if (touched) await deps.pause(deps.pauseMs ?? FLEET_PAUSE_MS);
     touched = true;
     try {

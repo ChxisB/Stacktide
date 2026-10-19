@@ -761,19 +761,192 @@ describe("the review", () => {
     expect(must(await w.pipeline.get()).config).toMatchObject({ template: "web-app", mrIid: null });
   });
 
-  test("a project that was set up to include its template is told this writes the whole file", async () => {
+  test("a project that was set up to include its template starts on that mode, and is told when it is switched to inline that this writes the whole file", async () => {
     const w = await world();
     await w.applyVia({});
     const rigged = via(w, async (request, path) => {
       if (request.method !== "GET" || !path.endsWith("/pipeline")) return undefined;
       const body = await (await fetch(request.clone())).json();
-      return Response.json({ ...body, config: { ...body.config, mode: "include" } });
+      return Response.json({
+        ...body,
+        config: { ...body.config, mode: "include", includeProject: "fx/templates" },
+      });
     });
     mountPage(rigged.client);
     const user = userEvent.setup();
-    await toParams(user, "web-app");
+    const f = await toParams(user, "web-app");
+    expect((within(f).getByRole("radio", { name: /^Include/ }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    expect((within(f).getByLabelText("Templates project") as HTMLInputElement).value).toBe(
+      "fx/templates",
+    );
+    await user.click(within(f).getByRole("radio", { name: /^Inline/ }));
+    await team(user);
     const step = await preview(user);
     expect(step.textContent).toContain("includes its template from another project");
+  });
+});
+
+/** A component as GitLab reads it: its inputs, `---`, then the jobs. */
+const component = (name: string) =>
+  `spec:\n  inputs:\n    team:\n    image:\n      default: "20"\n    flavour:\n      default: slim\n    retries:\n      type: number\n      default: 2\n    cache:\n      type: boolean\n      default: true\n---\n${name}:\n  script:\n    - echo $[[ inputs.team ]]\n`;
+let catalogs = 0;
+/** A catalog project on the world's mock, with a component of each of `names` at each of `tags`. */
+function catalogOn(w: World, tags: string[], names = ["web-app"]) {
+  const path = `fx/catalog-${++catalogs}`;
+  w.mock.addProject({
+    path,
+    files: Object.fromEntries(names.map((n) => [`templates/${n}.yml`, component(n)])),
+  });
+  for (const tag of tags) w.mock.addTag(path, tag);
+  return path;
+}
+
+describe("how the pipeline is delivered", () => {
+  test("inline is the default and sends neither a mode nor a project; the others ask for a project", async () => {
+    const w = await world();
+    const spy = via(w);
+    mountPage(spy.client);
+    const user = userEvent.setup();
+    const f = await toParams(user, "web-app");
+    const radio = (name: RegExp) => within(f).getByRole("radio", { name }) as HTMLInputElement;
+    expect([
+      radio(/^Inline/).checked,
+      radio(/^Include/).checked,
+      radio(/^Component/).checked,
+    ]).toEqual([true, false, false]);
+    expect(within(f).queryByLabelText(/project$/)).toBeNull();
+
+    await user.click(radio(/^Component/));
+    expect((within(f).getByLabelText("Catalog project") as HTMLInputElement).required).toBe(true);
+    expect((within(f).getByLabelText("Release") as HTMLInputElement).required).toBe(true);
+    await user.click(radio(/^Include/));
+    expect((within(f).getByLabelText("Templates project") as HTMLInputElement).required).toBe(true);
+    expect((within(f).getByLabelText("Ref (optional)") as HTMLInputElement).required).toBe(false);
+    await user.click(radio(/^Inline/));
+    expect(within(f).queryByLabelText("Templates project")).toBeNull();
+
+    await team(user);
+    await preview(user).catch(() => undefined);
+    const [sent] = spy.previews();
+    expect(sent?.body.mode).toBeUndefined();
+    expect(sent?.body.include).toBeUndefined();
+  });
+
+  test("include mode sends the project, and the ref only when there is one", async () => {
+    const w = await world();
+    const spy = via(w);
+    mountPage(spy.client);
+    const user = userEvent.setup();
+    const f = await toParams(user, "web-app");
+    await user.click(within(f).getByRole("radio", { name: /^Include/ }));
+    await user.type(within(f).getByLabelText("Templates project"), " fx/templates ");
+    await team(user);
+    const go = (await button("Preview pipeline")) as HTMLButtonElement;
+    await waitFor(() => expect(go.disabled).toBe(false));
+    await user.click(go);
+    await waitFor(() => expect(spy.previews()).toHaveLength(1));
+    expect(spy.previews()[0]?.body).toMatchObject({
+      mode: "include",
+      include: { project: "fx/templates" },
+    });
+    expect(spy.previews()[0]?.body.include).toEqual({ project: "fx/templates" });
+  });
+
+  test("a release is picked from what the catalog publishes, and the component is previewed and created", async () => {
+    const w = await world();
+    const catalog = catalogOn(w, ["1.0.0", "1.2.0", "nightly"]);
+    const spy = via(w);
+    mountPage(spy.client);
+    const user = userEvent.setup();
+    const f = await toParams(user, "web-app");
+    await user.click(within(f).getByRole("radio", { name: /^Component/ }));
+    const lookup = within(f).getByRole("button", { name: "Look up releases" }) as HTMLButtonElement;
+    expect(lookup.disabled).toBe(true); // nothing to look up yet
+    await user.type(within(f).getByLabelText("Catalog project"), catalog);
+    await waitFor(() => expect(lookup.disabled).toBe(false));
+    await user.click(lookup);
+
+    const picker = (await within(f).findByLabelText(/^Releases of/)) as HTMLSelectElement;
+    expect(Array.from(picker.options).map((o) => o.textContent)).toEqual([
+      "Pick a release",
+      "1.2.0 (latest)",
+      "1.0.0",
+    ]);
+    expect(within(f).queryByText(/publishes no component/)).toBeNull();
+    // the list answers the project that was looked up, not whatever is typed afterwards
+    const field = within(f).getByLabelText("Catalog project");
+    await user.type(field, "x");
+    expect(within(f).queryByLabelText(/^Releases of/)).toBeNull();
+    await user.type(field, "{Backspace}");
+    await user.selectOptions(await within(f).findByLabelText(/^Releases of/), "1.0.0");
+    expect((within(f).getByLabelText("Release") as HTMLInputElement).value).toBe("1.0.0");
+
+    await team(user);
+    const step = await preview(user);
+    expect(step.textContent).toContain(`uses web-app from ${catalog} at 1.0.0`);
+    expect(diff().textContent).toContain(`component: $CI_SERVER_FQDN/${catalog}/web-app@1.0.0`);
+    expect(spy.previews()[0]?.body).toMatchObject({
+      mode: "component",
+      include: { project: catalog, ref: "1.0.0" },
+    });
+    expect(w.writes()).toBe(0);
+
+    await create(user);
+    expect(spy.applies()[0]?.body).toMatchObject({
+      mode: "component",
+      include: { project: catalog, ref: "1.0.0" },
+    });
+    expect(must(await w.pipeline.get()).config).toMatchObject({
+      mode: "component",
+      includeProject: catalog,
+      includeRef: "1.0.0",
+    });
+  });
+
+  test("a catalog with no releases says so, and a release can still be typed", async () => {
+    const w = await world();
+    const catalog = catalogOn(w, ["nightly"]);
+    mountPage(w.client);
+    const user = userEvent.setup();
+    const f = await toParams(user, "web-app");
+    await user.click(within(f).getByRole("radio", { name: /^Component/ }));
+    await user.type(within(f).getByLabelText("Catalog project"), catalog);
+    const lookup = within(f).getByRole("button", { name: "Look up releases" }) as HTMLButtonElement;
+    await waitFor(() => expect(lookup.disabled).toBe(false));
+    await user.click(lookup);
+    expect(await within(f).findByText(/no releases yet/)).toBeDefined();
+    expect(within(f).queryByLabelText(/^Releases of/)).toBeNull();
+    await user.type(within(f).getByLabelText("Release"), "1.0.0");
+    expect((within(f).getByLabelText("Release") as HTMLInputElement).value).toBe("1.0.0");
+  });
+
+  test("a catalog without a component of the template, and one that cannot be read, are said so without blocking", async () => {
+    const w = await world();
+    const other = catalogOn(w, ["1.0.0"], ["plain-app"]);
+    mountPage(w.client);
+    const user = userEvent.setup();
+    const f = await toParams(user, "web-app");
+    await user.click(within(f).getByRole("radio", { name: /^Component/ }));
+    const project = within(f).getByLabelText("Catalog project");
+    const lookup = within(f).getByRole("button", { name: "Look up releases" }) as HTMLButtonElement;
+    await user.type(project, other);
+    await waitFor(() => expect(lookup.disabled).toBe(false));
+    await user.click(lookup);
+    expect(
+      (await within(f).findByText(/publishes no component called web-app/)).textContent,
+    ).toBeDefined();
+
+    await user.clear(project);
+    await user.type(project, "fx/not-there");
+    await user.click(lookup);
+    const alert = await within(f).findByRole("alert");
+    expect(alert.textContent).toContain("You can still type a release.");
+    expect(alert.textContent).not.toContain(w.mock.token);
+    expect(
+      (within(f).getByRole("button", { name: "Preview pipeline" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 });
 

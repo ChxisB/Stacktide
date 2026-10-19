@@ -19,6 +19,7 @@
     "web": "bun apps/web/src/server.ts",
     "e2e": "cd apps/web && bunx playwright test",
     "templates:include": "bun packages/pipelines/src/include-files.ts",
+    "templates:component": "bun packages/pipelines/src/component-files.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web",
     "lint": "biome check .",
     "test": "bun test --env-file=.env.example && cd apps/web && bun test --env-file=../../.env.example",

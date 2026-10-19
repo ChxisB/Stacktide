@@ -18,16 +18,21 @@ type Roles = Pick<Subject, "orgRoles" | "projectRoles">;
  * The real API on a real port over a fresh test database, so a screen is tested against what the
  * server really answers. Sessions are made in the database, as a sign-in would.
  */
-export async function startBackend(templates?: Parameters<typeof createApp>[0]["templates"]) {
+export async function startBackend(
+  templates?: Parameters<typeof createApp>[0]["templates"],
+  auth?: Parameters<typeof createApp>[0]["auth"],
+) {
   const t = await createTestDb();
   const keys = envKeyProvider(`k1:${Buffer.alloc(32, 9).toString("base64")}`);
   const roles = new Map<number, Roles>();
+  const platformAdmins: number[] = []; // read at each request, so a test may add one after the session is made
   const app = createApp({
     logger: createLogger({ level: "error", write: () => {} }),
     db: t.db,
     principal: callerPrincipal({
       db: t.db,
       roles: (u) => roles.get(u.gitlabId) ?? { orgRoles: {}, projectRoles: {} },
+      platformAdmins,
     }),
     ready: async () => {},
     keys,
@@ -35,6 +40,7 @@ export async function startBackend(templates?: Parameters<typeof createApp>[0]["
     loopbackConnections: true,
     // left out, the API offers the shipped catalog
     ...(templates ? { templates } : {}),
+    ...(auth ? { auth } : {}),
   }).listen({ port: 0, hostname: "127.0.0.1" });
   const api = `http://127.0.0.1:${app.server?.port}`;
 
@@ -75,6 +81,8 @@ export async function startBackend(templates?: Parameters<typeof createApp>[0]["
     },
     /** Roles of a user already signed in (the API reads them at each request). */
     setRoles: (gitlabUserId: number, held: Roles) => roles.set(gitlabUserId, held),
+    /** Lets a user already signed in create organizations. */
+    makePlatformAdmin: (gitlabUserId: number) => platformAdmins.push(gitlabUserId),
     /** Runs the job queue, so that an apply a screen starts is carried out; `gate` holds each apply back until it settles. */
     startWorker(gate: () => Promise<void> = async () => {}) {
       const logger = createLogger({ level: "error", write: () => {} });

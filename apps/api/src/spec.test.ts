@@ -25,7 +25,7 @@ test("every API operation documents its guard, audit action and the problems it 
         op,
       })),
     );
-  expect(ops.length).toBe(115); // 5 per resource (list, get, create, update, delete; sync targets too) + plan, apply, run, last run and drift of a sync target + 3 for tokens + 4 for connections + 2 for imports + 1 webhook secret + 13 per level of variables (3 levels) + the resolved set + its values + the search + 3 for a pipeline (read, preview, apply) + 3 for upgrading a template's projects (list, plan, apply) + 3 for pipeline runs (list, latest, retry) + 1 for what a caller may do in an organization + 4 for runs of stacks (list, get, create, post a plan summary) + 1 to apply a run + 6 for notifications (list, create and delete a sink; list, set and remove what a project asks of one) + 4 for policy (list, create and delete a set; post a verdict) + 4 for the audit log (list, export, read and set the retention) + 1 to protect an environment + 5 for change requests (list, get, create, approve, reject) + 3 for audit forwarding (read, start, stop)
+  expect(ops.length).toBe(163); // 5 per resource (list, get, create, update, delete; sync targets too) + plan, apply, run, last run and drift of a sync target + 3 for tokens + 4 for connections + 2 for imports + 1 webhook secret + 13 per level of variables (3 levels) + the resolved set + its values + the search + 3 for a pipeline (read, preview, apply) + 3 for upgrading a template's projects (list, plan, apply) + 3 for pipeline runs (list, latest, retry) + 1 for what a caller may do in an organization + 4 for runs of stacks (list, get, create, post a plan summary) + 1 to apply a run + 6 for notifications (list, create and delete a sink; list, set and remove what a project asks of one) + 4 for policy (list, create and delete a set; post a verdict) + 4 for the audit log (list, export, read and set the retention) + 1 to protect an environment + 5 for change requests (list, get, create, approve, reject) + 3 for audit forwarding (read, start, stop) + 1 to read what a catalog project publishes + 4 per level of variables for how a secret rotates (3 levels) + 3 for cost limits (list, set, remove) + 3 for leases (list, take, revoke) + 2 for the secret gate (read, set) + 5 for worker pools (list, get, create, update, delete) + 1 for a pool's health in a project + 7 for an organization's identity provider (read, make, change, delete, test, turn on, turn off) + 1 for who holds a role in an organization through it + 3 for a stack's Terraform state (read, write, delete) + 3 for its lock (take and release over POST/DELETE .../lock, force-unlock; the LOCK and UNLOCK verbs are left out of the document) + 1 for the index of what a state holds + 1 to import the state GitLab holds for a stack + 1 for the versions a stack's state has (who, when, how big)
   for (const { id, method, op } of ops) {
     const codes = Object.keys(op.responses as object).sort();
     const writes = method !== "get";
@@ -61,6 +61,17 @@ test("the sign-in operations document their answers and audit actions", async ()
   expect(answers("/auth/me", "get")).toEqual(["200", "401"]);
   expect(answers("/auth/logout", "post")).toEqual(["204", "401", "415"]);
   expect(answers("/auth/whoami", "get")).toEqual(["200", "401"]);
+  expect(answers("/auth/identities", "get")).toEqual(["200", "400", "401", "403", "404", "422"]);
+  expect(answers("/auth/identities/{id}", "delete")).toEqual([
+    "204",
+    "400",
+    "401",
+    "403",
+    "404",
+    "409",
+    "415",
+    "422",
+  ]);
   expect(answers("/auth/cli", "get")).toEqual(["302", "422"]);
   expect(answers("/auth/cli/token", "post")).toEqual(["201", "400", "415", "422"]);
   expect(answers("/auth/cli/logout", "post")).toEqual([

@@ -1,0 +1,23 @@
+{
+  "version": "0.2",
+  "currency": "USD",
+  "projects": [
+    {
+      "name": "stacks/db/plan.json",
+      "metadata": {
+        "type": "terraform_plan_json"
+      }
+    }
+  ],
+  "totalHourlyCost": "0",
+  "totalMonthlyCost": "300.5",
+  "pastTotalMonthlyCost": "288",
+  "diffTotalMonthlyCost": "12.5",
+  "summary": {
+    "totalDetectedResources": 3,
+    "totalSupportedResources": 3,
+    "totalUnsupportedResources": 0,
+    "totalUsageBasedResources": 0,
+    "totalNoPriceResources": 0
+  }
+}

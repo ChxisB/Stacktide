@@ -157,6 +157,7 @@ describe("callback", () => {
       gitlabId: person.id,
       username: "ada",
       name: "Ada Lovelace",
+      platformAdmin: true, // these tests run as the development principal, which may do anything
     });
 
     const [event] = await t.db

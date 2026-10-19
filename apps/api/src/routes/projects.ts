@@ -1,4 +1,4 @@
-import { PROJECT_TAGS } from "@orch/core";
+import { can, DomainError, PROJECT_TAGS } from "@orch/core";
 import {
   createProject,
   deleteProject,
@@ -159,7 +159,17 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
     )
     .patch(
       "/:projectId",
-      async ({ params: { orgId, projectId }, body, audit }) => {
+      async ({ params: { orgId, projectId }, body, audit, principal: caller }) => {
+        // The link decides which GitLab project the organization's connection token is used on (leases,
+        // runs), so re-pointing it is as privileged as creating a project with one: an org admin's.
+        if (
+          body.gitlabProjectId !== undefined &&
+          caller &&
+          "subject" in caller &&
+          !can(caller.subject, "project.create", { organizationId: orgId })
+        ) {
+          throw new DomainError("forbidden", 403, "Not allowed: project.create");
+        }
         const project = await db
           .transaction(async (tx) => {
             const project = await updateProject(tx, orgId, projectId, body);
@@ -182,11 +192,22 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
     .delete(
       "/:projectId",
       async ({ params: { orgId, projectId }, audit, set }) => {
-        await db.transaction(async (tx) => {
-          const project = await getProject(tx, orgId, projectId);
-          if (!project || !(await deleteProject(tx, orgId, projectId))) throw notFound("Project");
-          await audit(tx, audited("project.delete", project, { name: project.name }));
-        });
+        await db
+          .transaction(async (tx) => {
+            const project = await getProject(tx, orgId, projectId);
+            if (!project || !(await deleteProject(tx, orgId, projectId))) throw notFound("Project");
+            await audit(tx, audited("project.delete", project, { name: project.name }));
+          })
+          // Terraform state is not taken down with its project: a CI job deletes it first (ADR-0017).
+          .catch(
+            mapDbError({
+              state_versions_project_fk: new DomainError(
+                "project_has_state",
+                409,
+                "The project holds Terraform state; delete the state first",
+              ),
+            }),
+          );
         set.status = 204;
       },
       {

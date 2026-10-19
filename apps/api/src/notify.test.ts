@@ -11,6 +11,7 @@ import {
   type Job,
   jobs,
   NOTIFY_QUEUE,
+  notifyRotationFailing,
   notifyStackDrift,
   setSubscriptions,
 } from "@orch/db";
@@ -91,8 +92,20 @@ async function world(kind: "webhook" | "slack" = "webhook") {
     organizationId: org.id,
     projectId: project.id,
     sinkId: sink.id,
-    events: ["stack.drift"],
+    events: ["stack.drift", "rotation.failing"],
   });
+  const tellRotation = (over: object = {}) =>
+    t.db.transaction((tx) =>
+      notifyRotationFailing(tx, {
+        organizationId: org.id,
+        projectId: project.id,
+        key: "DB_PASSWORD",
+        provider: "gitlab-token",
+        attempts: 3,
+        at: new Date(AT),
+        ...over,
+      }),
+    );
   const tell = (over: object = {}) =>
     t.db.transaction((tx) =>
       notifyStackDrift(tx, {
@@ -111,7 +124,7 @@ async function world(kind: "webhook" | "slack" = "webhook") {
     (await t.db.select().from(jobs).where(eq(jobs.queue, NOTIFY_QUEUE))).filter(
       (j) => (j.payload as { sinkId: string }).sinkId === sink.id,
     );
-  return { org, project, sink, tell, queued };
+  return { org, project, sink, tell, tellRotation, queued };
 }
 const ctxOf = (payload: Record<string, unknown>, over: Partial<JobContext> = {}): JobContext => ({
   id: "0198d6f0-0000-7000-8000-000000000001",
@@ -471,6 +484,55 @@ describe("what a delivery does when it cannot", () => {
     ]) {
       await expect(handler(f)(ctxOf(bad))).rejects.toThrow("not a notification");
     }
+    expect(f.sent).toEqual([]);
+  });
+});
+
+describe("a rotation that keeps failing", () => {
+  const rotationPayload = async (w: Awaited<ReturnType<typeof world>>, over: object = {}) => {
+    await w.tellRotation();
+    const [job] = await w.queued();
+    return { ...(job?.payload as Record<string, unknown>), ...over };
+  };
+
+  test("a webhook gets the variable's name, the provider and the count, signed", async () => {
+    const w = await world();
+    const f = fakeFetch();
+    await handler(f)(ctxOf(await rotationPayload(w)));
+    const [sent] = f.sent;
+    if (!sent) throw new Error("nothing sent");
+    expect(sent.headers["x-orch-event"]).toBe("rotation.failing");
+    expect(JSON.parse(sent.body)).toEqual({
+      id: "0198d6f0-0000-7000-8000-000000000001",
+      event: "rotation.failing",
+      at: AT,
+      organizationId: w.org.id,
+      project: { id: w.project.id, name: "api" },
+      rotation: { key: "DB_PASSWORD", provider: "gitlab-token", attempts: 3 },
+    });
+    expect(sent.headers["x-orch-signature"]).toBe(
+      `v1=${hmac(SIGNING, `${sent.headers["x-orch-timestamp"]}.${sent.body}`)}`,
+    );
+  });
+
+  test("slack says which variable, where, and that the old value is still in use; a name cannot turn into a mention", async () => {
+    const w = await world("slack");
+    const f = fakeFetch();
+    await handler(f)(ctxOf(await rotationPayload(w, { key: "<!channel>" })));
+    const text = (JSON.parse(f.sent[0]?.body ?? "{}") as { text: string }).text;
+    expect(text).toContain("api");
+    expect(text).toContain("gitlab-token");
+    expect(text).toContain("3 times");
+    expect(text).toContain("still in use");
+    expect(text).not.toMatch(/[<>]/);
+  });
+
+  test("a payload with a stack's fields and a rotation's event is not ours", async () => {
+    const w = await world();
+    const f = fakeFetch();
+    await expect(
+      handler(f)(ctxOf({ ...(await payloadOf(w)), event: "rotation.failing" })),
+    ).rejects.toThrow("not a notification");
     expect(f.sent).toEqual([]);
   });
 });

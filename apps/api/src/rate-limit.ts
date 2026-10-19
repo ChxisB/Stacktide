@@ -18,6 +18,10 @@ export const LIMITS = {
   token_create: { max: 10, windowMs: 10 * 60_000, by: "caller" },
   /** Reading a secret's value, or a whole environment's. */
   reveal: { max: 60, windowMs: 60_000, by: "caller" },
+  /** Rotating a secret now: each one mints a credential at a provider. */
+  rotation_run: { max: 20, windowMs: 60_000, by: "caller" },
+  /** Taking a lease: each one makes a token at GitLab. */
+  lease_issue: { max: 20, windowMs: 60_000, by: "caller" },
 } as const satisfies Record<string, { max: number; windowMs: number; by: "ip" | "caller" }>;
 export type LimitClass = keyof typeof LIMITS;
 

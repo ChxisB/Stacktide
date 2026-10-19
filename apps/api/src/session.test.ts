@@ -1,7 +1,18 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createSession, sessions, upsertUser } from "@orch/db";
+import type { OrgRole } from "@orch/core";
+import { envKeyProvider } from "@orch/crypto";
+import {
+  createOrganization,
+  createSession,
+  createSsoProvider,
+  sessions,
+  setSsoMembership,
+  updateSsoProvider,
+  upsertUser,
+  users,
+} from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { sessionPrincipal } from "./session";
 import { hashToken, randomToken } from "./tokens";
 
@@ -49,6 +60,29 @@ describe("sessionPrincipal", () => {
       },
     });
     expect(seen).toEqual([user.id]);
+  });
+
+  test("a person with no GitLab id holds no GitLab roles, is no platform admin, and the source is not asked", async () => {
+    const [user] = await t.db.insert(users).values({ username: "idp-only", name: "I" }).returning();
+    const id = user?.id ?? "";
+    const token = randomToken();
+    await createSession(t.db, { userId: id, tokenHash: hashToken(token), ttlMs: 60_000 });
+    let asked = 0;
+    const p = await sessionPrincipal({
+      db: t.db,
+      roles: () => {
+        asked++;
+        return { orgRoles: { [ORG]: "owner" }, projectRoles: {} };
+      },
+      platformAdmins: [0, 1, 9000],
+    })(request(`orch_session=${token}`));
+    expect(p).toEqual({
+      id,
+      kind: "user",
+      userId: id,
+      subject: { kind: "user", platformAdmin: false, orgRoles: {}, projectRoles: {} },
+    });
+    expect(asked).toBe(0);
   });
 
   test("by default nobody has a role", async () => {
@@ -102,5 +136,57 @@ describe("sessionPrincipal", () => {
       roles: () => Promise.reject(new Error("gitlab down")),
     });
     await expect(resolve(request(`orch_session=${token}`))).rejects.toThrow("gitlab down");
+  });
+});
+
+describe("a role through an identity provider and one through GitLab", () => {
+  const keys = envKeyProvider(`k1:${Buffer.alloc(32, 3).toString("base64")}`);
+  let n = 0;
+  async function provider() {
+    const org = await createOrganization(t.db, { slug: `sso-${++n}`, name: "O" });
+    const made = await createSsoProvider(t.db, keys, {
+      organizationId: org.id,
+      issuer: "https://idp.example.com",
+      clientId: "orch",
+      clientSecret: "s",
+      emailDomains: ["acme.example"],
+      roleMap: [],
+    });
+    await updateSsoProvider(t.db, keys, org.id, { enabled: true });
+    return { org, made };
+  }
+  const rolesOf = async (gitlab: Record<string, OrgRole>, memberships: [string, OrgRole][]) => {
+    const { user, token } = await signIn();
+    for (const [providerId, role] of memberships) {
+      await t.db.execute(
+        sql`INSERT INTO user_identities (user_id, provider, subject, sso_provider_id)
+            VALUES (${user.id}, ${`sso:${providerId}`}, ${`sub-${n++}`}, ${providerId})`,
+      );
+      await setSsoMembership(t.db, user.id, providerId, role, 60_000);
+    }
+    const p = await sessionPrincipal({
+      db: t.db,
+      roles: () => ({ orgRoles: gitlab, projectRoles: {} }),
+    })(request(`orch_session=${token}`));
+    return (p as { subject: { orgRoles: Record<string, OrgRole> } }).subject.orgRoles;
+  };
+
+  test("the higher of the two holds in an organization, whichever it comes from", async () => {
+    for (const [gitlab, sso, held] of [
+      ["viewer", "admin", "admin"],
+      ["owner", "viewer", "owner"],
+      ["member", "member", "member"],
+    ] as const) {
+      const { org, made } = await provider();
+      expect(await rolesOf({ [org.id]: gitlab }, [[made.id, sso]])).toEqual({ [org.id]: held });
+    }
+  });
+
+  test("a provider's role is added to the GitLab ones, not swapped for them", async () => {
+    const [a, b] = [await provider(), await provider()];
+    expect(await rolesOf({ [a.org.id]: "member" }, [[b.made.id, "admin"]])).toEqual({
+      [a.org.id]: "member",
+      [b.org.id]: "admin",
+    });
   });
 });

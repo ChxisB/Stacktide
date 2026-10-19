@@ -1,0 +1,1 @@
+ALTER TABLE "run_stacks" ADD COLUMN "tags" text[] DEFAULT '{}'::text[] NOT NULL;

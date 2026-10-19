@@ -18,12 +18,16 @@ export interface TemplateInfo {
   params: { properties: Record<string, Param>; required: string[] };
   requiresVariables: string[];
 }
+/** How the pipeline is delivered: the whole file, a file that includes the template, or one that uses it as a CI/CD component. */
+export type Mode = "inline" | "include" | "component";
 export interface Config {
   connectionId: string;
   template: string;
   version: string;
   params: Record<string, unknown>;
-  mode: "inline" | "include";
+  mode: Mode;
+  includeProject: string | null;
+  includeRef: string | null;
   mrIid: number | null;
   mrUrl: string | null;
   updatedAt: string | Date;
@@ -61,6 +65,34 @@ export interface Request {
   template: string;
   version: string;
   params: Record<string, unknown>;
+  mode?: Mode;
+  include?: { project: string; ref?: string };
+}
+
+/** The delivery form: the templates project and ref are kept when the mode is switched back and forth. */
+export interface Delivery {
+  mode: Mode;
+  project: string;
+  ref: string;
+}
+/** Starts as the project was set up, else inline. */
+export const startDelivery = (config: Config | null): Delivery => ({
+  mode: config?.mode ?? "inline",
+  project: config?.includeProject ?? "",
+  ref: config?.includeRef ?? "",
+});
+/** The `mode` and `include` of a request: nothing for an inline pipeline, which is the API's default. */
+export function deliveryOf({ mode, project, ref }: Delivery): Pick<Request, "mode" | "include"> {
+  if (mode === "inline") return {};
+  const r = ref.trim();
+  return { mode, include: { project: project.trim(), ...(r ? { ref: r } : {}) } };
+}
+
+/** What the template registry says of a catalog project (CMP-4), as far as the wizard uses it. */
+export interface Registry {
+  releases: string[];
+  latest: string | null;
+  components: { name: string }[];
 }
 
 /** A form field's value: text for everything but a flag. */

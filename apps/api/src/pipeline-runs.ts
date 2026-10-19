@@ -8,10 +8,11 @@ import {
   type NewPipelineRun,
   recordPipelineRun,
 } from "@orch/db";
-import { type Gitlab, GitlabError, type Pipeline } from "@orch/gitlab";
+import { type Gitlab, GitlabError, isFinished, type Pipeline } from "@orch/gitlab";
 import { z } from "zod";
 import { WHY } from "./connections";
 import { gitlabFor } from "./routes/pipeline";
+import { ingestSecretFindings } from "./secret-scan";
 import type { JobHandler } from "./worker";
 
 /** GitLab's words for a failure are stored clipped: job names are free text. */
@@ -144,7 +145,8 @@ export const pipelineEvent = z.looseObject({
  * the other kinds are not used (a pipeline event follows every change of a pipeline's status). An
  * event for a project that is not linked is dropped, and so is one that no retry could serve (the
  * pipeline or the connection is gone, GitLab refuses the token); any other failure fails the job so
- * the queue retries it. Needs the master keys, to open the connection's token.
+ * the queue retries it. Needs the master keys, to open the connection's token. A pipeline that has
+ * finished is then read for secret findings (`ingestSecretFindings`, SCAN-3).
  */
 export const pipelineEventHandler =
   (deps: RunDeps): JobHandler =>
@@ -163,9 +165,11 @@ export const pipelineEventHandler =
       gitlabProjectId: e.projectId,
       connectionId: e.connectionId,
     };
+    let gitlab: Gitlab;
     let seen: Awaited<ReturnType<typeof readPipeline>>;
     try {
-      seen = await readPipeline(deps, at, e.pipelineId);
+      gitlab = await deps.gitlab(at.organizationId, at.connectionId);
+      seen = await readPipeline(deps, at, e.pipelineId, gitlab);
     } catch (error) {
       const why = hopeless(error);
       if (!why) throw error;
@@ -174,4 +178,13 @@ export const pipelineEventHandler =
     }
     const { stored } = await recordPipelineRun(deps.db, seen);
     ctx.log.debug("pipeline event handled", { status: seen.status, stored });
+    if (!isFinished(seen.status)) return;
+    // the run is stored; a failure below fails the job, and the retry stores it again, unchanged
+    try {
+      await ingestSecretFindings(deps, at, gitlab, { id: e.pipelineId, ref: seen.ref }, ctx.log);
+    } catch (error) {
+      const why = hopeless(error, "the job");
+      if (!why) throw error;
+      ctx.log.warn("secret report dropped", { reason: why, connection: e.connectionId });
+    }
   };

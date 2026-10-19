@@ -12,10 +12,13 @@ import { createTestDb, type TestDb } from "@orch/db/testing";
 import { createGitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import {
+  componentFile,
+  componentPath,
   includeFile,
   includePath,
   loadTemplates,
   render,
+  renderComponent,
   renderInclude,
   type Template,
 } from "@orch/pipelines";
@@ -24,6 +27,7 @@ import {
   PIPELINE_BRANCH,
   PIPELINE_FILE,
   type PipelineDeps,
+  type PipelineMode,
   type PipelineRequest,
   previewPipeline,
 } from "./pipeline-apply";
@@ -238,7 +242,7 @@ describe("the include mode", () => {
     });
     expect(await failure(w.run({ template: "bun-app", include: into }))).toMatchObject({
       code: "invalid_pipeline",
-      message: "A templates project goes with the include mode alone",
+      message: "A templates project goes with the include and component modes alone",
     });
     expect(
       await failure(w.run({ template: "bun-app", mode: "inline", include: into })),
@@ -316,6 +320,208 @@ describe("switching between the modes", () => {
   });
 });
 
+const CATALOG = "fx/catalog";
+const comp = (ref = "1.0.0", extra: Partial<PipelineRequest> = {}): PipelineRequest => ({
+  template: "bun-app",
+  mode: "component",
+  include: { project: CATALOG, ref },
+  ...extra,
+});
+/** A catalog project that holds the component of each of `published`, tagged 1.0.0 (the mock is the one `world` made). */
+const publishCatalog = (published: readonly Template[] = v1) => {
+  mock.addProject({
+    path: CATALOG,
+    files: Object.fromEntries(published.map((p) => [componentPath(p.manifest), componentFile(p)])),
+  });
+  mock.addTag(CATALOG, "1.0.0");
+};
+const asked = { project: CATALOG, version: "1.0.0" };
+
+describe("the component mode", () => {
+  test("a preview shows the thin file, lints it through the catalog project and writes nothing", async () => {
+    const w = await world();
+    publishCatalog();
+    const p = await previewPipeline(w.deps, w.org.id, w.project.id, comp());
+    expect(p.mode).toBe("component");
+    expect(p.text).toBe(renderComponent(bun, [{}], asked));
+    expect(p.text).toContain(`component: $CI_SERVER_FQDN/${CATALOG}/bun-app@1.0.0`);
+    expect(p.validation.lint).toMatchObject({ valid: true, errors: [] });
+    expect(w.commits()).toBe(0);
+    expect(await w.config()).toBeUndefined();
+  });
+
+  test("an apply commits the thin file to the branch and opens one merge request that says where the pipeline lives", async () => {
+    const w = await world();
+    publishCatalog();
+    const r = await w.run(comp("1.0.0", { params: { bunVersion: "1.2" } }));
+    expect(r).toMatchObject({ outcome: "opened", committed: true, existing: "none" });
+    expect(r.mode).toBe("component");
+    expect(await w.file(PIPELINE_BRANCH)).toBe(
+      renderComponent(bun, [{ params: { bunVersion: "1.2" } }], asked),
+    );
+    expect(await w.file("main")).toBeNull();
+    const [mr, ...more] = await w.mrs();
+    expect(more).toHaveLength(0);
+    expect(mr?.description).toContain(`the component \`bun-app\` of \`${CATALOG}\` at \`1.0.0\``);
+    expect(mr?.description).toContain("must be published in that version before this is merged");
+    expect(mr?.description).toContain(
+      `Whoever can release \`${CATALOG}\` changes this project's pipeline.`,
+    );
+    expect(mr?.description).not.toContain("without a merge request");
+    expect(r.config).toMatchObject({
+      mode: "component",
+      includeProject: CATALOG,
+      includeRef: "1.0.0",
+    });
+    expect(await w.config()).toMatchObject({
+      mode: "component",
+      includeProject: CATALOG,
+      includeRef: "1.0.0",
+    });
+  });
+
+  test("a partial release or a SHA is accepted; the merge request warns that a partial release moves", async () => {
+    const w = await world();
+    publishCatalog();
+    const sha = mock.tagSha(CATALOG, "1.0.0");
+    for (const ref of ["1", "1.0", sha]) {
+      expect(
+        (await previewPipeline(w.deps, w.org.id, w.project.id, comp(ref))).validation.lint.valid,
+      ).toBe(true);
+    }
+    await w.run(comp("1"));
+    expect((await w.mrs())[0]?.description).toContain(
+      "`1` follows the newest matching release, so it can change without a merge request here",
+    );
+    await w.run(comp(sha));
+    expect((await w.mrs())[0]?.description).not.toContain("without a merge request");
+  });
+
+  test("a branch, ~latest, a missing version or a project that is not a path is refused and nothing is committed", async () => {
+    const w = await world();
+    publishCatalog();
+    for (const ref of ["main", "~latest", "v1.0.0", "1.0.0-rc.1"]) {
+      const e = await failure(w.run(comp(ref)));
+      expect(e).toMatchObject({ code: "invalid_pipeline", status: 422 });
+      expect(e.message).toContain("component version");
+    }
+    const none = await failure(
+      w.run({ template: "bun-app", mode: "component", include: { project: CATALOG } }),
+    );
+    expect(none).toMatchObject({ code: "invalid_pipeline", status: 422 });
+    expect(none.message).toContain("component version");
+    const bad = await failure(w.run({ ...comp(), include: { project: "../x", ref: "1.0.0" } }));
+    expect(bad.message).toContain("include project");
+    const over = await failure(w.run(comp("1.0.0", { overrides: { include: [] } })));
+    expect(over.message).toContain("include is the template's own in component mode");
+    expect(w.commits()).toBe(0);
+    expect(await w.config()).toBeUndefined();
+  });
+
+  test("a version or a component that is not published is refused by GitLab's lint and nothing is committed", async () => {
+    const w = await world();
+    publishCatalog();
+    const gone = await failure(w.run(comp("2.0.0")));
+    expect(gone).toMatchObject({ code: "pipeline_invalid", status: 422 });
+    expect(gone.message).toContain("reference '2.0.0' does not exist");
+    const nowhere = await failure(
+      w.run({ ...comp(), include: { project: "fx/nowhere", ref: "1.0.0" } }),
+    );
+    expect(nowhere.message).toContain("not found or access denied");
+    expect(w.commits()).toBe(0);
+    expect(await w.mrs()).toHaveLength(0);
+
+    const empty = await world();
+    publishCatalog([]);
+    const missing = await failure(empty.run(comp()));
+    expect(missing).toMatchObject({ code: "pipeline_invalid" });
+    expect(missing.message).toContain(`Component '${CATALOG}/bun-app' does not exist at '1.0.0'`);
+    expect(empty.commits()).toBe(0);
+  });
+
+  test("the mode and the catalog project go together or not at all", async () => {
+    const w = await world();
+    expect(await failure(w.run({ template: "bun-app", mode: "component" }))).toMatchObject({
+      code: "invalid_pipeline",
+      message: "The component mode needs the templates project",
+    });
+    expect(w.commits()).toBe(0);
+  });
+
+  test("running it again with the same inputs changes nothing; another version edits the same merge request", async () => {
+    const w = await world();
+    publishCatalog();
+    mock.addTag(CATALOG, "1.1.0");
+    const first = await w.run(comp());
+    const commits = w.commits();
+    expect(await w.run(comp())).toMatchObject({
+      outcome: "unchanged",
+      committed: false,
+      mr: first.mr,
+    });
+    expect(w.commits()).toBe(commits);
+    expect(await w.run(comp("1.1.0"))).toMatchObject({
+      outcome: "updated",
+      committed: true,
+      mr: first.mr,
+    });
+    expect(await w.file(PIPELINE_BRANCH)).toContain("bun-app@1.1.0");
+    expect(await w.mrs()).toHaveLength(1);
+  });
+});
+
+describe("switching between inline, include and component", () => {
+  test("each switch edits the same branch and merge request, and the project keeps the mode it was last set up in", async () => {
+    const w = await world();
+    publishCatalog();
+    const first = await w.run({ template: "bun-app" });
+    const order: [PipelineMode, PipelineRequest, string][] = [
+      ["include", thin, renderInclude(bun, [{}], into)],
+      ["component", comp(), renderComponent(bun, [{}], asked)],
+      ["inline", { template: "bun-app" }, render(bun)],
+      ["component", comp(), renderComponent(bun, [{}], asked)],
+      ["include", thin, renderInclude(bun, [{}], into)],
+    ];
+    for (const [mode, request, text] of order) {
+      const done = await w.run(request);
+      expect(done).toMatchObject({ outcome: "updated", committed: true, mr: first.mr });
+      expect(done.mode).toBe(mode);
+      expect(await w.file(PIPELINE_BRANCH)).toBe(text);
+      expect((await w.config())?.mode).toBe(mode);
+      expect(await w.mrs()).toHaveLength(1);
+      expect(await w.file("main")).toBeNull();
+    }
+    expect(await w.config()).toMatchObject({
+      mode: "include",
+      includeProject: TEMPLATES,
+      includeRef: "main",
+    });
+    await w.run({ template: "bun-app" });
+    expect(await w.config()).toMatchObject({
+      mode: "inline",
+      includeProject: null,
+      includeRef: null,
+    });
+  });
+
+  test("a thin component file that was merged is a generated file: ejecting proposes the inline one", async () => {
+    const w = await world();
+    publishCatalog();
+    const merged = renderComponent(bun, [{}], asked);
+    const { remote, project } = await w.make({ [PIPELINE_FILE]: merged });
+    expect(await w.run(comp(), project)).toMatchObject({
+      outcome: "in_place",
+      existing: "identical",
+      mr: null,
+    });
+    expect(await w.run({ template: "bun-app" }, project)).toMatchObject({
+      outcome: "opened",
+      existing: "generated",
+    });
+    expect(await w.file("main", remote)).toBe(merged);
+  });
+});
+
 describe("a fleet upgrade", () => {
   const fleet = (w: Awaited<ReturnType<typeof world>>): FleetDeps => ({
     db: t.db,
@@ -387,5 +593,25 @@ describe("a fleet upgrade", () => {
       includeProject: null,
     });
     expect(await w.config(thinOne.project)).toMatchObject({ mode: "include" });
+  });
+
+  test("leaves a project in the component mode alone: its version is a release of the catalog project (CMP-5)", async () => {
+    const w = await world([...v1, bunNext]);
+    publishCatalog();
+    const on = await adopt(w, comp(), renderComponent(bun, [{}], asked));
+    const before = w.commits(on.remote);
+    for (const mode of ["plan", "apply"] as const) {
+      const done = await upgradeFleet(fleet(w), w.org.id, body, mode);
+      expect(done.items).toMatchObject([
+        { status: "skipped", code: "component", from: "1.0.0", to: "1.1.0" },
+      ]);
+    }
+    expect(await w.config(on.project)).toMatchObject({
+      version: "1.0.0",
+      mode: "component",
+      includeRef: "1.0.0",
+    });
+    expect(w.commits(on.remote)).toBe(before);
+    expect(await w.file(PIPELINE_BRANCH, on.remote)).toBeNull();
   });
 });

@@ -18,7 +18,13 @@ import {
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { createGitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
-import { includeFile, includePath, loadTemplates } from "@orch/pipelines";
+import {
+  componentFile,
+  componentPath,
+  includeFile,
+  includePath,
+  loadTemplates,
+} from "@orch/pipelines";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app";
 import { callerPrincipal } from "./credentials";
@@ -438,6 +444,70 @@ describe("POST /pipeline", () => {
   });
 });
 
+describe("secret detection in a starter pipeline (SCAN-5)", () => {
+  const on = (over: object = {}) => ({ ...bun(), params: { secretDetection: true }, ...over });
+  const TEMPLATE = "Jobs/Secret-Detection.gitlab-ci.yml";
+
+  test("a preview with it on is a pipeline GitLab accepts, with GitLab's template and the job", async () => {
+    const w = await world();
+    const res = await w.preview(on());
+    expect(res.status).toBe(200);
+    expect(res.json.validation).toMatchObject({ ok: true, lint: { valid: true, errors: [] } });
+    expect(res.json.text).toContain(`template: ${TEMPLATE}`);
+    expect(res.json.text).toContain("secret_detection:");
+    expect(w.commits()).toBe(0);
+  });
+
+  test("a value that is not true or false is a 422 that names the parameter and writes nothing", async () => {
+    const w = await world();
+    for (const bad of ["yes", 1, null]) {
+      const res = await w.apply({ ...bun(), params: { secretDetection: bad } });
+      expect(res.status).toBe(422);
+      expect(res.json.detail).toContain("secretDetection");
+    }
+    expect(w.commits()).toBe(0);
+  });
+
+  test("switching it on for a project with a pipeline is one clean update of the same merge request, and off takes it out again", async () => {
+    const w = await world();
+    const first = await w.apply(bun());
+    const res = await w.apply(on());
+    expect(res.json).toMatchObject({
+      outcome: "updated",
+      committed: true,
+      validation: { ok: true },
+      mr: first.json.mr,
+    });
+    const file = () => w.api.repository.getFile(w.gl.id, PIPELINE_FILE, PIPELINE_BRANCH);
+    expect((await file()).content).toContain(TEMPLATE);
+    expect((await w.get()).json.config.params).toEqual({ secretDetection: true });
+
+    const off = await w.apply({ ...bun(), params: { secretDetection: false } });
+    expect(off.json).toMatchObject({ outcome: "updated", committed: true });
+    expect((await file()).content).not.toContain("secret_detection");
+  });
+
+  test("the audit event names the parameter, not what it was set to", async () => {
+    const w = await world();
+    await w.apply(on());
+    const e = (await events("pipeline.apply")).filter((x) => x.projectId === w.project);
+    expect(e[0]?.metadata).toMatchObject({ paramNames: ["secretDetection"] });
+  });
+
+  test("the overview warns that the runners are not known, only for a project that has it on", async () => {
+    const w = await world();
+    expect((await w.get("carol")).json.warnings).toEqual([]);
+    await w.apply(bun());
+    expect((await w.get("carol")).json.warnings).toEqual([]);
+    await w.apply(on());
+    const { warnings } = (await w.get("carol")).json;
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("not known");
+    await w.apply({ ...bun(), params: { secretDetection: false } });
+    expect((await w.get("carol")).json.warnings).toEqual([]);
+  });
+});
+
 describe("POST /pipeline/preview", () => {
   test("shows the file and GitLab's verdict, and changes nothing", async () => {
     const w = await world();
@@ -572,7 +642,10 @@ describe("the include mode", () => {
 
     const unpaired = [
       [{ ...bun(), mode: "include" }, "The include mode needs the templates project"],
-      [{ ...bun(), include: into }, "A templates project goes with the include mode alone"],
+      [
+        { ...bun(), include: into },
+        "A templates project goes with the include and component modes alone",
+      ],
     ] as const;
     for (const [body, message] of unpaired) {
       const res = await w.apply(body);
@@ -599,6 +672,91 @@ describe("the include mode", () => {
   });
 });
 
+describe("the component mode", () => {
+  const into = { project: "fx/catalog", ref: "1.0.0" };
+  const comp = (extra: object = {}) => ({ ...bun(), mode: "component", include: into, ...extra });
+  beforeAll(async () => {
+    const template = (await loadTemplates()).find((c) => c.manifest.name === "bun-app");
+    if (!template) throw new Error("the bun-app template is missing");
+    mock.addProject({
+      path: into.project,
+      files: { [componentPath(template.manifest)]: componentFile(template) },
+    });
+    mock.addTag(into.project, "1.0.0");
+  });
+
+  test("a preview shows the thin file, which component at which version, and writes nothing", async () => {
+    const w = await world();
+    const res = await w.preview(comp({ params: { bunVersion: "1.2" } }));
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ mode: "component", validation: { ok: true } });
+    expect(res.json.text).toContain("component: $CI_SERVER_FQDN/fx/catalog/bun-app@1.0.0");
+    expect(res.json.text).toContain('bunVersion: "1.2"');
+    expect(res.json.text).not.toContain("image: oven/bun");
+    expect(w.commits()).toBe(0);
+  });
+
+  test("an apply stores the catalog project and version, audits them, and a switch back to inline is clean", async () => {
+    const w = await world();
+    const res = await w.apply(comp());
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({
+      config: { mode: "component", includeProject: "fx/catalog", includeRef: "1.0.0" },
+      outcome: "opened",
+      committed: true,
+    });
+    const branch = await w.api.repository.getFile(w.gl.id, PIPELINE_FILE, PIPELINE_BRANCH);
+    expect(branch.content).toContain("bun-app@1.0.0");
+    expect(branch.content).not.toContain("image: oven/bun");
+    expect((await w.get("bob")).json.config).toMatchObject({
+      mode: "component",
+      includeProject: "fx/catalog",
+      includeRef: "1.0.0",
+    });
+    const audit = (await events("pipeline.apply")).filter((e) => e.projectId === w.project);
+    expect(audit).toHaveLength(1);
+    expect(audit[0]?.metadata).toMatchObject({
+      mode: "component",
+      includeProject: "fx/catalog",
+      includeRef: "1.0.0",
+      outcome: "opened",
+    });
+
+    const ejected = await w.apply(bun());
+    expect(ejected.json).toMatchObject({
+      config: { mode: "inline", includeProject: null, includeRef: null },
+      outcome: "updated",
+      mr: res.json.mr,
+    });
+  });
+
+  test("a branch, ~latest, no version or an unpublished one is refused and writes nothing", async () => {
+    const w = await world();
+    for (const ref of ["main", "~latest", "v1.0.0"]) {
+      const res = await w.apply(comp({ include: { project: into.project, ref } }));
+      expect(res.status).toBe(422);
+      expect(res.json.code).toBe("invalid_pipeline");
+    }
+    const none = await w.apply(comp({ include: { project: into.project } }));
+    expect(none.status).toBe(422);
+    expect(none.json.code).toBe("invalid_pipeline");
+    const gone = await w.apply(comp({ include: { project: into.project, ref: "9.9.9" } }));
+    expect(gone.status).toBe(422);
+    expect(gone.json.code).toBe("pipeline_invalid");
+    expect(w.commits()).toBe(0);
+    expect(
+      await t.db.select().from(pipelineConfigs).where(eq(pipelineConfigs.projectId, w.project)),
+    ).toEqual([]);
+  });
+
+  test("a member cannot apply it, and nobody is let in without a session", async () => {
+    const w = await world();
+    expect((await w.apply(comp(), "bob")).status).toBe(403);
+    expect((await w.apply(comp(), null)).status).toBe(401);
+    expect(w.commits()).toBe(0);
+  });
+});
+
 test("no secret reaches a response, a row, a job or a log line", async () => {
   const w = await world();
   const canary = `SEKRIT-pipeline-${Bun.randomUUIDv7()}`;
@@ -614,6 +772,7 @@ test("no secret reaches a response, a row, a job or a log line", async () => {
   await w.apply(bun());
   await w.apply(bun());
   await w.apply({ ...bun(), mode: "include", include: { project: "fx/templates" } });
+  await w.apply({ ...bun(), mode: "component", include: { project: "fx/catalog", ref: "1.0.0" } });
   const haystack = [
     ...seen,
     JSON.stringify(await t.db.select().from(pipelineConfigs)),

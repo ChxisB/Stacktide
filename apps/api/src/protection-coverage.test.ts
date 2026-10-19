@@ -11,7 +11,9 @@ test("only the variable routes and the approval of a change request write variab
     if (WRITER.test(await Bun.file(join(root, f)).text())) users.push(f);
   }
   // A new writer must hold a protected environment off (GOV-2) or be added here on purpose.
+  // rotate.ts writes only after locking the environment and finding it unprotected; a protected one gets a change request
   expect(users.sort()).toEqual([
+    "apps/api/src/rotate.ts",
     "apps/api/src/routes/variables.ts",
     "packages/db/src/change-requests.ts",
     "packages/db/src/variables.ts",

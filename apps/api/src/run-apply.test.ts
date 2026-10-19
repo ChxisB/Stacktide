@@ -3,6 +3,8 @@ import { createLogger, DomainError, type Subject } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import {
   type AuditEvent,
+  allCostLimits,
+  allPools,
   approveChangeRequest,
   attachRunPipeline,
   audit,
@@ -13,20 +15,31 @@ import {
   createEnvironment,
   createOrganization,
   createPolicySet,
+  createPool,
   createProject,
   createRun,
   createSession,
+  deleteCostLimit,
   deletePolicySet,
+  deletePool,
+  dismissFinding,
   getRun,
+  listFindings,
   listPolicySets,
   moveRunStack,
   type Person,
   recordPipelineRun,
   recordStackJobs,
+  resolveMissing,
   runPipelines,
+  setCostLimit,
   setEnvironmentProtection,
+  setSecretGate,
+  storePlanSummary,
   storePolicyVerdict,
   type Tx,
+  updatePool,
+  upsertFindings,
   upsertUser,
   WEBHOOK_QUEUE,
 } from "@orch/db";
@@ -35,7 +48,7 @@ import { createGitlab, type Gitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import { PLAN_RETENTION_MS } from "@orch/iac";
 import { and, eq } from "drizzle-orm";
-import { createApp } from "./app";
+import { type AppDeps, createApp } from "./app";
 import { callerPrincipal } from "./credentials";
 import { type ApplyDeps, type ApplyRequest, applyRun, mrApplyHandler } from "./run-apply";
 import { runEventHandler } from "./run-ingest";
@@ -71,13 +84,15 @@ const repo = (
   applyOn: Partial<Record<Name, string>> = {},
   tags: Partial<Record<Name, string[]>> = {},
   environment: Partial<Record<Name, string>> = {},
+  pool: Partial<Record<Name, string>> = {},
+  state: Partial<Record<Name, string>> = {},
 ) => ({
   ".gitlab-ci.yml": '"apply:net":\n  script: [echo]\n"apply:app":\n  script: [echo]\n',
   "stacks/net/stack.yml": `name: net\ntool: terraform\nversion: 1.9.0\n${
     applyOn.net ? `apply_on: ${applyOn.net}\n` : ""
   }${tags.net ? `tags: [${tags.net.join(", ")}]\n` : ""}${
     environment.net ? `environment: ${environment.net}\n` : ""
-  }`,
+  }${pool.net ? `pool: ${pool.net}\n` : ""}${state.net ? `state: ${state.net}\n` : ""}`,
   "stacks/net/main.tf": BACKEND,
   "stacks/app/stack.yml": `name: app\ntool: terraform\nversion: 1.9.0\ndepends_on: [net]\n${
     applyOn.app ? `apply_on: ${applyOn.app}\n` : ""
@@ -93,6 +108,10 @@ interface Opts {
   tags?: Partial<Record<Name, string[]>>;
   /** The `environment` of each stack's `stack.yml`: the platform environment whose variables it plans with. */
   environment?: Partial<Record<Name, string>>;
+  /** The `pool` of each stack's `stack.yml`: the worker pool whose runners its jobs ask for. */
+  pool?: Partial<Record<Name, string>>;
+  /** The `state` of each stack's `stack.yml`: where its Terraform state lives. */
+  state?: Partial<Record<Name, string>>;
   /** Where each stack of the run is; planned when left out. */
   states?: Partial<Record<Name, "queued" | "planning" | "planned" | "failed">>;
   /** Stacks whose plan job was never recorded. */
@@ -117,7 +136,10 @@ let edits = 0;
 async function world(o: Opts = {}) {
   const id = ++n;
   const path = `ap/p${id}`;
-  const gl = mock.addProject({ path, files: repo(o.applyOn, o.tags, o.environment) });
+  const gl = mock.addProject({
+    path,
+    files: repo(o.applyOn, o.tags, o.environment, o.pool, o.state),
+  });
   const api = client();
   await api.repository.createBranch(gl.id, "feature", "main");
   if (o.target) await api.repository.createBranch(gl.id, o.target, "main");
@@ -711,6 +733,139 @@ describe("applying a run", () => {
   });
 });
 
+describe("applying on a worker pool (POOL-3)", () => {
+  const pool = (name: string, over: Record<string, unknown> = {}) =>
+    t.db.transaction((tx) =>
+      createPool(tx, { organizationId: o1, name, tags: [`${name}-runner`], ...over }),
+    );
+  afterEach(async () => {
+    for (const p of await allPools(t.db, o1)) {
+      await t.db.transaction(async (tx) => {
+        await updatePool(tx, o1, p.id, { isDefault: false });
+        await deletePool(tx, o1, p.id);
+      });
+    }
+  });
+  const applyJobs = async (w: World) => {
+    const [id] = await w.applyPipelines();
+    const yaml = mock.pipelineVariables(id as number)?.[0]?.value ?? "";
+    const jobs = Bun.YAML.parse(yaml) as Record<string, { tags?: string[] }>;
+    return Object.fromEntries(Object.entries(jobs).map(([name, j]) => [name, j.tags]));
+  };
+
+  test("the apply asks for the runners of the stack's pool, and of the default for a stack that names none", async () => {
+    await pool("prod");
+    await pool("dev", { isDefault: true });
+    const w = await world({ pool: { net: "prod" } });
+    await apply(w);
+    expect(await applyJobs(w)).toMatchObject({
+      "apply:net": ["prod-runner"],
+      "apply:app": ["dev-runner"],
+    });
+  });
+
+  test("with no pools the apply has no tags, as before", async () => {
+    const w = await world();
+    await apply(w);
+    const tags = await applyJobs(w);
+    expect(tags["apply:net"]).toBeUndefined();
+    expect(tags["apply:app"]).toBeUndefined();
+  });
+
+  test("a stack whose pool is gone or switched off is refused before anything is claimed or started", async () => {
+    const w = await world({ pool: { net: "gone" } });
+    const e = await refused(apply(w));
+    expect(e).toMatchObject({ status: 422, code: "cannot_generate" });
+    expect(e.message).toContain("the organization does not have");
+    expect(w.triggered()).toBe(0);
+    expect(await w.states()).toEqual(PLANNED);
+    await pool("gone", { enabled: false });
+    expect((await refused(apply(w))).message).toContain("which is disabled");
+    expect(w.triggered()).toBe(0);
+    expect(await w.states()).toEqual(PLANNED);
+  });
+});
+
+describe("applying a stack whose state is on the platform (STATE-5)", () => {
+  // its jobs run orch, so the tool image holds it; and an apply must be told where the platform is
+  const images = { terraform: "registry.example.com/platform/terraform-orch" };
+  const platform = { apiUrl: "https://orch.example.com", audience: "orch.example.com" };
+  const jobsOf = async (w: World) => {
+    const [id] = await w.applyPipelines();
+    const yaml = mock.pipelineVariables(id as number)?.[0]?.value ?? "";
+    // biome-ignore lint/suspicious/noExplicitAny: a generated job read back from YAML
+    return Bun.YAML.parse(yaml) as Record<string, any>;
+  };
+  const signsIn = (job: {
+    script: string[];
+    id_tokens?: unknown;
+    variables?: Record<string, string>;
+  }) =>
+    job.script.includes('login="$(orch ci login --state)"') &&
+    job.id_tokens !== undefined &&
+    job.variables?.ORCH_API_URL === "https://orch.example.com";
+
+  test("the apply job of the stack signs in for the state and locks it; the stack on GitLab's state is as it was", async () => {
+    const w = await world({ state: { net: "orch" } });
+    await apply(w, {}, { images, platform });
+    const jobs = await jobsOf(w);
+    expect(signsIn(jobs["apply:net"])).toBe(true);
+    expect(jobs["apply:net"].script).toContain(
+      'export TF_HTTP_LOCK_ADDRESS="$TF_HTTP_ADDRESS/lock" TF_HTTP_LOCK_METHOD=POST TF_HTTP_UNLOCK_ADDRESS="$TF_HTTP_ADDRESS/lock" TF_HTTP_UNLOCK_METHOD=DELETE',
+    );
+    expect(jobs["apply:app"].variables.TF_HTTP_PASSWORD).toBe("$CI_JOB_TOKEN");
+    expect(signsIn(jobs["apply:app"])).toBe(false);
+  });
+
+  test("without the platform's address and audience it is refused before anything is claimed or started", async () => {
+    const w = await world({ state: { net: "orch" } });
+    const e = await refused(apply(w, {}, { images }));
+    expect(e).toMatchObject({ status: 422, code: "cannot_generate" });
+    expect(e.message).toContain("pass platform");
+    expect(w.triggered()).toBe(0);
+    expect(await w.states()).toEqual(PLANNED);
+  });
+
+  test("without an image that holds orch it is refused the same way", async () => {
+    const w = await world({ state: { net: "orch" } });
+    const e = await refused(apply(w, {}, { platform }));
+    expect(e).toMatchObject({ status: 422, code: "cannot_generate" });
+    expect(e.message).toContain("an image with terraform and orch");
+    expect(w.triggered()).toBe(0);
+    expect(await w.states()).toEqual(PLANNED);
+  });
+
+  test("a run with no stack on the platform needs neither", async () => {
+    const w = await world();
+    await apply(w);
+    expect(w.triggered()).toBe(1);
+  });
+
+  test("the merge handler passes both on", async () => {
+    const w = await world({ applyOn: { net: "merge" }, state: { net: "orch" } });
+    w.merge();
+    const ctx: JobContext = {
+      id: "job-9",
+      queue: WEBHOOK_QUEUE,
+      payload: {
+        event: "merge_request",
+        organizationId: o1,
+        connectionId: conn1,
+        projectId: w.gl.id,
+        iid: w.mr.iid,
+        action: "merge",
+      },
+      attempt: 1,
+      maxAttempts: 5,
+      log: logger,
+      signal: new AbortController().signal,
+    };
+    await mrApplyHandler({ db: t.db, gitlab: async () => client(), images, platform })(ctx);
+    expect(await w.states()).toEqual({ app: "planned", net: "applying" });
+    expect(signsIn((await jobsOf(w))["apply:net"])).toBe(true);
+  });
+});
+
 describe("applying where an environment is protected (GOV-3)", () => {
   const net = { net: PLAN_JOB.net };
   const applyEvent = async (w: World) =>
@@ -1010,7 +1165,7 @@ describe("the apply route", () => {
   const roleTable = new Map<number, Pick<Subject, "orgRoles" | "projectRoles">>();
   const people = {} as Record<"alice" | "bob" | "carol" | "erin", { cookie: string }>;
   type Who = keyof typeof people | null;
-  const makeApp = (provider: typeof keys | undefined) =>
+  const makeApp = (provider: typeof keys | undefined, extra: Partial<AppDeps> = {}) =>
     createApp({
       logger,
       db: t.db,
@@ -1020,6 +1175,7 @@ describe("the apply route", () => {
       }),
       ready: async () => {},
       keys: provider,
+      ...extra,
     });
   let app: ReturnType<typeof makeApp>;
 
@@ -1076,6 +1232,22 @@ describe("the apply route", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ actorKind: "user", projectId: w.project.id });
     expect(w.triggered()).toBe(1);
+  });
+
+  test("a stack on the platform's state is applied when the app knows the platform and has an image with orch, and is refused when it does not", async () => {
+    const w = await world({ state: { net: "orch" } });
+    const refusedRes = await call("alice", w);
+    expect(refusedRes.status).toBe(422);
+    expect(refusedRes.json.code).toBe("cannot_generate");
+    expect(w.triggered()).toBe(0);
+    const known = makeApp(keys, {
+      images: { terraform: "registry.example.com/platform/terraform-orch" },
+      platform: { apiUrl: "https://orch.example.com", audience: "orch.example.com" },
+    });
+    expect((await call("alice", w, {}, known)).status).toBe(202);
+    const [id] = await w.applyPipelines();
+    const yaml = mock.pipelineVariables(id as number)?.[0]?.value ?? "";
+    expect(yaml).toContain('login="$(orch ci login --state)"');
   });
 
   test("a developer or a reporter may not, someone with no role cannot tell it exists; nothing is started", async () => {
@@ -1460,5 +1632,294 @@ describe("policy", () => {
     w.merge();
     expect(await refused(apply(w, { when: "merge" }))).toMatchObject({ code: "policy_denied" });
     expect(w.triggered()).toBe(0);
+  });
+});
+
+describe("cost limits", () => {
+  const clearLimits = async () => {
+    for (const l of await allCostLimits(t.db, o1)) await deleteCostLimit(t.db, o1, l.id);
+  };
+  afterEach(clearLimits);
+  const limit = async (
+    maxMonthlyDelta: number,
+    over: { tag?: string | null; warnAt?: number | null; currency?: string } = {},
+  ) => {
+    const made = await setCostLimit(t.db, {
+      organizationId: o1,
+      tag: over.tag ?? null,
+      maxMonthlyDelta,
+      warnAt: over.warnAt ?? null,
+      currency: over.currency ?? "USD",
+    });
+    if (!made) throw new Error("limit not made");
+    return made.row;
+  };
+  /** What the plan job's summary said of a stack, with an estimate unless `cost` is null. */
+  const estimate = (
+    w: World,
+    stack: Name,
+    cost: { monthlyDelta: number; currency?: string } | null,
+  ) =>
+    storePlanSummary(t.db, o1, w.project.id, w.id, stack, {
+      add: 1,
+      change: 0,
+      destroy: 0,
+      resources: [],
+      ...(cost
+        ? { cost: { monthlyTotal: 1000, currency: "USD", tool: "infracost", ...cost } }
+        : {}),
+    });
+  const both = async (w: World, monthlyDelta: number) => {
+    await estimate(w, "net", { monthlyDelta });
+    await estimate(w, "app", { monthlyDelta });
+  };
+
+  test("with no limit nothing changes: a plan of any estimate, or none, is applied", async () => {
+    const w = await world();
+    await both(w, 1e9);
+    expect(await apply(w)).toEqual(["app", "net"]);
+    const bare = await world();
+    await estimate(bare, "net", null);
+    expect(await apply(bare)).toEqual(["app", "net"]);
+  });
+
+  test("a plan under the limit, at it, and one that is only warned about are applied", async () => {
+    await limit(500, { warnAt: 300 });
+    for (const delta of [-50, 0, 299, 400, 500]) {
+      const w = await world();
+      await both(w, delta);
+      expect([delta, await apply(w)]).toEqual([delta, ["app", "net"]]);
+    }
+  });
+
+  test("a plan over the limit is a 409 cost_denied naming the stack and the rule, and starts nothing", async () => {
+    await limit(500, { warnAt: 300 });
+    const w = await world();
+    await estimate(w, "net", { monthlyDelta: 500.01 });
+    await estimate(w, "app", { monthlyDelta: 10 });
+    const e = await refused(apply(w));
+    expect(e).toMatchObject({ status: 409, code: "cost_denied" });
+    expect(e.message).toContain("net");
+    expect(e.message).toContain("cost-over-limit");
+    expect(await w.states()).toEqual(PLANNED);
+    expect(w.triggered()).toBe(0);
+  });
+
+  test("a limit and no estimate blocks the apply: an estimator that crashed never lets a plan through", async () => {
+    await limit(500);
+    const w = await world();
+    await estimate(w, "net", { monthlyDelta: 1 });
+    // app's summary came without a cost
+    await estimate(w, "app", null);
+    const e = await refused(apply(w));
+    expect(e).toMatchObject({ status: 409, code: "cost_denied" });
+    expect(e.message).toContain("app");
+    expect(e.message).toContain("cost-unavailable");
+    expect(w.triggered()).toBe(0);
+  });
+
+  test("an estimate in another currency is denied and never converted", async () => {
+    await limit(500, { currency: "USD" });
+    const w = await world();
+    await estimate(w, "net", { monthlyDelta: 1, currency: "EUR" });
+    await estimate(w, "app", { monthlyDelta: 1 });
+    const e = await refused(apply(w));
+    expect(e).toMatchObject({ status: 409, code: "cost_denied" });
+    expect(e.message).toContain("cost-currency-mismatch");
+    expect(w.triggered()).toBe(0);
+  });
+
+  test("a tag's limit judges the stacks that carry it, and the organization's the rest", async () => {
+    await limit(100);
+    await limit(5000, { tag: "prod" });
+    const w = await world({ tags: { net: ["prod"] } });
+    await estimate(w, "net", { monthlyDelta: 1000 });
+    await estimate(w, "app", { monthlyDelta: 1000 });
+    // net is inside its tag's 5000, app is over the organization's 100
+    const e = await refused(apply(w));
+    expect(e.message).toContain("app");
+    expect(e.message).not.toContain("net");
+    await estimate(w, "app", { monthlyDelta: 99 });
+    expect(await apply(w)).toEqual(["app", "net"]);
+  });
+
+  test("the limits are the ones in force at the apply: a lowered one stops a plan, a removed one frees it", async () => {
+    const l = await limit(500);
+    const w = await world();
+    await both(w, 400);
+    await limit(300);
+    expect(await refused(apply(w))).toMatchObject({ code: "cost_denied" });
+    await deleteCostLimit(t.db, o1, l.id);
+    // setting the organization's limit again replaced its row (same id), so this removes the only one
+    expect(await apply(w)).toEqual(["app", "net"]);
+  });
+
+  test("a retried plan job drops the estimate of the old plan, so a limit waits for the new one", async () => {
+    await limit(500);
+    const w = await world();
+    await both(w, 1);
+    await recordStackJobs(t.db, o1, w.project.id, w.id, "net", { planJobId: 777 });
+    const e = await refused(apply(w));
+    expect(e.message).toContain("cost-unavailable");
+  });
+
+  test("for one stack the policy's refusal comes before the cost's", async () => {
+    await limit(500);
+    const set = await createPolicySet(t.db, {
+      organizationId: o1,
+      name: "cost",
+      source: "platform/policies",
+      ref: "v1",
+      path: ".",
+      tag: "prod",
+    });
+    try {
+      const w = await world({ tags: { net: ["prod"] } });
+      await estimate(w, "app", { monthlyDelta: 1 });
+      await estimate(w, "net", { monthlyDelta: 9999 });
+      await storePolicyVerdict(t.db, o1, w.project.id, w.id, "net", {
+        evaluated: true,
+        denied: ["data.main.deny_x"],
+        warned: [],
+      });
+      expect(await refused(apply(w))).toMatchObject({ code: "policy_denied" });
+    } finally {
+      if (set) await deletePolicySet(t.db, o1, set.id);
+    }
+  });
+
+  test("the merge path refuses the same way and applies nothing", async () => {
+    await limit(500);
+    const w = await world({ applyOn: { net: "merge" } });
+    await both(w, 900);
+    w.merge();
+    expect(await refused(apply(w, { when: "merge" }))).toMatchObject({ code: "cost_denied" });
+    expect(w.triggered()).toBe(0);
+  });
+});
+
+describe("the secret gate (SCAN-6)", () => {
+  afterEach(async () => {
+    await setSecretGate(t.db, o1, "off");
+  });
+  const finding = (fingerprint: string) => ({
+    fingerprint,
+    rule: "aws-access-token",
+    path: "src/config.ts",
+    line: 3,
+    commit: "a1b2c3d",
+    severity: "critical" as const,
+  });
+  /** Findings seen on `ref` of the world's project. */
+  const seen = (w: World, fingerprints: string[], ref = "main") =>
+    upsertFindings(t.db, {
+      organizationId: o1,
+      projectId: w.project.id,
+      ref,
+      findings: fingerprints.map(finding),
+    });
+
+  test("off, the default, applies whatever is open", async () => {
+    const w = await world();
+    await seen(w, ["f1", "f2"]);
+    expect(await apply(w)).toEqual(["app", "net"]);
+  });
+
+  test("warn applies: it is shown in the note, not enforced", async () => {
+    await setSecretGate(t.db, o1, "warn");
+    const w = await world();
+    await seen(w, ["f1"]);
+    expect(await apply(w)).toEqual(["app", "net"]);
+  });
+
+  test("deny with an open finding is a 409 secret_findings_open with the count, and starts nothing", async () => {
+    await setSecretGate(t.db, o1, "deny");
+    const w = await world();
+    await seen(w, ["f1", "f2"]);
+    const e = await refused(apply(w));
+    expect(e).toMatchObject({ status: 409, code: "secret_findings_open" });
+    expect(e.message).toContain("2 secret findings are open");
+    expect(e.message).toContain("secret-findings-open");
+    expect(await w.states()).toEqual(PLANNED);
+    expect(w.triggered()).toBe(0);
+  });
+
+  test("deny with nothing open applies, and so does a project whose findings were dismissed or resolved", async () => {
+    await setSecretGate(t.db, o1, "deny");
+    const clean = await world();
+    expect(await apply(clean)).toEqual(["app", "net"]);
+
+    const w = await world();
+    await seen(w, ["gone", "dis"]);
+    await resolveMissing(t.db, {
+      organizationId: o1,
+      projectId: w.project.id,
+      ref: "main",
+      seen: ["dis"],
+    });
+    const [dis] = await listFindings(t.db, o1, w.project.id, { limit: 10 }, { status: "open" });
+    if (!dis) throw new Error("no finding");
+    await dismissFinding(
+      t.db,
+      { organizationId: o1, projectId: w.project.id, id: dis.id },
+      "user:alice",
+      "a test key",
+    );
+    expect(await apply(w)).toEqual(["app", "net"]);
+  });
+
+  test("a finding on a feature branch, or on another project, does not block", async () => {
+    await setSecretGate(t.db, o1, "deny");
+    const w = await world();
+    const other = await world();
+    await seen(w, ["on-branch"], "feature");
+    await seen(other, ["theirs"]);
+    expect(await apply(w)).toEqual(["app", "net"]);
+  });
+
+  test("dismissing the finding frees the apply, and the gate is read at the apply", async () => {
+    const w = await world();
+    await seen(w, ["f1"]);
+    await setSecretGate(t.db, o1, "deny");
+    const one = await refused(apply(w));
+    expect(one).toMatchObject({ code: "secret_findings_open" });
+    expect(one.message).toContain("1 secret finding is open");
+    const [open] = await listFindings(t.db, o1, w.project.id, { limit: 10 }, { status: "open" });
+    if (!open) throw new Error("no finding");
+    await dismissFinding(
+      t.db,
+      { organizationId: o1, projectId: w.project.id, id: open.id },
+      "user:alice",
+      "revoked",
+    );
+    expect(await apply(w)).toEqual(["app", "net"]);
+  });
+
+  test("the merge path refuses the same way and applies nothing", async () => {
+    await setSecretGate(t.db, o1, "deny");
+    const w = await world({ applyOn: { net: "merge" } });
+    await seen(w, ["f1"]);
+    w.merge();
+    expect(await refused(apply(w, { when: "merge" }))).toMatchObject({
+      code: "secret_findings_open",
+    });
+    expect(w.triggered()).toBe(0);
+  });
+
+  test("a merge with nothing opted in to apply is not held by findings: nothing would start", async () => {
+    await setSecretGate(t.db, o1, "deny");
+    const w = await world();
+    await seen(w, ["f1"]);
+    w.merge();
+    expect(await apply(w, { when: "merge" })).toEqual([]);
+  });
+
+  test("the finding's text is not in the refusal", async () => {
+    await setSecretGate(t.db, o1, "deny");
+    const w = await world();
+    await seen(w, ["f1"]);
+    const e = await refused(apply(w));
+    expect(e.message).not.toContain("src/config.ts");
+    expect(e.message).not.toContain("aws-access-token");
   });
 });

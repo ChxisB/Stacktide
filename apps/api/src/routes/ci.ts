@@ -17,7 +17,7 @@ export interface CiDeps {
   issuer: string;
   /** The `aud` jobs ask for in their `id_tokens:`; a token meant for another service is refused. */
   audience: string;
-  /** How long an exchanged token lasts, at most. Default 15 minutes; never beyond the `id_token` itself. */
+  /** How long an exchanged token lasts, at most. Default 15 minutes; never beyond the `id_token` itself. A token asked for state (`state: true`) lasts up to an hour instead. */
   ttlMs?: number;
   /** Test seam: milliseconds since the epoch. */
   now?: () => number;
@@ -35,6 +35,21 @@ export const ENVIRONMENT_SCOPES: readonly string[] = [
 /** A job in no environment reads its project, and posts the plan summary of an IaC run's stack (see `runRoutes`); nothing more. */
 const PROJECT_SCOPES: readonly string[] = ["project.read", "run.summary"];
 
+/**
+ * What a job on a protected ref and in no environment may also do: take a read-only lease on its own
+ * project's repository and end it (ROT-11). A job in an environment is tied to it, and a lease belongs
+ * to the project, so it has none; neither does a job on a branch anyone can push to.
+ */
+const LEASE_SCOPES: readonly string[] = ["lease.issue", "lease.revoke"];
+
+/**
+ * What a token asked for state holds (STATE-3, ADR-0017): reading the project's Terraform state, and, for a job on
+ * a protected ref with a job id, writing, deleting and locking it (`state.write`). A job on a branch anyone can push
+ * to reads state and never writes it. It is a token of its own, tied to no environment: an environment's token
+ * cannot reach the state routes, and this one holds nothing of the environment's.
+ */
+const STATE_SCOPES: readonly string[] = ["project.read", "state.read"];
+
 // GitLab writes every claim as text, booleans and ids included.
 const numeric = z.string().regex(/^[1-9]\d{0,14}$/);
 const flag = z.enum(["true", "false"]);
@@ -47,7 +62,11 @@ const jobClaims = z.object({
   environment_protected: flag.optional(),
 });
 
-const exchangeBody = z.strictObject({ id_token: z.string().min(1).max(8192) });
+const exchangeBody = z.strictObject({
+  id_token: z.string().min(1).max(8192),
+  /** A token for the project's Terraform state: it lasts as long as the job (up to an hour) and holds nothing else. */
+  state: z.boolean().optional(),
+});
 const exchanged = z.object({
   token: z.string(),
   type: z.literal("Bearer"),
@@ -118,8 +137,10 @@ export const ciRoutes = ({
         if (!parsed.success) throw refuse("claims");
         const claims = parsed.data;
 
-        // Never longer than the job's own token: a finished job holds nothing.
-        const ttlMs = Math.min(ttl, Math.floor(raw.exp * 1000 - now()));
+        // Never longer than the job's own token: a finished job holds nothing. A job that applies writes its state at
+        // the end, so a state token may last up to the longest a token can.
+        const state = body.state === true;
+        const ttlMs = Math.min(state ? MAX_CI_TTL_MS : ttl, Math.floor(raw.exp * 1000 - now()));
         if (ttlMs < 1000) throw refuse("expired");
 
         const gitlabProjectId = Number(claims.project_id);
@@ -142,7 +163,7 @@ export const ciRoutes = ({
 
         const refProtected = claims.ref_protected === "true";
         let environmentId: string | undefined;
-        if (claims.environment !== undefined) {
+        if (claims.environment !== undefined && !state) {
           // Unknown or missing counts as protected: only a protected ref gets in.
           if (claims.environment_protected !== "false" && !refProtected) {
             throw new DomainError(
@@ -162,7 +183,15 @@ export const ciRoutes = ({
         }
 
         const fresh = newCiToken();
-        const scopes = environmentId ? ENVIRONMENT_SCOPES : PROJECT_SCOPES;
+        // the cap on leases, and the lock of a state, count a CI job by its job id: with none there is no one to count against
+        const byJob = refProtected && claims.job_id !== undefined;
+        const scopes = state
+          ? [...STATE_SCOPES, ...(byJob ? ["state.write"] : [])]
+          : environmentId
+            ? ENVIRONMENT_SCOPES
+            : byJob
+              ? [...PROJECT_SCOPES, ...LEASE_SCOPES]
+              : PROJECT_SCOPES;
         const row = await db.transaction(async (tx) => {
           const row = await createCiToken(tx, {
             organizationId: project.organizationId,
@@ -191,6 +220,7 @@ export const ciRoutes = ({
                 refProtected,
                 environment: claims.environment,
                 environmentId,
+                state,
                 scopes,
                 expiresAt: iso(row.expiresAt),
               },

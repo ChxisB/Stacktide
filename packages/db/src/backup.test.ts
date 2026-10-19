@@ -10,6 +10,7 @@ import { createDb, migrateDb } from "./index";
 import { createSink, openSink } from "./notifications";
 import { createOrganization, createProject } from "./repo";
 import { rewrapAll } from "./rewrap";
+import { listStateResources, putState, readState } from "./state";
 import { createEmptyDb, createTestDb } from "./testing";
 import { createVariable, revealVariable } from "./variables";
 
@@ -28,6 +29,24 @@ const k1k2 = envKeyProvider(`k2:${b64(2)},k1:${b64(1)}`);
 const VALUE = "project-value-SECRET-1";
 const TOKEN = "glpat-TOKEN-SECRET-3";
 const SINK = "https://hooks.example.com/SECRET-4";
+const TFSTATE = "tf-state-SECRET-CANARY-5";
+const STATE_DOC = JSON.stringify({
+  version: 4,
+  serial: 7,
+  lineage: "L-backup",
+  outputs: { password: { value: TFSTATE, sensitive: true } },
+});
+const STATE_RESOURCES = [
+  {
+    address: "aws_db_instance.main",
+    mode: "managed" as const,
+    type: "aws_db_instance",
+    name: "main",
+    provider: "registry.terraform.io/hashicorp/aws",
+    module: null,
+    indexKey: null,
+  },
+];
 
 const dbs: { drop(): Promise<void> }[] = [];
 const files: string[] = [];
@@ -109,11 +128,20 @@ async function source() {
     host: "hooks.example.com",
     secret: SINK,
   });
-  return { t, organizationId, projectId, variable, connection, sink };
+  const stack = { organizationId, projectId, stackName: "network" };
+  const put = await putState(t.db, k1, stack, {
+    serial: 7,
+    lineage: "L-backup",
+    content: STATE_DOC,
+    createdBy: "ci:job-1",
+    resources: STATE_RESOURCES,
+  });
+  expect(put.ok).toBe(true);
+  return { t, organizationId, projectId, variable, connection, sink, stack };
 }
 type Source = Awaited<ReturnType<typeof source>>;
 
-/** Opens the three secrets of `source` in whatever database `db` is. */
+/** Opens the four secrets of `source` (the Terraform state is one) in whatever database `db` is. */
 async function readBack(db: ReturnType<typeof createDb>, keys: typeof k1, s: Source) {
   return {
     variable: (
@@ -126,9 +154,10 @@ async function readBack(db: ReturnType<typeof createDb>, keys: typeof k1, s: Sou
     )?.value,
     connection: (await openConnection(db, keys, s.organizationId, s.connection.id))?.token,
     sink: (await openSink(db, keys, s.organizationId, s.sink.id))?.secret,
+    state: (await readState(db, keys, s.stack))?.content,
   };
 }
-const EXPECTED = { variable: VALUE, connection: TOKEN, sink: SINK };
+const EXPECTED = { variable: VALUE, connection: TOKEN, sink: SINK, state: STATE_DOC };
 
 /** Backs `s` up and restores it into a new empty database, which it opens. */
 async function backedUpAndRestored(s: Source) {
@@ -166,12 +195,21 @@ describe.skipIf(missing.length > 0)(
       const file = path();
       expect((await run(BACKUP, [file], s.t.url)).code).toBe(0);
       const text = await asSql(file);
-      for (const plain of [VALUE, TOKEN, SINK, "hooks.example.com/SECRET", b64(1), b64(2)]) {
+      for (const plain of [
+        VALUE,
+        TOKEN,
+        SINK,
+        TFSTATE,
+        "hooks.example.com/SECRET",
+        b64(1),
+        b64(2),
+      ]) {
         expect(text).not.toContain(plain);
       }
       // it is the database that was asked for, and the data is in it
       expect(text).toContain("variable_keys");
       expect(text).toContain("dek_wrapped");
+      expect(text).toContain("state_versions");
     });
 
     test("keys can be rotated on a restored database: afterwards it opens with the new key alone", async () => {
@@ -184,11 +222,48 @@ describe.skipIf(missing.length > 0)(
         variable_keys: 1,
         connections: 1,
         notification_sinks: 1,
+        sso_providers: 0,
+        state_versions: 1,
       });
       expect(await readBack(db, k2, s)).toEqual(EXPECTED);
       await expect(readBack(db, k1, s)).rejects.toBeInstanceOf(CryptoError);
       // the source database was not touched by any of it
       expect(await readBack(s.t.db, k1, s)).toEqual(EXPECTED);
+    });
+
+    test("a restored Terraform state is the state that was backed up, and the stack carries on from it", async () => {
+      const s = await source();
+      const { db } = await backedUpAndRestored(s);
+
+      const back = await readState(db, k1, s.stack);
+      expect(back?.content).toBe(STATE_DOC);
+      expect([back?.version.serial, back?.version.lineage, back?.version.createdBy]).toEqual([
+        7,
+        "L-backup",
+        "ci:job-1",
+      ]);
+      // the index came with it
+      expect(await listStateResources(db, s.stack, { limit: 10 })).toEqual(STATE_RESOURCES);
+      // the next write takes the serial after the restored one, and an older one is still refused
+      const next = JSON.stringify({ version: 4, serial: 8, lineage: "L-backup", outputs: {} });
+      const ok = await putState(db, k1, s.stack, {
+        serial: 8,
+        lineage: "L-backup",
+        content: next,
+        createdBy: "ci:job-2",
+        resources: [],
+      });
+      expect(ok.ok).toBe(true);
+      const old = await putState(db, k1, s.stack, {
+        serial: 7,
+        lineage: "L-backup",
+        content: STATE_DOC,
+        createdBy: "ci:job-3",
+        resources: [],
+      });
+      expect(old).toMatchObject({ ok: false, reason: "serial_too_low" });
+      // the stack in the source database did not move
+      expect((await readState(s.t.db, k1, s.stack))?.content).toBe(STATE_DOC);
     });
 
     test("restore refuses a database that has anything in it, and leaves it as it was", async () => {

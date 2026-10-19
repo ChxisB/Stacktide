@@ -2,8 +2,9 @@ import { DomainError, type Logger } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import { type Db, type OperationalStats, operationalStats } from "@orch/db";
 import { gitlabRateLimits } from "@orch/gitlab";
-import type { Tool } from "@orch/iac";
+import type { Platform, Tool } from "@orch/iac";
 import type { Template } from "@orch/pipelines";
+import type { Leaser, Rotator } from "@orch/rotation";
 import type { GuardrailConfig } from "@orch/sync";
 import { Elysia } from "elysia";
 import { auditPlugin } from "./audit";
@@ -15,14 +16,19 @@ import { bearerMatches, newRegistry, renderStats, requestMetrics } from "./metri
 import { openapiPlugin } from "./openapi";
 import type { PrincipalResolver } from "./principal";
 import { createRateLimiter } from "./rate-limit";
+import { builtInLeasers, builtInRotators } from "./rotators";
 import { auditLogRoutes } from "./routes/audit-log";
 import { type AuthDeps, authRoutes } from "./routes/auth";
 import { changeRequestRoutes } from "./routes/change-requests";
 import { type CiDeps, ciRoutes } from "./routes/ci";
 import { cliRoutes } from "./routes/cli";
 import { connectionRoutes } from "./routes/connections";
+import { costLimitRoutes } from "./routes/cost-limits";
 import { environmentRoutes } from "./routes/environments";
+import { findingRoutes } from "./routes/findings";
+import { identityRoutes } from "./routes/identities";
 import { importRoutes } from "./routes/imports";
+import { leaseRoutes } from "./routes/leases";
 import {
   auditForwardingRoutes,
   notificationSinkRoutes,
@@ -33,10 +39,18 @@ import { pipelineRoutes } from "./routes/pipeline";
 import { pipelineFleetRoutes } from "./routes/pipeline-fleet";
 import { pipelineRunRoutes } from "./routes/pipeline-runs";
 import { policySetRoutes } from "./routes/policy";
+import { poolStatusRoutes } from "./routes/pool-status";
+import { poolRoutes } from "./routes/pools";
 import { projectRoutes } from "./routes/projects";
+import { rotationRoutes } from "./routes/rotations";
 import { runRoutes } from "./routes/runs";
+import { secretGateRoutes } from "./routes/secret-gate";
+import { ssoRoutes } from "./routes/sso";
+import { ssoLoginRoutes } from "./routes/sso-login";
+import { stateRoutes } from "./routes/state";
 import { syncRunRoutes } from "./routes/sync-runs";
 import { syncTargetRoutes } from "./routes/sync-targets";
+import { templateRegistryRoutes } from "./routes/template-registry";
 import { tokenRoutes } from "./routes/tokens";
 import { variableRoutes } from "./routes/variables";
 import { webhookRoutes } from "./routes/webhooks";
@@ -64,10 +78,16 @@ export interface AppDeps {
   templates?: readonly Template[];
   /** Image repository per tool that has no default (Terragrunt), for the pipelines an apply starts. */
   images?: Partial<Record<Tool, string>> | undefined;
+  /** Where the platform is (`ORCH_API_URL`, `ORCH_CI_AUDIENCE`): an apply of a stack whose state is on the platform needs it. */
+  platform?: Platform | undefined;
   /** `GET /metrics` answers to this bearer token only; left out, it answers 404. `stats` is a test seam for the figures read from the database. */
   metrics?: { token: string; stats?: () => Promise<OperationalStats> } | undefined;
   /** The built-in guardrails (POL-4). Left out, every rule is on and production is `production` and `prod`. */
   guardrails?: GuardrailConfig | undefined;
+  /** The rotation providers, by `Rotator.type`. Left out, the ones this build ships (`builtInRotators`). */
+  rotators?: ReadonlyMap<string, Rotator> | undefined;
+  /** The lease providers, by `Leaser.type`. Left out, the ones this build ships (`builtInLeasers`). */
+  leasers?: ReadonlyMap<string, Leaser> | undefined;
   /** Origins, body cap, proxy hops and rate-limit scale (see `Hardening`). The headers, the cap and the limits apply with the defaults when left out. */
   hardening?: Partial<Hardening> | undefined;
 }
@@ -138,6 +158,33 @@ export function createApp(deps: AppDeps) {
     return cached.stats;
   };
 
+  // What judges a plan, and where it runs (the pools), in one plugin: the app's type is at the compiler's instantiation depth, and one more `.use` in its chain tips it over.
+  const judges = new Elysia({ name: "orch.judges" })
+    .use(policySetRoutes(deps))
+    .use(costLimitRoutes(deps))
+    .use(secretGateRoutes(deps))
+    .use(poolRoutes(deps))
+    .use(poolStatusRoutes(deps))
+    .use(ssoRoutes(deps));
+
+  // The ways in (GitLab, a provider, and a person's own list of them), grouped for the same reason.
+  const signIn = new Elysia({ name: "orch.sign-in" })
+    .use(authRoutes(deps))
+    .use(ssoLoginRoutes(deps))
+    .use(identityRoutes(deps));
+
+  // The project side: what people create and run in an organization.
+  const work = new Elysia({ name: "orch.work" })
+    .use(organizationRoutes(deps))
+    .use(projectRoutes(deps))
+    .use(connectionRoutes(deps))
+    .use(importRoutes(deps))
+    .use(webhookRoutes(deps))
+    .use(environmentRoutes(deps))
+    .use(changeRequestRoutes(deps))
+    .use(syncTargetRoutes(deps))
+    .use(stateRoutes(deps));
+
   const app = new Elysia({ name: "orch.api" })
     .decorate("limits", limits)
     .use(http(logger, requestMetrics(registry), edge))
@@ -182,29 +229,26 @@ export function createApp(deps: AppDeps) {
       },
     )
     .use(auditPlugin(principal))
-    .use(authRoutes(deps))
+    .use(signIn)
     .use(cliRoutes(deps))
     .use(ciRoutes(deps))
-    .use(organizationRoutes(deps))
-    .use(projectRoutes(deps))
-    .use(connectionRoutes(deps))
-    .use(importRoutes(deps))
-    .use(webhookRoutes(deps))
-    .use(environmentRoutes(deps))
-    .use(changeRequestRoutes(deps))
-    .use(syncTargetRoutes(deps))
+    .use(work)
     .use(notificationSinkRoutes(deps))
     .use(notificationSubscriptionRoutes(deps))
     .use(auditForwardingRoutes(deps))
-    .use(policySetRoutes(deps))
+    .use(judges)
     .use(auditLogRoutes(deps))
     .use(syncRunRoutes(deps))
     .use(pipelineRoutes(deps))
     .use(pipelineFleetRoutes(deps))
+    .use(templateRegistryRoutes(deps))
     .use(pipelineRunRoutes(deps))
     .use(runRoutes(deps))
     .use(tokenRoutes(deps))
-    .use(variableRoutes(deps));
+    .use(variableRoutes(deps))
+    .use(rotationRoutes({ ...deps, rotators: deps.rotators ?? builtInRotators(deps) }))
+    .use(leaseRoutes({ ...deps, leasers: deps.leasers ?? builtInLeasers(deps) }))
+    .use(findingRoutes(deps));
   const open = unguardedRoutes(app, DOCS);
   if (open.length > 0) throw new Error(`routes without a guard: ${open.join(", ")}`);
   return app;

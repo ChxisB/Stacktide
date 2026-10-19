@@ -204,6 +204,10 @@ describe("organizations", () => {
     const blocked = await call("DELETE", `/organizations/${org.id}`);
     expect(blocked.status).toBe(409);
     expect(blocked.json.code).toBe("organization_not_empty");
+    // it names everything that blocks a delete, so a screen has nothing to guess
+    for (const what of ["projects", "connections", "notification sinks", "identity provider"]) {
+      expect(blocked.json.detail).toContain(what);
+    }
     expect(await auditCount()).toBe(before);
     expect((await call("GET", `/organizations/${org.id}`)).status).toBe(200);
 
@@ -549,6 +553,10 @@ describe("audit coverage", () => {
       [
         "auth.ci_exchange",
         "auth.login",
+        "auth.login", // the sign-in through an organization's identity provider
+        "sso.membership.end", // and a sign-in its role map gives no role to, ending the role an earlier one gave
+        "identity.link", // and one that joins an identity to the person already signed in
+        "identity.unlink", // a person giving one up
         "auth.logout",
         "token.create",
         "token.revoke",
@@ -578,6 +586,18 @@ describe("audit coverage", () => {
         "run.policy", // a plan job's policy verdict for its stack
         "policy.set.create", // a policy set an organization judges plans by
         "policy.set.delete",
+        "cost.limit.set", // what one plan may add to the monthly cost, for an organization or a stack tag
+        "cost.limit.delete",
+        "secret.gate.update", // what open secret findings do to an apply: nothing, a note, or a refusal
+        "sso.create", // who may sign in to the organization through an identity provider, and with which role
+        "sso.update",
+        "sso.enable",
+        "sso.disable",
+        "sso.delete",
+        "sso.test", // a request to the provider's address, so it is on record who sent it
+        "pool.create", // the runner tags and image a stack's jobs ask for
+        "pool.update",
+        "pool.delete",
         "audit.export", // the audit log handed out: with the filters and how many rows
         "audit.retention.update", // how long the events are kept
         "environment.protection.update", // an environment's variables now change only through a request, or no longer
@@ -589,6 +609,19 @@ describe("audit coverage", () => {
         ...["create", "update", "delete"].map((v) => `variable.${v}`),
         "stack.drift", // the same request, when the plan was a drift check and the stack's state changed
         "run.apply", // the apply of a run's saved plans
+        "lease.issue", // a short-lived read-only GitLab token, taken for a project
+        "lease.revoke", // and ended early
+        "finding.dismiss", // a secret finding called a false alarm, with the reason
+        "finding.reopen", // and taken back
+        "state.read", // a CI job reading its project's Terraform state (the state is secrets in clear)
+        "state.write", // and writing it
+        "state.delete", // and clearing it
+        "state.lock", // and taking its lock
+        "state.lock", // over POST .../lock as well as the LOCK verb
+        "state.unlock", // and releasing it
+        "state.unlock", // over DELETE .../lock as well as the UNLOCK verb
+        "state.import", // a maintainer taking over the state GitLab holds for a stack
+        "state.force_unlock", // an organization admin ending anyone's lock
         // the environment's resolved set with its values: a row for each secret revealed, and one for the request
         "variable.reveal",
         "variable.export",
@@ -607,6 +640,8 @@ describe("audit coverage", () => {
           "variable.import",
           // many changes at once (the per-change rows reuse create, update and delete)
           ...["create", "update", "delete", "bulk"].map((v) => `variable.${v}`),
+          // how a secret rotates: set, removed, and run by a person (a worker's own run is `variable.rotate`)
+          ...["set", "delete", "run"].map((v) => `variable.rotation.${v}`),
         ]),
       ].sort(),
     );

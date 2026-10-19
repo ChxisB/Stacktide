@@ -18,6 +18,9 @@ the job.
   - `ORCH_CI_AUDIENCE`: the same value the API has (see `docs/ci.md`).
   - `ORCH_HELPER_IMAGE`: an image with `orch`, `curl` and `jq`, for the job that posts a plan's counts.
   - `ORCH_POLICY_IMAGE` (only with policy sets, see Policy): the same and `tar` and `conftest`.
+  - `ORCH_COST_IMAGE` (only with cost limits): an image with `infracost` and `jq`. The runner needs
+    `INFRACOST_API_KEY` as a CI/CD variable; the platform never holds it. Without the image nothing is
+    estimated, and the apply of a stack a limit reaches is denied.
   - `ORCH_TERRAGRUNT_IMAGE` (only for Terragrunt stacks): an image repository without a tag; the stack's
     `version` is the tag. Terraform and OpenTofu have defaults.
   - `ORCH_TERRAFORM_IMAGE`, `ORCH_TOFU_IMAGE` (only for stacks with an `environment`, see Variables): the
@@ -25,7 +28,9 @@ the job.
 
   Without the first three the worker logs which are missing and plans nothing. The API needs
   the same image settings to start the apply of a stack with an overridden image, and
-  `ORCH_MASTER_KEYS` (it opens the connection's token).
+  `ORCH_MASTER_KEYS` (it opens the connection's token). To start the apply of a stack whose state is on the
+  platform (`state: orch`, see State) the API needs `ORCH_API_URL` and `ORCH_CI_AUDIENCE` too: the apply job signs
+  in to the platform.
 - Every stack that is planned has a `version` in its `stack.yml`.
 
 ## `.gitlab-ci.yml`
@@ -161,6 +166,39 @@ variables above a job's; not verified here.) Terragrunt stacks (whose backend th
 `remote_state` should be `backend = "http"` with `config = {}`. The job's user needs the role GitLab asks
 to lock and write state (Maintainer).
 
+### State on the platform: `state: orch`
+
+```yaml
+# stack.yml
+name: network
+tool: terraform
+version: 1.9.0
+state: orch            # gitlab (the default, as above) or orch. Without the key nothing changes.
+```
+
+A stack with `state: orch` keeps its state in the platform's database, sealed (ADR-0017, `docs/ci.md`), not in GitLab's.
+It still needs `backend "http" {}` (or a Terragrunt `remote_state` of `http`): a stack with another backend is left as
+it is, as GitLab's state is. Its jobs sign in with `orch ci login --state`, build the backend's address from the
+`ORCH_ORG` and `ORCH_PROJECT` that prints, and hand the state token to Terraform as the backend's password. Nothing
+stored, and no ids in the generated file.
+
+- **The jobs run `orch`, so the tool's image must hold it:** set `ORCH_TERRAFORM_IMAGE` (or `ORCH_TOFU_IMAGE`,
+  `ORCH_TERRAGRUNT_IMAGE`) as for a stack with an `environment`. Without one the pipeline is refused and the note says
+  so.
+- **A plan only reads:** it runs with `-lock=false` and no lock settings, so a plan from a merge request or a branch
+  never holds a stack. Any job may read state, so a plan on a branch anyone can push to reads it and cannot change it.
+- **An apply locks and writes:** it takes the platform's lock (`POST`/`DELETE` on the `/lock` address) and writes the
+  new state. That needs `state.write`, which only a job on a **protected ref** holds: apply from the default branch or
+  another protected one. An apply on an unprotected ref is refused when it takes the lock.
+- **Jobs time out at one hour** (`timeout: 1h`): the state token, and the lock with it, end with the job's token, which
+  lasts at most an hour. A longer job would lose its state mid-apply.
+- **The apply is told where the platform is.** From a merge request command, a merge or the apply endpoint the apply job
+  gets the platform's address (`ORCH_API_URL`) and audience (`ORCH_CI_AUDIENCE`). Without them the apply of such a stack
+  is refused, with nothing claimed or started.
+- A stack's state is not moved by changing the key. Switching a stack that already has state in GitLab starts it an
+  empty state on the platform: copy it first with `orch state import <stack>` (`docs/ci.md`), with GitLab-backed
+  applies of the stack stopped, then switch the key in a merge request.
+
 ## Variables
 
 A stack gets the variables of a platform environment as `TF_VAR_*`, with nothing stored in GitLab. In its
@@ -266,6 +304,18 @@ with `{"events": ["stack.drift"]}`). Both need the master keys (`ORCH_MASTER_KEY
 
   `status` is `drifted` or `clean`; `at` is when the plan was asked for.
 
+  A second event, `rotation.failing` (subscribe with `{"events": ["stack.drift", "rotation.failing"]}`), is sent once
+  when a secret's rotation has failed three times in a row. It has the same headers and this body, with the
+  variable's name, the provider and the count, never a value:
+
+  ```json
+  {"id":"<delivery id>","event":"rotation.failing","at":"2026-01-02T03:04:05.000Z","organizationId":"…",
+   "project":{"id":"…","name":"api"},"rotation":{"key":"DB_PASSWORD","provider":"gitlab-token","attempts":3}}
+  ```
+
+  A variable of the organization (not of a project) has no project to tell: its `variable.rotate_failing` audit
+  event is the signal, and audit forwarding carries it.
+
   The headers are `x-orch-event`, `x-orch-delivery` (the same for every try of one delivery),
   `x-orch-timestamp` (seconds, fresh on each try) and `x-orch-signature: v1=<hex>`, the HMAC-SHA256 of
   `"<timestamp>.<body>"` with the signing secret. A receiver verifies it and refuses old timestamps:
@@ -305,6 +355,9 @@ stack, see below).
 - **Applying is refused** (409) for a stack whose verdict is `deny` (`policy_denied`, with the rule names), and for a
   stack that a set reaches now but that has no verdict (`policy_pending`: the post failed, the plan job was retried, or the set was
   added after the plan; plan it again). A new plan job for a stack forgets the verdict of the old one.
+- **Cost limits** also refuse an apply (409 `cost_denied`, with the rule names `cost-over-limit`, `cost-unavailable` or
+  `cost-currency-mismatch`): the limits in force at the apply judge the estimate the plan's summary carried. With no limit the
+  estimate is information only. See [cost-gates.md](cost-gates.md).
 
 What to know:
 
@@ -316,6 +369,13 @@ What to know:
   again. A set added after planning leaves the stacks it reaches `policy_pending` until then.
 - The conftest JSON shape (`metadata.query` as the rule's name) is the documented one but this is not tested against a
   real conftest; a rule with no name is `unnamed`.
+
+## Worker pools
+
+A stack can name one of the organization's worker pools (`pool: prod-runners` in `stack.yml`), or fall to the organization's
+default. Its plan, estimate, summary and apply jobs then carry the pool's runner `tags:` (and the pool's `image`, when it has
+one, replaces the tool image). A name that is not a pool, or a pool that is switched off, stops the pipeline instead of
+running on shared runners. See [worker-pools.md](worker-pools.md).
 
 ## What to know
 

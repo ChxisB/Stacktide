@@ -1,4 +1,6 @@
+import { type CostLimit, SECRET_FINDINGS_RULE } from "@orch/core";
 import {
+  allCostLimits,
   latestRunOfMergeRequest,
   type MergeRequestNote,
   type RunStack,
@@ -8,7 +10,9 @@ import {
   withMergeRequest,
 } from "@orch/db";
 import { type Gitlab, GitlabError } from "@orch/gitlab";
+import { type CostView, costViewOf } from "./cost-view";
 import type { RunDeps } from "./pipeline-runs";
+import { type SecretGateView, secretGateOf } from "./secret-gate";
 
 export interface NoteView {
   /** The newest run of the merge request, if it has had one: its commit and where each stack is. */
@@ -17,6 +21,10 @@ export interface NoteView {
   notice: string | null;
   /** The project's address in GitLab, for links to jobs. */
   projectUrl: string | undefined;
+  /** The organization's cost limits as they are now; none shows each estimate without a verdict. */
+  limits?: readonly CostLimit[] | undefined;
+  /** The organization's secret gate and what it counts for the project now; nothing is said unless it warns or denies. */
+  secrets?: SecretGateView | undefined;
 }
 
 // Text that came from a repository or a tool is shown in a code span, where GitLab makes no link,
@@ -30,24 +38,45 @@ const plain = (text: string, max: number) =>
 const SAFE_URL = /^https?:\/\/[^\s()<>[\]`]+$/;
 const dash = "–";
 
+// The rules that denied or warned, by name and never by message; a few, then how many more.
+const ruleList = (names: readonly string[]) =>
+  names.length === 0
+    ? ""
+    : `(${names
+        .slice(0, 3)
+        .map((n) => inline(n, 80))
+        .join(", ")}${names.length > 3 ? `, and ${names.length - 3} more` : ""})`;
+
 // What the policy said of a stack: its verdict and the names of the rules, never their messages.
-function policyLine(s: RunStack): string {
-  const names = [...ruleNames(s.policyDenied), ...ruleNames(s.policyWarned)];
-  const shown = names.slice(0, 3).map((n) => inline(n, 80));
-  return [
+const policyLine = (s: RunStack) =>
+  [
     plain(s.policyVerdict ?? "", 10),
-    ...(shown.length > 0
-      ? [`(${shown.join(", ")}${names.length > 3 ? `, and ${names.length - 3} more` : ""})`]
-      : []),
-  ].join(" ");
+    ruleList([...ruleNames(s.policyDenied), ...ruleNames(s.policyWarned)]),
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+// What a plan is estimated to cost and what the limit makes of it: figures and rule names, never a resource.
+function costLine(stack: string, { estimate: e, limit, verdict, rules }: CostView): string {
+  // cents, unless that would round away what a comparison turned on (100.004 is over a limit of 100)
+  const money = (n: number, currency: string) =>
+    `${Number(n.toFixed(2)) === n ? n.toFixed(2) : String(n)} ${plain(currency, 3)}`;
+  const figures = e
+    ? `${e.monthlyDelta < 0 ? "-" : "+"}${money(Math.abs(e.monthlyDelta), e.currency)} a month, total ${money(e.monthlyTotal, e.currency)} (estimate by ${inline(e.tool, 30)})`
+    : "no estimate";
+  const judged = limit
+    ? `limit ${money(limit.maxMonthlyDelta, limit.currency)}: ${verdict}${rules.length > 0 ? ` ${ruleList(rules)}` : ""}`
+    : "no limit";
+  return `- \`${plain(stack, 63)}\`: ${figures}; ${judged}`;
 }
 
 /**
  * The note on a merge request: one table, a row per stack of the newest run, with its state, the
- * counts of its plan and a link to its plan job. Counts only: no address of a resource and no
- * plan (a plan holds secrets); whoever may see the plan opens the job.
+ * counts of its plan and a link to its plan job, then what the policy and the cost limits made of
+ * it. Counts only: no address of a resource and no plan (a plan holds secrets); whoever may see the
+ * plan opens the job.
  */
-export function renderNote({ run, notice, projectUrl }: NoteView): string {
+export function renderNote({ run, notice, projectUrl, limits = [], secrets }: NoteView): string {
   const base = projectUrl?.replace(/\/+$/, "");
   const out = ["**orch plan**"];
   if (run) {
@@ -73,6 +102,21 @@ export function renderNote({ run, notice, projectUrl }: NoteView): string {
   if (judged.length > 0) {
     out.push("", "Policy:", "");
     for (const s of judged) out.push(`- \`${plain(s.stack, 63)}\`: ${policyLine(s)}`);
+  }
+  const costs = run?.stacks.flatMap((s) => {
+    const view = costViewOf(s, limits);
+    return view ? [costLine(s.stack, view)] : [];
+  });
+  if (costs && costs.length > 0) out.push("", "Cost (estimate):", "", ...costs);
+  if (secrets && secrets.open > 0 && secrets.gate !== "off") {
+    out.push(
+      "",
+      `Secrets: ${secrets.open} open ${secrets.open === 1 ? "finding" : "findings"} on the default branch (\`${SECRET_FINDINGS_RULE}\`, ${secrets.gate}). ${
+        secrets.gate === "deny"
+          ? "Applies are held until they are revoked at the source and dismissed."
+          : "Revoke them at the source."
+      }`,
+    );
   }
   if (notice) out.push("", notice);
   out.push(
@@ -123,7 +167,9 @@ export async function writeNote(
   if (only !== undefined && run?.id !== only) return;
   if (!run && !row.notice) return;
   const { webUrl } = await gitlab.projects.get(gitlabProjectId);
-  const body = renderNote({ run, notice: row.notice, projectUrl: webUrl });
+  const limits = await allCostLimits(tx, row.organizationId);
+  const secrets = await secretGateOf(tx, row);
+  const body = renderNote({ run, notice: row.notice, projectUrl: webUrl, limits, secrets });
   const noteId = await upsertNote(gitlab, gitlabProjectId, row.mergeRequestIid, row.noteId, body);
   if (noteId !== row.noteId) await saveMergeRequestNote(tx, row, { noteId });
 }

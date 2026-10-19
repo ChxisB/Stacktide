@@ -3,8 +3,11 @@ import { z } from "zod";
 
 export const TOOLS = ["terraform", "tofu", "terragrunt"] as const;
 export const APPLY_ON = ["merge", "command"] as const;
+/** Where a stack's Terraform state lives: GitLab's managed state (D9), or the platform's own (ADR-0017). */
+export const STATE_STORES = ["gitlab", "orch"] as const;
 export type Tool = (typeof TOOLS)[number];
 export type ApplyOn = (typeof APPLY_ON)[number];
+export type StateStore = (typeof STATE_STORES)[number];
 
 /** The file that marks a directory as a stack. */
 export const MARKER = "stack.yml";
@@ -95,6 +98,14 @@ export const stackManifest = z.strictObject({
     .max(63)
     .regex(SLUG, "must be the slug of an environment: lowercase letters and digits, single dashes")
     .optional(),
+  // the organization's worker pool whose runner tags the stack's jobs ask for (POOL-2); none: the default pool, if there is one
+  pool: z
+    .string()
+    .max(63)
+    .regex(SLUG, "must be the name of a worker pool: lowercase letters and digits, single dashes")
+    .optional(),
+  // where the stack's state lives (STATE-5); none: GitLab's, as it always was
+  state: z.enum(STATE_STORES).optional(),
   // how often the platform plans the stack to see whether the real infrastructure still matches (POL-1)
   drift_every: z
     .string()

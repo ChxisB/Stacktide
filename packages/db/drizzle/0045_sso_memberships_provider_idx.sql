@@ -1,0 +1,1 @@
+CREATE INDEX "sso_memberships_provider_idx" ON "sso_memberships" USING btree ("sso_provider_id");

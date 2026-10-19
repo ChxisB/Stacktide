@@ -104,6 +104,25 @@ describe("createRun", () => {
     expect(listed[0]?.stacks.map((s) => s.stack)).toEqual(order);
   });
 
+  test("a stack keeps the tags it had when the run was made, and none when none were given", async () => {
+    const w = await world();
+    const run = await createRun(
+      t.db,
+      input(w, ["net", "app", "db"], {
+        tags: { net: ["prod", "core"], db: ["prod"], other: ["x"] },
+      }),
+    );
+    // the order the repository wrote them in; a name that is not a stack of the run is ignored
+    expect(run.stacks.map((s) => [s.stack, s.tags])).toEqual([
+      ["app", []],
+      ["db", ["prod"]],
+      ["net", ["prod", "core"]],
+    ]);
+    const read = await getRun(t.db, w.org.id, w.project.id, run.id);
+    expect(read?.stacks.map((s) => s.tags)).toEqual([[], ["prod"], ["prod", "core"]]);
+    expect((await createRun(t.db, input(w, ["net"]))).stacks[0]?.tags).toEqual([]);
+  });
+
   test("a run with no merge request says so", async () => {
     const w = await world();
     expect((await createRun(t.db, input(w, ["net"]))).mergeRequestIid).toBeNull();
@@ -556,6 +575,28 @@ describe("plan summaries", () => {
     const net = (await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks[0];
     expect([net?.planAdd, net?.planChange, net?.planDestroy]).toEqual([0, 0, 0]);
     expect(await getPlanResources(t.db, w.org.id, w.project.id, run.id, "net")).toEqual([]);
+  });
+
+  test("the database refuses a cost that is not a finite estimate in a currency and a tool name, whatever the caller checked", async () => {
+    const w = await world();
+    const ok = { monthlyDelta: 10, monthlyTotal: 100, currency: "EUR", tool: "infracost" };
+    const run = await createRun(t.db, input(w, ["net"]));
+    expect((await store(w, run.id, "net", { ...summary, cost: ok }))?.costCurrency).toBe("EUR");
+    for (const cost of [
+      { ...ok, monthlyDelta: Number.NaN },
+      { ...ok, monthlyDelta: Number.POSITIVE_INFINITY },
+      { ...ok, monthlyTotal: -1 },
+      { ...ok, monthlyDelta: 2e12 },
+      { ...ok, currency: "eur" },
+      { ...ok, tool: "Infra Cost" },
+    ]) {
+      expect(await refusedBy(store(w, run.id, "net", { ...summary, cost }))).toBe(
+        "run_stacks_cost_check",
+      );
+    }
+    // the refused summaries changed nothing
+    const net = (await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks[0];
+    expect([net?.costMonthlyDelta, net?.costCurrency]).toEqual([10, "EUR"]);
   });
 
   test("only while the stack has no outcome: queued, planning and planned take one, the rest refuse", async () => {

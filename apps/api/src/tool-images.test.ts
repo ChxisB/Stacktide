@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { toolImageEnv, toolImages } from "./tool-images";
+import { platformOf, toolImageEnv, toolImages } from "./tool-images";
 
 describe("tool images", () => {
   test("each tool's repository comes from its own setting, and an unset one is left out", () => {
@@ -35,5 +35,16 @@ describe("tool images", () => {
       expect(schema.safeParse(undefined).success).toBe(true);
       expect(schema.safeParse("registry.example.com/x").success).toBe(true);
     }
+  });
+});
+
+describe("platformOf", () => {
+  test("is the address without trailing slashes and the audience, and only when both are set", () => {
+    expect(platformOf("https://orch.example.com//", "orch.example.com")).toEqual({
+      apiUrl: "https://orch.example.com",
+      audience: "orch.example.com",
+    });
+    expect(platformOf("https://orch.example.com", undefined)).toBeUndefined();
+    expect(platformOf(undefined, "orch.example.com")).toBeUndefined();
   });
 });

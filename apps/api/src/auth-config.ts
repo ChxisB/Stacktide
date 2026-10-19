@@ -14,11 +14,27 @@ const KEYS = [
   "GITLAB_OAUTH_REDIRECT_URI",
 ] as const;
 
+/** Where the provider sends the browser back: https (http only on this machine, where nothing crosses a network) and the route that completes a sign-in. */
+const LOOPBACK = ["localhost", "127.0.0.1", "[::1]"];
+function isSsoCallback(uri: string) {
+  try {
+    const { protocol, hostname, pathname } = new URL(uri);
+    return (
+      (protocol === "https:" || (protocol === "http:" && LOOPBACK.includes(hostname))) &&
+      pathname === "/auth/sso/callback"
+    );
+  } catch {
+    return false; // not a URL at all
+  }
+}
+
 /**
  * Sign in with GitLab: all four settings or none, so a half-set deploy fails at start, not at login.
  * `GITLAB_MEMBERSHIP_TOKEN` (needs the four) is what reads who is a member of the linked
  * groups and projects; without it nobody holds a role. `ORCH_CI_AUDIENCE` (needs `GITLAB_URL`,
- * so the four) turns on the CI `id_token` exchange: the `aud` jobs ask for.
+ * so the four) turns on the CI `id_token` exchange: the `aud` jobs ask for. `ORCH_SSO_REDIRECT_URI`
+ * (`https://<host>/auth/sso/callback`, registered at each identity provider) turns on sign-in through an
+ * organization's identity provider; it needs none of the GitLab settings.
  */
 export const authEnv = z
   .object({
@@ -28,6 +44,10 @@ export const authEnv = z
     GITLAB_OAUTH_REDIRECT_URI: z.url().optional(),
     GITLAB_MEMBERSHIP_TOKEN: z.string().min(1).optional(),
     ORCH_CI_AUDIENCE: z.string().min(1).optional(),
+    ORCH_SSO_REDIRECT_URI: z
+      .string()
+      .refine(isSsoCallback, "an https URL ending /auth/sso/callback")
+      .optional(),
   })
   .superRefine((c, ctx) => {
     if (c.ORCH_CI_AUDIENCE !== undefined && c.GITLAB_URL === undefined) {
@@ -52,14 +72,20 @@ export const accessEnv = z.object({
     .optional(),
 });
 
-/** An https redirect URI means browsers reach the API over https: cookies get `Secure`. */
+/** An https redirect URI (GitLab's or SSO's) means browsers reach the API over https: cookies get `Secure`. */
 export function authFromEnv(c: z.output<typeof authEnv>): AuthDeps {
   const { GITLAB_URL: baseUrl, GITLAB_OAUTH_CLIENT_ID: clientId } = c;
   const { GITLAB_OAUTH_CLIENT_SECRET: clientSecret, GITLAB_OAUTH_REDIRECT_URI: redirectUri } = c;
-  if (!baseUrl || !clientId || !clientSecret || !redirectUri) return {};
+  const { ORCH_SSO_REDIRECT_URI: ssoRedirectUri } = c;
+  const gitlab =
+    baseUrl && clientId && clientSecret && redirectUri
+      ? { oauth: gitlabOAuth({ baseUrl, clientId, clientSecret, redirectUri }) }
+      : undefined;
+  if (!gitlab && !ssoRedirectUri) return {};
   return {
-    oauth: gitlabOAuth({ baseUrl, clientId, clientSecret, redirectUri }),
-    secureCookies: redirectUri.startsWith("https:"),
+    ...gitlab,
+    ...(ssoRedirectUri && { ssoRedirectUri }),
+    secureCookies: [redirectUri, ssoRedirectUri].some((u) => u?.startsWith("https:")),
   };
 }
 

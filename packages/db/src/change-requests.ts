@@ -110,6 +110,28 @@ export async function createApplyRequest(
   return row as ChangeRequest;
 }
 
+/** An open request in the environment by this author that has not lapsed: the id, or undefined. */
+export async function openRequestBy(
+  db: Executor,
+  at: At,
+  author: { kind: string; id: string },
+): Promise<string | undefined> {
+  const [row] = await db
+    .select({ id: changeRequests.id })
+    .from(changeRequests)
+    .where(
+      and(
+        inEnv(at),
+        eq(changeRequests.status, "open"),
+        eq(changeRequests.authorKind, author.kind),
+        eq(changeRequests.authorId, author.id),
+        sql`${changeRequests.expiresAt} > now()`,
+      ),
+    )
+    .limit(1);
+  return row?.id;
+}
+
 export async function getChangeRequest(
   db: Executor,
   at: At,

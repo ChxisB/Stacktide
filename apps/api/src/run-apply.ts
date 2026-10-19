@@ -1,6 +1,8 @@
-import { DomainError, type Logger } from "@orch/core";
+import { costVerdict, DomainError, type Logger, limitFor } from "@orch/core";
 import {
   type AuditEvent,
+  allCostLimits,
+  allPools,
   attachRunPipeline,
   audit,
   auditedStacks,
@@ -12,6 +14,7 @@ import {
   MAX_POLICY_SETS,
   moveRunStack,
   pgConstraint,
+  planCostOf,
   protectedEnvironments,
   type RunWithStacks,
   ruleNames,
@@ -25,6 +28,7 @@ import {
   generatePipeline,
   gitlabSource,
   PLAN_RETENTION_MS,
+  type Platform,
   scanStacks,
   setsFor,
   type Tool,
@@ -33,6 +37,7 @@ import { approvalRequired } from "./apply-approval";
 import { inline, refreshNote, writeNote } from "./mr-note";
 import { CHILD_PIPELINE, mrEvent, plannedProject } from "./mr-plan";
 import { hopeless, type RunDeps } from "./pipeline-runs";
+import { secretGateOf } from "./secret-gate";
 import type { JobHandler } from "./worker";
 
 export interface ApplyDeps {
@@ -40,6 +45,8 @@ export interface ApplyDeps {
   log: Logger;
   /** Image repository per tool that has no default (Terragrunt). */
   images?: Partial<Record<Tool, string>> | undefined;
+  /** Where the platform is: a stack whose state lives there needs it in its apply job (STATE-5). */
+  platform?: Platform | undefined;
   now?: () => Date;
 }
 
@@ -173,6 +180,15 @@ export async function applyRun(
   selected ??= choose(scan);
   if (selected.length === 0) throw refuse("not_planned", "No stack of this run is planned");
 
+  // Secret findings (SCAN-6): the organization's gate, read now, judges the project's open default-branch findings.
+  const secrets = await secretGateOf(deps.db, at);
+  if (secrets.denied.length > 0) {
+    throw refuse(
+      "secret_findings_open",
+      `${secrets.open} secret ${secrets.open === 1 ? "finding is" : "findings are"} open on the default branch (${quoted(secrets.denied)}); revoke ${secrets.open === 1 ? "it" : "them"} at the source and dismiss ${secrets.open === 1 ? "it" : "them"}`,
+    );
+  }
+
   // Protected environments (GOV-3): the stacks that declare one need leave for their current plan.
   // shortcut: a stack that declares no environment is not guarded, and a merge request can remove the declaration; GitLab's own merge approvals are the other check
   const protectedSlugs = new Set(
@@ -188,6 +204,8 @@ export async function applyRun(
   // Policy (POL-3): the sets the stacks are judged by now, to tell a stack that is not judged from
   // one whose verdict has not come (or was dropped with its plan job): that one waits.
   const sets = await listPolicySets(deps.db, at.organizationId, { limit: MAX_POLICY_SETS });
+  // Cost limits (COST-3): the ones in force now, so a lowered limit holds a plan that was inside the old one.
+  const limits = await allCostLimits(deps.db, at.organizationId);
   const planJobs: Record<string, number> = {};
   for (const name of selected) {
     const s = byName.get(name);
@@ -222,6 +240,15 @@ export async function applyRun(
         `The policy has not judged the plan of stack ${quoted([name])}; plan it again`,
       );
     }
+    // No limit: the estimate is information. A limit and no estimate denies (the estimator never ran or crashed).
+    // shortcut: the stack's tags are the repository's, so a branch can drop a tag to fall back to the organization's own limit (or none); see docs/cost-gates.md
+    const cost = costVerdict(limitFor(limits, scanned.get(name)?.tags ?? []), planCostOf(s));
+    if (cost.denied.length > 0) {
+      throw refuse(
+        "cost_denied",
+        `The cost limit denies the plan of stack ${quoted([name])}: ${quoted(cost.denied)}`,
+      );
+    }
     for (const dep of scanned.get(name)?.dependsOn ?? []) {
       const d = byName.get(dep);
       if (d && d.status !== "applied" && !selected.includes(dep)) {
@@ -245,7 +272,10 @@ export async function applyRun(
       stacks: scan.stacks,
       select: selected,
       planJobs,
+      // as the pools are now: a pool changed since the plan moves the apply with it (docs/worker-pools.md)
+      pools: await allPools(deps.db, at.organizationId),
       ...(deps.images ? { images: deps.images } : {}),
+      ...(deps.platform ? { platform: deps.platform } : {}),
     });
   } catch (error) {
     if (!(error instanceof GenerateError)) throw error;
@@ -368,7 +398,12 @@ export async function applyRun(
  * A repeated event finds the stacks applying and does nothing.
  */
 export const mrApplyHandler =
-  (deps: RunDeps & { images?: Partial<Record<Tool, string>> | undefined }): JobHandler =>
+  (
+    deps: RunDeps & {
+      images?: Partial<Record<Tool, string>> | undefined;
+      platform?: Platform | undefined;
+    },
+  ): JobHandler =>
   async (ctx) => {
     const parsed = mrEvent.safeParse(ctx.payload);
     if (!parsed.success || parsed.data.action !== "merge") return;
@@ -385,12 +420,16 @@ export const mrApplyHandler =
     try {
       const gitlab = await deps.gitlab(e.organizationId, e.connectionId);
       try {
-        await applyRun({ db: deps.db, log: ctx.log, images: deps.images }, gitlab, {
-          at,
-          run,
-          when: "merge",
-          audit: (tx, event) => audit(tx, { actor: { kind: "job", id: ctx.id } }, event),
-        });
+        await applyRun(
+          { db: deps.db, log: ctx.log, images: deps.images, platform: deps.platform },
+          gitlab,
+          {
+            at,
+            run,
+            when: "merge",
+            audit: (tx, event) => audit(tx, { actor: { kind: "job", id: ctx.id } }, event),
+          },
+        );
       } catch (error) {
         if (!(error instanceof DomainError)) throw error;
         ctx.log.warn("not applied on merge", { code: error.code });

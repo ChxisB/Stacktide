@@ -17,7 +17,7 @@ Every response, including 404, 401, 413 and 429, carries:
 | `Cache-Control` | `no-store` |
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains`, **only** when the API is served over https |
 
-"Served over https" means the GitLab sign-in redirect is https (`Secure` cookies). Behind a proxy that ends TLS, set the
+"Served over https" means the GitLab sign-in redirect (or `ORCH_SSO_REDIRECT_URI`) is https (`Secure` cookies). Behind a proxy that ends TLS, set the
 redirect URL to its https address and the header follows.
 
 The API answers JSON, so the CSP forbids loading anything from it. The web page served by `startWeb` (the `/` route of
@@ -53,6 +53,8 @@ There is no `Origin` check on requests beyond this. Cross-site form posts are st
 limit, which stops any larger body, declared or streamed, with a plain-text `413`. A request that declares a larger
 `Content-Length` (a digit string, of any length) and reaches the application anyway (another host, a test) is answered
 `413` `payload_too_large` before sign-in. The limit is not lowered below 1 MiB because a plan summary and a webhook may legitimately be that large.
+A Terraform state kept on the platform (`docs/ci.md`) is a request body too: one larger than this limit is refused, so raise it
+for a big state (the platform stores up to 16 MiB, and the limit's own ceiling is 64 MiB).
 
 ## Rate limits
 
@@ -61,11 +63,12 @@ and never reaches the handler or its validation. The counts are in `orch_rate_li
 
 | Class | Routes | Limit | Counted by |
 |---|---|---|---|
-| `login` | `GET /auth/login`, `GET /auth/callback`, `GET /auth/cli`, `POST /auth/cli/token` | 30 per 5 min | client address |
+| `login` | `GET /auth/login`, `GET /auth/callback`, `GET /auth/cli`, `POST /auth/cli/token`, `GET /auth/sso/:slug/login`, `GET /auth/sso/callback` | 30 per 5 min | client address |
 | `ci_exchange` | `POST /auth/ci/exchange` | 600 per min | client address |
 | `webhook` | `POST /webhooks/gitlab/:connectionId` | 600 per min | client address |
 | `token_create` | `POST /tokens` | 10 per 10 min | the person or token |
 | `reveal` | the three `GET …/variables/:varId/value` and `GET …/resolved-variables/values` | 60 per min | the person or token |
+| `rotation_run` | the three `POST …/variables/:varId/rotation/rotate` ([rotation](rotation.md)) | 20 per min | the person or token |
 
 - A route says which class it is in its options (`limit: "reveal"`), the way it says who may call it. A test lists the
   routes that have one and fails if a route that reads a secret's value does not.

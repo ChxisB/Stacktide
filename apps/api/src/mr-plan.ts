@@ -1,5 +1,7 @@
-import { IAC_TAGS, type Logger } from "@orch/core";
+import { type CostLimit, IAC_TAGS, type Logger, limitFor } from "@orch/core";
 import {
+  allCostLimits,
+  allPools,
   attachRunPipeline,
   audit,
   auditedStacks,
@@ -27,6 +29,7 @@ import {
   gitlabSource,
   type PlanInput,
   type PolicySet,
+  type PoolRef,
   scanStacks,
   type Tool,
 } from "@orch/iac";
@@ -57,6 +60,12 @@ export interface MrPlanConfig {
   helperImage: string;
   /** An image with those and `conftest`, for the summary job of a stack that policy judges (POL-3). */
   policyImage?: string | undefined;
+  /**
+   * An image with `infracost` and `jq`, for the estimate job of a stack a cost limit reaches (COST-4).
+   * Without it no stack is estimated, and a stack under a limit has no estimate to judge: the platform
+   * denies its apply and the merge request says why.
+   */
+  costImage?: string | undefined;
   /** Image repository per tool that has no default (Terragrunt). */
   images?: Partial<Record<Tool, string>>;
 }
@@ -92,9 +101,17 @@ export const planRequest = (
   select: readonly string[],
   runId: string,
   /** The organization's policy sets; a drift check passes none (POL-3 judges merge request plans). */
-  policy: readonly PolicySet[] = [],
+  policy: readonly PolicySet[],
+  /** The organization's cost limits: the stacks one reaches are estimated (COST-4); a drift check passes none. */
+  limits: readonly CostLimit[],
+  /** The organization's worker pools: a stack's jobs ask for its pool's runners (POOL-3). Required: leaving them out would run every stack on shared runners. */
+  pools: readonly PoolRef[],
 ): PlanInput => {
   const run = `/organizations/${at.organizationId}/projects/${at.projectId}/runs/${runId}`;
+  // an estimate is made only where a limit will judge it: the rest cost nothing and send nothing to the pricing service
+  const costed = config.costImage
+    ? stacks.filter((s) => select.includes(s.name) && limitFor(limits, s.tags)).map((s) => s.name)
+    : [];
   return {
     action: "plan",
     audience: config.audience,
@@ -103,9 +120,13 @@ export const planRequest = (
     helperImage: config.helperImage,
     stacks,
     select,
+    pools,
     ...(config.images ? { images: config.images } : {}),
     ...(policy.length > 0
       ? { policy: { sets: policy, image: config.policyImage, path: `${run}/policy-verdict` } }
+      : {}),
+    ...(config.costImage && costed.length > 0
+      ? { cost: { image: config.costImage, stacks: costed } }
       : {}),
   };
 };
@@ -269,8 +290,10 @@ async function start(c: Turn, tx: Tx, mr: MergeRequest, sha: string): Promise<st
 
   // all of the organization's sets (there are at most MAX_POLICY_SETS), read in the merge request's lock
   const sets = await listPolicySets(tx, at.organizationId, { limit: MAX_POLICY_SETS });
+  const limits = await allCostLimits(tx, at.organizationId);
+  const pools = await allPools(tx, at.organizationId);
   const request = (runId: string) =>
-    planRequest(deps.config, at, scan.stacks, affected, runId, sets);
+    planRequest(deps.config, at, scan.stacks, affected, runId, sets, limits, pools);
   try {
     generatePipeline(request(NO_RUN));
   } catch (error) {
@@ -289,6 +312,8 @@ async function start(c: Turn, tx: Tx, mr: MergeRequest, sha: string): Promise<st
         sha,
         mergeRequestIid: iid,
         stacks: affected,
+        // what judges the plan under a cost limit, in this commit (see `run_stacks.tags`)
+        tags: Object.fromEntries(scan.stacks.map((s) => [s.name, s.tags])),
       });
       await audit(
         sp,
@@ -316,6 +341,18 @@ async function start(c: Turn, tx: Tx, mr: MergeRequest, sha: string): Promise<st
         action: "plan",
       });
     });
+    // a limit with nothing to estimate with denies the apply: say why, where the author looks
+    const unestimated = deps.config.costImage
+      ? []
+      : scan.stacks.filter((s) => affected.includes(s.name) && limitFor(limits, s.tags));
+    if (unestimated.length > 0) {
+      notes.push(
+        list(
+          "A cost limit reaches these stacks, but the worker has no cost image (ORCH_COST_IMAGE): they have no estimate and cannot be applied.",
+          unestimated.map((s) => s.name),
+        ),
+      );
+    }
   } catch (error) {
     if (!(error instanceof Refused)) throw error;
     notes.push(list("GitLab could not start the pipeline:", [error.message]));

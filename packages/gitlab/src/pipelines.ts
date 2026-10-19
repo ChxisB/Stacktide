@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { GitlabClient } from "./client";
 import { decode } from "./decode";
+import { GitlabError } from "./errors";
 import { type ProjectRef, projectPath } from "./projects";
 
 const KNOWN = [
@@ -132,6 +133,29 @@ export function pipelinesApi(client: GitlabClient) {
       async *jobs(project: ProjectRef, id: number) {
         for await (const raw of client.paginate(`${pipe(project, id)}/jobs`)) {
           yield decode(job, raw, "job");
+        }
+      },
+      /**
+       * One file of a job's artifacts, as text. `missing` when the job has no such file (none was made,
+       * it expired, or the job is not there); `too_large` when it is longer than `maxBytes`, which is then
+       * not read. Any other failure throws, as everywhere.
+       */
+      async artifact(project: ProjectRef, jobId: number, file: string, maxBytes: number) {
+        const where = file.split("/").map(encodeURIComponent).join("/");
+        try {
+          const r = await client.download(
+            `${projectPath(project)}/jobs/${jobId}/artifacts/${where}`,
+            {
+              maxBytes,
+            },
+          );
+          return "text" in r
+            ? { status: "ok" as const, text: r.text }
+            : { status: "too_large" as const };
+        } catch (e) {
+          if (e instanceof GitlabError && e.kind === "not_found")
+            return { status: "missing" as const };
+          throw e;
         }
       },
       /** The trigger jobs of a pipeline and the child pipelines they started: a child's jobs are not in the parent's list. */

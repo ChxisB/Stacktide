@@ -85,6 +85,11 @@ const branch = z
   }));
 export type Branch = z.output<typeof branch>;
 
+const tag = z
+  .object({ name: z.string(), commit: z.object({ id: z.string() }) })
+  .transform((t) => ({ name: t.name, commitId: t.commit.id }));
+export type Tag = z.output<typeof tag>;
+
 const commit = z
   .object({ id: z.string(), title: z.string(), web_url: z.string().optional() })
   .transform((c) => ({ id: c.id, title: c.title, webUrl: c.web_url ?? null }));
@@ -132,6 +137,12 @@ export function repositoryApi(
           query: { from, to },
         });
         return decode(comparison, raw, "comparison");
+      },
+      /** Every tag of the project, in the order GitLab gives them. `not_found` means there is no such project. */
+      async *tags(project: ProjectRef) {
+        for await (const raw of client.paginate(`${repo(project)}/tags`)) {
+          yield decode(tag, raw, "tag");
+        }
       },
       /** `not_found` means there is no such branch. */
       async getBranch(project: ProjectRef, name: string) {
