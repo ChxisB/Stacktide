@@ -1,0 +1,1 @@
+ALTER TABLE "connections" ADD COLUMN "webhook_secret_enc" "bytea";

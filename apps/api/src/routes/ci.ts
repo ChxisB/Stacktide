@@ -1,11 +1,18 @@
 import { DomainError, type Logger } from "@orch/core";
-import { createCiToken, environmentBySlug, MAX_CI_TTL_MS, projectsByGitlabId } from "@orch/db";
+import {
+  createCiToken,
+  environmentBySlug,
+  MAX_CI_TTL_MS,
+  projectsOfGithubRepository,
+  projectsOfIssuer,
+} from "@orch/db";
+import { GITHUB_OIDC_ISSUER } from "@orch/github";
 import { GitlabError, type Jwk } from "@orch/gitlab";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { guardPlugin } from "../guard";
-import { type IdClaims, IdTokenError, verifyIdToken } from "../id-token";
+import { type IdClaims, IdTokenError, peekIssuer, verifyIdToken } from "../id-token";
 import { rateLimitPlugin } from "../rate-limit";
 import { newCiToken } from "../tokens";
 import { iso, problemSchema, type RouteDeps, writeErrors } from "./shared";
@@ -13,8 +20,19 @@ import { iso, problemSchema, type RouteDeps, writeErrors } from "./shared";
 export interface CiDeps {
   /** The GitLab signing key with this `kid` (see `keyCache`); throws when GitLab cannot be reached. */
   key: (kid: string) => Promise<Jwk | undefined>;
-  /** The `iss` of GitLab's job tokens: the instance URL. */
+  /** The `iss` of GitLab's job tokens: the instance URL. This deployment's own GitLab (`GITLAB_URL`). */
   issuer: string;
+  /**
+   * The signing keys of another GitLab, when a connection is registered at exactly this `iss` (FRG-5);
+   * undefined when none is, and the token is refused without any call to that address.
+   */
+  forIssuer?: (issuer: string) => Promise<CiDeps["key"] | undefined>;
+  /**
+   * The signing keys of GitHub Actions' identity tokens (FRG-23), when this deployment takes them; undefined
+   * and a token of that issuer is refused without any call. Every repository on github.com signs with these
+   * and may ask for our audience, so what makes a token ours is the repository it names (`projectsOfGithubRepository`).
+   */
+  github?: CiDeps["key"];
   /** The `aud` jobs ask for in their `id_tokens:`; a token meant for another service is refused. */
   audience: string;
   /** How long an exchanged token lasts, at most. Default 15 minutes; never beyond the `id_token` itself. A token asked for state (`state: true`) lasts up to an hour instead. */
@@ -62,6 +80,75 @@ const jobClaims = z.object({
   environment_protected: flag.optional(),
 });
 
+// GitHub writes its claims as text too. It has no job id (its run stands for one, FRG-33) and no word on whether an
+// environment is protected, and a `ref_protected` that may be missing: every one of those fails closed below.
+const githubClaims = z.object({
+  repository_id: numeric,
+  ref: z.string().min(1).max(255),
+  ref_protected: flag.optional(),
+  event_name: z.string().max(64).optional(),
+  run_id: numeric.optional(),
+  environment: z.string().min(1).max(255).optional(),
+});
+
+/**
+ * What starts a run whose branch can be trusted to be the repository's own: a push, a dispatch someone with write
+ * access made, a schedule or a release. A pull request (a fork's included), `pull_request_target` and `workflow_run`
+ * run in a fork's context or on its code, whatever branch the token names; `ref_protected` says nothing there.
+ */
+const TRUSTED_EVENTS: ReadonlySet<string> = new Set([
+  "push",
+  "workflow_dispatch",
+  "schedule",
+  "release",
+]);
+
+/** What the exchange needs of a job's claims, whichever forge made them. */
+interface Job {
+  project: number;
+  jobId?: number;
+  /** The run a GitHub Actions job belongs to: all the identity a job of GitHub has. */
+  pipelineId?: number;
+  ref: string;
+  refProtected: boolean;
+  environment?: string;
+  /** What the forge says of the environment: unknown (undefined) counts as protected. */
+  environmentProtected?: boolean;
+}
+
+function gitlabJob(raw: IdClaims): Job | undefined {
+  const parsed = jobClaims.safeParse(raw);
+  if (!parsed.success) return undefined;
+  const c = parsed.data;
+  return {
+    project: Number(c.project_id),
+    jobId: c.job_id === undefined ? undefined : Number(c.job_id),
+    ref: c.ref,
+    refProtected: c.ref_protected === "true",
+    environment: c.environment,
+    environmentProtected:
+      c.environment_protected === undefined ? undefined : c.environment_protected === "true",
+  };
+}
+
+// shortcut: whether the environment has protection rules is not read from GitHub (the connection's token could); an
+// environment job needs a protected ref, so it is refused wherever GitHub does not send `ref_protected`. Upgrade by
+// asking GitHub for the environment's rules when it is found that the claim is not sent.
+const BRANCH = "refs/heads/";
+function githubJob(raw: IdClaims): Job | undefined {
+  const parsed = githubClaims.safeParse(raw);
+  if (!parsed.success) return undefined;
+  const c = parsed.data;
+  return {
+    project: Number(c.repository_id),
+    pipelineId: c.run_id === undefined ? undefined : Number(c.run_id),
+    // the branch's name, as a run keeps it; a tag or a pull request's merge ref stays whole and so is no branch of a run
+    ref: c.ref.startsWith(BRANCH) ? c.ref.slice(BRANCH.length) : c.ref,
+    refProtected: c.ref_protected === "true" && TRUSTED_EVENTS.has(c.event_name ?? ""),
+    environment: c.environment,
+  };
+}
+
 const exchangeBody = z.strictObject({
   id_token: z.string().min(1).max(8192),
   /** A token for the project's Terraform state: it lasts as long as the job (up to an hour) and holds nothing else. */
@@ -84,7 +171,8 @@ const exchanged = z.object({
  * route checks that it is the job recorded for that stack), and reads and reveals the variables
  * of its own environment if it runs in one (`orch run` needs them). The project is the one
  * linked to the token's `project_id`, the environment the one with the token's `environment` as
- * slug; neither is guessed. An environment GitLab calls protected (or does not say) is only
+ * slug; neither is guessed. A token is checked against the GitLab that issued it: this deployment's, or
+ * another one a connection is registered for (`forIssuer`), and reaches only that instance's projects. An environment GitLab calls protected (or does not say) is only
  * reached from a protected ref. The token holds nothing else and cannot mint more tokens. Both
  * `scopes` and the role in `ciSubject` hold it to those actions, on that environment alone.
  */
@@ -114,28 +202,42 @@ export const ciRoutes = ({
           return new DomainError("invalid_id_token", 401, "The id_token is not valid");
         };
 
+        // Whose keys check this token: GitHub Actions', the deployment's GitLab, or the one a connection is registered
+        // for. The unverified `iss` only picks among those; `verifyIdToken` then needs the signed one to be the same.
+        const iss = peekIssuer(body.id_token);
+        const github = iss === GITHUB_OIDC_ISSUER;
+        const own = iss === undefined || iss === ci.issuer; // a token with no readable `iss` fails `verifyIdToken` as ever
+        const key = github ? ci.github : own ? ci.key : await ci.forIssuer?.(iss);
+        if (!key) throw refuse("issuer");
+        const issuer = github ? GITHUB_OIDC_ISSUER : own ? ci.issuer : iss;
+
         let raw: IdClaims;
         try {
-          raw = await verifyIdToken(body.id_token, { ...ci, now });
+          raw = await verifyIdToken(body.id_token, { key, issuer, audience: ci.audience, now });
         } catch (error) {
           if (error instanceof GitlabError) {
-            logger.warn("ci exchange could not fetch gitlab keys", {
+            logger.warn(`ci exchange could not fetch ${github ? "github" : "gitlab"} keys`, {
               request_id: requestId,
               kind: error.kind,
               error: error.message,
             });
-            throw new DomainError(
-              "gitlab_unavailable",
-              502,
-              "GitLab could not be reached. Try again.",
-            );
+            throw github
+              ? new DomainError(
+                  "github_unavailable",
+                  502,
+                  "GitHub could not be reached. Try again.",
+                )
+              : new DomainError(
+                  "gitlab_unavailable",
+                  502,
+                  "GitLab could not be reached. Try again.",
+                );
           }
           if (error instanceof IdTokenError) throw refuse(error.reason);
           throw error;
         }
-        const parsed = jobClaims.safeParse(raw);
-        if (!parsed.success) throw refuse("claims");
-        const claims = parsed.data;
+        const job = github ? githubJob(raw) : gitlabJob(raw);
+        if (!job) throw refuse("claims");
 
         // Never longer than the job's own token: a finished job holds nothing. A job that applies writes its state at
         // the end, so a state token may last up to the longest a token can.
@@ -143,36 +245,42 @@ export const ciRoutes = ({
         const ttlMs = Math.min(state ? MAX_CI_TTL_MS : ttl, Math.floor(raw.exp * 1000 - now()));
         if (ttlMs < 1000) throw refuse("expired");
 
-        const gitlabProjectId = Number(claims.project_id);
-        const found = await projectsByGitlabId(db, gitlabProjectId);
+        const gitlabProjectId = job.project; // a GitHub repository's id is kept where a GitLab project's is
+        // Project 42 of one GitLab is not project 42 of another: only a project that issuer owns (FRG-5). A GitHub
+        // repository is found through a github.com connection, never by a bare number (FRG-23).
+        const found = github
+          ? await projectsOfGithubRepository(db, gitlabProjectId)
+          : await projectsOfIssuer(db, gitlabProjectId, issuer, ci.issuer);
         const [project, other] = found;
+        const noun = github ? "repository" : "project";
+        const where = github ? "GitHub" : "GitLab";
         if (!project) {
           throw new DomainError(
             "project_not_registered",
             403,
-            "This GitLab project is not registered",
+            `This ${where} ${noun} is not registered`,
           );
         }
         if (other) {
           throw new DomainError(
             "project_ambiguous",
             409,
-            "This GitLab project is linked more than once",
+            `This ${where} ${noun} is linked more than once`,
           );
         }
 
-        const refProtected = claims.ref_protected === "true";
+        const { refProtected } = job;
         let environmentId: string | undefined;
-        if (claims.environment !== undefined && !state) {
+        if (job.environment !== undefined && !state) {
           // Unknown or missing counts as protected: only a protected ref gets in.
-          if (claims.environment_protected !== "false" && !refProtected) {
+          if (job.environmentProtected !== false && !refProtected) {
             throw new DomainError(
               "ref_not_protected",
               403,
               "A protected environment can only be reached from a protected ref",
             );
           }
-          environmentId = (await environmentBySlug(db, project.id, claims.environment))?.id;
+          environmentId = (await environmentBySlug(db, project.id, job.environment))?.id;
           if (!environmentId) {
             throw new DomainError(
               "environment_not_found",
@@ -183,8 +291,8 @@ export const ciRoutes = ({
         }
 
         const fresh = newCiToken();
-        // the cap on leases, and the lock of a state, count a CI job by its job id: with none there is no one to count against
-        const byJob = refProtected && claims.job_id !== undefined;
+        // the cap on leases, and the lock of a state, count a CI job by its job id (a GitHub run's id): with none there is no one to count against
+        const byJob = refProtected && (job.jobId !== undefined || job.pipelineId !== undefined);
         const scopes = state
           ? [...STATE_SCOPES, ...(byJob ? ["state.write"] : [])]
           : environmentId
@@ -200,8 +308,9 @@ export const ciRoutes = ({
             tokenHash: fresh.tokenHash,
             scopes,
             gitlabProjectId,
-            gitlabJobId: claims.job_id === undefined ? undefined : Number(claims.job_id),
-            ref: claims.ref,
+            gitlabJobId: job.jobId,
+            gitlabPipelineId: job.pipelineId,
+            ref: job.ref,
             refProtected,
             ttlMs,
           });
@@ -214,11 +323,13 @@ export const ciRoutes = ({
               organizationId: row.organizationId,
               projectId: row.projectId,
               metadata: {
+                ...(github && { forge: "github" }),
                 gitlabProjectId,
                 gitlabJobId: row.gitlabJobId,
+                gitlabPipelineId: row.gitlabPipelineId,
                 ref: row.ref,
                 refProtected,
-                environment: claims.environment,
+                environment: job.environment,
                 environmentId,
                 state,
                 scopes,

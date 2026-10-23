@@ -1,0 +1,11 @@
+CONCURRENTLY checking for 1 zone(s)
+Waiting for concurrent checking(s) to complete...DONE
+CONCURRENTLY gathering records of 1 zone(s)
+Waiting for concurrent gathering(s) to complete...DONE
+******************** Domain: example.test
+3 corrections (bind)
+#1: - DELETE _canary.example.test TXT "CANARY-VALUE-7f3a" ttl=300
++ CREATE api.example.test A 192.0.2.3 ttl=300
+± MODIFY www.example.test A (192.0.2.2 ttl=300) -> (192.0.2.99 ttl=300)
+INFO#1: Skipping registrar "none": No nameservers declared for domain "example.test". Add {no_ns: 'true'} to force
+Done. 3 corrections.

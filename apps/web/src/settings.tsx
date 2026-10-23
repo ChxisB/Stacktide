@@ -2,10 +2,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { Card, Named } from "./components";
 import { SignInMethods } from "./identities";
 import type { Org } from "./org";
 import { Pools } from "./pools";
-import { AddConnection, useConnections } from "./projects";
+import { AddConnection, FORGES, type Forge, useConnections } from "./projects";
 import { SingleSignOn } from "./sso";
 import { Tokens } from "./tokens";
 import { Loading, stamp, when } from "./ui";
@@ -21,6 +22,7 @@ export const useAccess = (orgId: string) => {
 interface Connection {
   id: string;
   name: string;
+  type: string;
   config: Record<string, unknown>;
   createdAt: string | Date;
 }
@@ -50,6 +52,7 @@ function Row({
   return (
     <tr>
       <th scope="row">{connection.name}</th>
+      <td>{FORGES[connection.type as Forge]?.name ?? connection.type}</td>
       <td>{typeof address === "string" ? address : "Not recorded"}</td>
       <td>
         <time dateTime={stamp(connection.createdAt)}>{when(connection.createdAt)}</time>
@@ -81,7 +84,7 @@ function Row({
             <div className="row">
               {actions.includes("connection.test") && (
                 <button type="button" disabled={test.isPending} onClick={() => test.mutate()}>
-                  {test.isPending ? "Testing…" : `Test ${connection.name}`}
+                  {test.isPending ? "Testing…" : <Named word="Test" name={connection.name} />}
                 </button>
               )}
               {actions.includes("connection.delete") && (
@@ -100,7 +103,7 @@ function Row({
           )}
           {confirming && (
             <p className="muted">
-              Its stored token is deleted, and what reaches GitLab through it stops working until
+              Its stored token is deleted, and what reaches its forge through it stops working until
               another connection is set up. One that sync targets still use cannot be deleted.
             </p>
           )}
@@ -110,6 +113,19 @@ function Row({
               GitLab accepts it, as {result.user.name} (@{result.user.username}).{" "}
               {result.scopes ? `Scopes: ${result.scopes.join(", ")}.` : "Its scopes are not shown."}
               {result.expiresAt ? ` Expires ${result.expiresAt}.` : " It does not expire."}
+              {result.version && ` GitLab ${result.version}.`}
+              {(["no", "unknown"] as const).map((state) => {
+                const list = result.capabilities.filter((c) => c.state === state);
+                return (
+                  list.length > 0 && (
+                    <span key={state}>
+                      {" "}
+                      {state === "no" ? "Not available here:" : "Cannot be told:"}{" "}
+                      {list.map((c) => `${c.label} (needs ${c.needs})`).join("; ")}.
+                    </span>
+                  )
+                );
+              })}
             </p>
           )}
           {result && !result.ok && (
@@ -132,11 +148,10 @@ function Connections({ orgId, actions }: { orgId: string; actions: Access["actio
   const connections = useConnections(orgId);
   const [adding, setAdding] = useState(false);
   return (
-    <section className="stack" aria-labelledby="connections-title">
-      <h2 id="connections-title">Connections</h2>
+    <Card title="Connections">
       <p className="muted">
-        The GitLab access tokens this organization works through. A token is stored encrypted and is
-        never shown again.
+        The GitLab and GitHub access tokens this organization works through. A token is stored
+        encrypted and is never shown again.
       </p>
       {connections.isPending && <Loading what="Loading connections" />}
       {connections.error && !connections.data && (
@@ -151,7 +166,8 @@ function Connections({ orgId, actions }: { orgId: string; actions: Access["actio
             <thead>
               <tr>
                 <th scope="col">Name</th>
-                <th scope="col">GitLab address</th>
+                <th scope="col">Forge</th>
+                <th scope="col">Address</th>
                 <th scope="col">Added</th>
                 <th scope="col">
                   <span className="visually-hidden">Actions</span>
@@ -180,7 +196,7 @@ function Connections({ orgId, actions }: { orgId: string; actions: Access["actio
           </div>
         )
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -193,9 +209,8 @@ export function SettingsPage({ org }: { org: Org }) {
   }
   const { role, actions } = access.data;
   return (
-    <div className="stack">
-      <section className="stack" aria-labelledby="access-title">
-        <h2 id="access-title">Your access</h2>
+    <div className="stack wide">
+      <Card title="Your access">
         <p>
           Your role in <strong>{org.name}</strong> is <strong>{role}</strong>.
         </p>
@@ -203,7 +218,7 @@ export function SettingsPage({ org }: { org: Org }) {
           Roles come from your membership of the organization's GitLab group, so they are changed in
           GitLab. A change can take a few minutes to show here.
         </p>
-      </section>
+      </Card>
       {actions.includes("connection.read") && <Connections orgId={org.id} actions={actions} />}
       {actions.includes("pool.read") && <Pools orgId={org.id} actions={actions} />}
       {actions.includes("sso.read") && <SingleSignOn orgId={org.id} actions={actions} />}

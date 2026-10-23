@@ -303,6 +303,16 @@ describe("the guardrails (POL-4)", () => {
     expect(JSON.stringify(r)).not.toContain(CANARY);
   });
 
+  test("a target that syncs a folder is judged like any other: the folder does not hide it", async () => {
+    const w = await world();
+    await w.target({ prod: "production" }, { project: "fx/p", folder: "/pay" }, "open");
+    await w.target({ prod: "production" }, { project: "fx/p", protected: true, folder: "/pay" });
+    const r = await check(w);
+    expect(r.violations.map((v) => v.message)).toEqual([
+      'environment "prod" is synced to the production scope "production" by the target "open", which does not protect its variables',
+    ]);
+  });
+
   test("a target that protects them, or maps the environment elsewhere, or not at all, is fine", async () => {
     const w = await world();
     await w.target({ prod: "production" }, { project: "fx/p", protected: true });

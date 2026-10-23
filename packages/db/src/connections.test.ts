@@ -8,6 +8,7 @@ import {
   getConnectionByName,
   listConnections,
   openConnection,
+  openWebhookSecret,
 } from "./connections";
 import { pgConstraint } from "./pg-error";
 import { createOrganization, deleteOrganization } from "./repo";
@@ -158,6 +159,78 @@ describe("connections at rest", () => {
     });
     expect((await raw(c.id)).dek_key_id).toBe("k1");
     expect((await openConnection(t.db, keys, o.id, c.id))?.token).toBe(TOKEN);
+  });
+});
+
+describe("a connection's webhook secret (FRG-10)", () => {
+  const HOOK = "whsec-SECRET-HOOK-0123456789";
+  const github = (organizationId: string, webhookSecret?: string) =>
+    createConnection(t.db, keys, {
+      organizationId,
+      type: "github",
+      name: `g${++n}`,
+      token: TOKEN,
+      webhookSecret,
+    });
+
+  test("it is sealed: a raw read of the row holds no plaintext, and it opens through openWebhookSecret only", async () => {
+    const o = await org();
+    const c = await github(o.id, HOOK);
+    const row = await raw(c.id);
+    const bytes = (v: unknown) => Buffer.from(v as Uint8Array).toString("latin1");
+    for (const value of Object.values(row).filter((v) => v !== null)) {
+      expect(JSON.stringify(value) + bytes(value)).not.toContain(HOOK);
+    }
+    expect(Buffer.from(row.webhook_secret_enc as Uint8Array).length).toBeGreaterThan(HOOK.length);
+    expect(await openWebhookSecret(t.db, keys, o.id, c.id)).toBe(HOOK);
+    // the token is still its own secret, and no view of the connection holds either
+    expect((await openConnection(t.db, keys, o.id, c.id))?.token).toBe(TOKEN);
+    const shown = [c, (await openConnection(t.db, keys, o.id, c.id))?.connection];
+    shown.push(
+      await getConnection(t.db, o.id, c.id),
+      ...(await listConnections(t.db, o.id, { limit: 9 })),
+    );
+    for (const view of shown) {
+      expect(Object.keys(view ?? {})).not.toContain("webhookSecretEnc");
+      expect(JSON.stringify(view)).not.toContain(HOOK);
+    }
+  });
+
+  test("none given, none stored; an unknown connection has none either", async () => {
+    const o = await org();
+    const c = await github(o.id);
+    expect((await raw(c.id)).webhook_secret_enc).toBeNull();
+    expect(await openWebhookSecret(t.db, keys, o.id, c.id)).toBeUndefined();
+    expect(await openWebhookSecret(t.db, keys, o.id, Bun.randomUUIDv7())).toBeUndefined();
+  });
+
+  test("it is bound to its own row, apart from the token: moved to another connection or organization it does not open", async () => {
+    const [o1, o2] = [await org(), await org()];
+    const [a, b] = [await github(o1.id, HOOK), await github(o1.id, "other-hook-0123456789")];
+    const stolen = await raw(a.id);
+    await t.db.execute(
+      sql`UPDATE connections SET webhook_secret_enc = ${stolen.webhook_secret_enc as Uint8Array} WHERE id = ${b.id}`,
+    );
+    await expect(openWebhookSecret(t.db, keys, o1.id, b.id)).rejects.toMatchObject({
+      code: "decrypt_failed",
+    });
+    // the token's seal is not the webhook secret's: swapping them does not open either
+    await t.db.execute(
+      sql`UPDATE connections SET webhook_secret_enc = secret_enc WHERE id = ${a.id}`,
+    );
+    await expect(openWebhookSecret(t.db, keys, o1.id, a.id)).rejects.toBeInstanceOf(CryptoError);
+    const c = await github(o1.id, HOOK);
+    await t.db.execute(sql`UPDATE connections SET organization_id = ${o2.id} WHERE id = ${c.id}`);
+    await expect(openWebhookSecret(t.db, keys, o2.id, c.id)).rejects.toBeInstanceOf(CryptoError);
+  });
+
+  test("a failure to open says nothing of the secret", async () => {
+    const o = await org();
+    const c = await github(o.id, HOOK);
+    const wrong = envKeyProvider(`k9:${key(9)}`);
+    const e = await openWebhookSecret(t.db, wrong, o.id, c.id).catch((x) => x);
+    expect(e).toBeInstanceOf(CryptoError);
+    expect(String(e.message)).not.toContain(HOOK);
   });
 });
 

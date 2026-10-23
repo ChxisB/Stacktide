@@ -3,8 +3,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, StrictMode } from "react";
 import { ClientContext } from "./api";
 import { AuthGate } from "./auth";
+import { PageHead } from "./components";
 import { FindingsPage } from "./findings";
-import { Checklist } from "./onboarding";
+import { Checklist, Tiles } from "./onboarding";
 import { OrgProvider, RequireOrg } from "./org";
 import { OrganizationsPage } from "./organizations";
 import { PipelinePage } from "./pipeline";
@@ -18,86 +19,156 @@ import { VariablesPage } from "./variables";
 
 const Home = () => (
   <>
-    <h1>Welcome</h1>
-    <RequireOrg>{(org) => <Checklist orgId={org.id} />}</RequireOrg>
+    <PageHead
+      title="Welcome"
+      eyebrow="Delivery"
+      lede="Where your organization stands, and what to do next."
+    />
+    <RequireOrg>
+      {(org) => (
+        <>
+          <Tiles orgId={org.id} />
+          <Checklist orgId={org.id} />
+        </>
+      )}
+    </RequireOrg>
   </>
 );
 
 const Projects = () => (
   <>
-    <h1>Projects</h1>
+    <PageHead
+      title="Projects"
+      eyebrow="Delivery"
+      lede="Connect GitLab or GitHub and choose the projects to manage."
+    />
     <RequireOrg>{(org) => <ProjectsPage key={org.id} orgId={org.id} />}</RequireOrg>
   </>
 );
 
+// the project choice sits in the header, so the page draws its own once it knows the organization
+const variablesHead = (choice?: ReactNode) => (
+  <PageHead
+    title="Variables"
+    eyebrow="Governance"
+    lede="The variables of each project, by environment. Values stay masked until someone with access reveals one."
+    actions={choice}
+  />
+);
+
 const Variables = () => (
-  <>
-    <h1>Variables</h1>
-    <RequireOrg>{(org) => <VariablesPage key={org.id} orgId={org.id} />}</RequireOrg>
-  </>
+  <RequireOrg head={variablesHead()}>
+    {(org) => <VariablesPage key={org.id} orgId={org.id} head={variablesHead} />}
+  </RequireOrg>
 );
 
 const Sync = () => (
   <>
-    <h1>Sync</h1>
+    <PageHead
+      title="Sync"
+      eyebrow="Infrastructure"
+      lede="Compare variables with where they are used, then apply the difference."
+    />
     <RequireOrg>{(org) => <SyncPage key={org.id} orgId={org.id} />}</RequireOrg>
   </>
 );
 
 const Pipeline = () => (
   <>
-    <h1>Pipeline</h1>
+    <PageHead
+      title="Pipeline"
+      eyebrow="Delivery"
+      lede="Set up CI for a project through a merge request."
+    />
     <RequireOrg>{(org) => <PipelinePage key={org.id} orgId={org.id} />}</RequireOrg>
   </>
 );
 
 const Status = () => (
   <>
-    <h1>Pipeline status</h1>
+    <PageHead
+      title="Pipeline status"
+      eyebrow="Delivery"
+      lede="Recent pipeline runs for each project, as their forge reports them."
+    />
     <RequireOrg>{(org) => <RunsPage key={org.id} orgId={org.id} />}</RequireOrg>
   </>
 );
 
 const Findings = () => (
   <>
-    <h1>Findings</h1>
+    <PageHead
+      title="Findings"
+      eyebrow="Governance"
+      lede="What the scans and policy checks found, and what was done about it."
+    />
     <RequireOrg>{(org) => <FindingsPage key={org.id} orgId={org.id} />}</RequireOrg>
   </>
 );
 
 const State = () => (
   <>
-    <h1>State</h1>
+    <PageHead
+      title="State"
+      eyebrow="Infrastructure"
+      lede="Terraform state for each stack: its versions and its lock."
+    />
     <RequireOrg>{(org) => <StatePage key={org.id} orgId={org.id} />}</RequireOrg>
   </>
 );
 
 const Settings = () => (
   <>
-    <h1>Settings</h1>
+    <PageHead
+      title="Settings"
+      eyebrow="Governance"
+      lede="Connections, your access, API tokens, sign-in methods and worker pools."
+    />
     <RequireOrg>{(org) => <SettingsPage key={org.id} org={org} />}</RequireOrg>
   </>
 );
 
 const Organizations = () => (
   <>
-    <h1>Organizations</h1>
+    <PageHead
+      title="Organizations"
+      eyebrow="Governance"
+      lede="Organizations, their members and how people sign in to them."
+    />
     <OrganizationsPage />
   </>
 );
 
 /** The pages, in navigation order; the first is home. Each screen adds itself here. */
 const pages: readonly Page[] = [
-  { path: "", label: "Home", element: <Home /> },
-  { path: "projects", label: "Projects", element: <Projects /> },
-  { path: "variables", label: "Variables", element: <Variables /> },
-  { path: "sync", label: "Sync", element: <Sync /> },
-  { path: "pipeline", label: "Pipeline", element: <Pipeline /> },
-  { path: "status", label: "Status", element: <Status /> },
-  { path: "findings", label: "Findings", element: <Findings /> },
-  { path: "state", label: "State", element: <State /> },
-  { path: "settings", label: "Settings", element: <Settings /> },
-  { path: "organizations", label: "Organizations", element: <Organizations /> },
+  { path: "", label: "Home", group: "Delivery", icon: "grid", element: <Home /> },
+  { path: "projects", label: "Projects", group: "Delivery", icon: "folder", element: <Projects /> },
+  { path: "pipeline", label: "Pipeline", group: "Delivery", icon: "tmpl", element: <Pipeline /> },
+  { path: "status", label: "Status", group: "Delivery", icon: "flow", element: <Status /> },
+  { path: "state", label: "State", group: "Infrastructure", icon: "db", element: <State /> },
+  { path: "sync", label: "Sync", group: "Infrastructure", icon: "sync", element: <Sync /> },
+  {
+    path: "variables",
+    label: "Variables",
+    group: "Governance",
+    icon: "sliders",
+    element: <Variables />,
+  },
+  {
+    path: "findings",
+    label: "Findings",
+    group: "Governance",
+    icon: "shield",
+    element: <Findings />,
+  },
+  {
+    path: "organizations",
+    label: "Organizations",
+    group: "Governance",
+    icon: "users",
+    element: <Organizations />,
+  },
+  { path: "settings", label: "Settings", group: "Governance", icon: "gear", element: <Settings /> },
 ];
 
 export const newQueryClient = () =>

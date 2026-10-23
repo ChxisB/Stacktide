@@ -11,6 +11,7 @@ import {
   type Job,
   jobs,
   NOTIFY_QUEUE,
+  notifyDeploymentFailed,
   notifyRotationFailing,
   notifyStackDrift,
   setSubscriptions,
@@ -92,7 +93,7 @@ async function world(kind: "webhook" | "slack" = "webhook") {
     organizationId: org.id,
     projectId: project.id,
     sinkId: sink.id,
-    events: ["stack.drift", "rotation.failing"],
+    events: ["stack.drift", "rotation.failing", "deployment.failed"],
   });
   const tellRotation = (over: object = {}) =>
     t.db.transaction((tx) =>
@@ -102,6 +103,18 @@ async function world(kind: "webhook" | "slack" = "webhook") {
         key: "DB_PASSWORD",
         provider: "gitlab-token",
         attempts: 3,
+        at: new Date(AT),
+        ...over,
+      }),
+    );
+  const tellDeployment = (over: object = {}) =>
+    t.db.transaction((tx) =>
+      notifyDeploymentFailed(tx, {
+        organizationId: org.id,
+        projectId: project.id,
+        environment: "production",
+        sha: "0123456789abcdef0123456789abcdef01234567",
+        pipelineUrl: "https://gitlab.example/acme/web/-/pipelines/8?a=1&b=2",
         at: new Date(AT),
         ...over,
       }),
@@ -124,7 +137,7 @@ async function world(kind: "webhook" | "slack" = "webhook") {
     (await t.db.select().from(jobs).where(eq(jobs.queue, NOTIFY_QUEUE))).filter(
       (j) => (j.payload as { sinkId: string }).sinkId === sink.id,
     );
-  return { org, project, sink, tell, tellRotation, queued };
+  return { org, project, sink, tell, tellRotation, tellDeployment, queued };
 }
 const ctxOf = (payload: Record<string, unknown>, over: Partial<JobContext> = {}): JobContext => ({
   id: "0198d6f0-0000-7000-8000-000000000001",
@@ -533,6 +546,78 @@ describe("a rotation that keeps failing", () => {
     await expect(
       handler(f)(ctxOf({ ...(await payloadOf(w)), event: "rotation.failing" })),
     ).rejects.toThrow("not a notification");
+    expect(f.sent).toEqual([]);
+  });
+});
+
+describe("a deployment that failed", () => {
+  const deploymentPayload = async (
+    w: Awaited<ReturnType<typeof world>>,
+    tellOver: object = {},
+    over: object = {},
+  ) => {
+    await w.tellDeployment(tellOver);
+    const [job] = await w.queued();
+    return { ...(job?.payload as Record<string, unknown>), ...over };
+  };
+
+  test("a webhook gets the environment, the build and the pipeline's address, signed", async () => {
+    const w = await world();
+    const f = fakeFetch();
+    await handler(f)(ctxOf(await deploymentPayload(w)));
+    const [sent] = f.sent;
+    if (!sent) throw new Error("nothing sent");
+    expect(sent.headers["x-orch-event"]).toBe("deployment.failed");
+    expect(JSON.parse(sent.body)).toEqual({
+      id: "0198d6f0-0000-7000-8000-000000000001",
+      event: "deployment.failed",
+      at: AT,
+      organizationId: w.org.id,
+      project: { id: w.project.id, name: "api" },
+      deployment: {
+        environment: "production",
+        sha: "01234567",
+        pipelineUrl: "https://gitlab.example/acme/web/-/pipelines/8?a=1&b=2",
+      },
+    });
+    expect(sent.headers["x-orch-signature"]).toBe(
+      `v1=${hmac(SIGNING, `${sent.headers["x-orch-timestamp"]}.${sent.body}`)}`,
+    );
+  });
+
+  test("slack says what failed and where, links the pipeline, and a name cannot turn into a mention", async () => {
+    const w = await world("slack");
+    const f = fakeFetch();
+    await handler(f)(ctxOf(await deploymentPayload(w, { environment: "<!channel>" })));
+    const text = (JSON.parse(f.sent[0]?.body ?? "{}") as { text: string }).text;
+    expect(text).toContain("api");
+    expect(text).toContain("01234567");
+    expect(text).toContain("failed");
+    expect(text).toContain("/-/pipelines/8?a=1&amp;b=2");
+    expect(text).not.toMatch(/[<>]/);
+  });
+
+  test("a deployment with no pipeline address is told without one", async () => {
+    const w = await world("slack");
+    const f = fakeFetch();
+    await handler(f)(ctxOf(await deploymentPayload(w, { pipelineUrl: null })));
+    const text = (JSON.parse(f.sent[0]?.body ?? "{}") as { text: string }).text;
+    expect(text).toContain("failed");
+    expect(text).not.toContain("http");
+  });
+
+  test("a payload that is not a deployment's, or whose parts are not what they should be, is not ours", async () => {
+    const w = await world();
+    const f = fakeFetch();
+    for (const bad of [
+      await deploymentPayload(w, {}, { environment: undefined }),
+      await deploymentPayload(w, {}, { environment: "x".repeat(101) }),
+      await deploymentPayload(w, {}, { sha: "0123456789" }),
+      await deploymentPayload(w, {}, { pipelineUrl: 7 }),
+      { ...(await payloadOf(await world())), event: "deployment.failed" },
+    ]) {
+      await expect(handler(f)(ctxOf(bad))).rejects.toThrow("not a notification");
+    }
     expect(f.sent).toEqual([]);
   });
 });

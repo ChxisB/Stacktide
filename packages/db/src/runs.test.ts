@@ -22,6 +22,7 @@ import {
   planPipelinesOfRun,
   recordStackJobs,
   runOfPipeline,
+  setStackApproval,
   storePlanSummary,
   supersedeRuns,
 } from "./runs";
@@ -90,6 +91,32 @@ describe("createRun", () => {
       ["net", "queued", null],
     ]);
     expect(await getRun(t.db, w.org.id, w.project.id, run.id)).toEqual(run);
+  });
+
+  test("a stack is costed unless the run says it has no price to estimate (a DNS zone)", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net", "zone"], { uncosted: ["zone", "other"] }));
+    expect(run.stacks.map((s) => [s.stack, s.costed])).toEqual([
+      ["net", true],
+      ["zone", false],
+    ]);
+    const read = await getRun(t.db, w.org.id, w.project.id, run.id);
+    expect(read?.stacks.map((s) => s.costed)).toEqual([true, false]);
+  });
+
+  test("a DNS zone's prune setting in the commit is kept with its stack; a stack that is not a zone has none (DNS-7)", async () => {
+    const w = await world();
+    const run = await createRun(
+      t.db,
+      input(w, ["net", "pruned", "zone"], { dnsPrune: { zone: false, pruned: true, other: true } }),
+    );
+    expect(run.stacks.map((s) => [s.stack, s.dnsPrune])).toEqual([
+      ["net", null],
+      ["pruned", true],
+      ["zone", false],
+    ]);
+    const read = await getRun(t.db, w.org.id, w.project.id, run.id);
+    expect(read?.stacks.map((s) => s.dnsPrune)).toEqual([null, true, false]);
   });
 
   test("the stacks come in the same order made as read, by code point, not by collation", async () => {
@@ -335,6 +362,68 @@ describe("moveRunStack", () => {
   });
 });
 
+describe("a stack's approval link", () => {
+  const link = (w: Awaited<ReturnType<typeof world>>, runId: string, url: string | null) =>
+    setStackApproval(t.db, w.org.id, w.project.id, runId, "a", url);
+  const shown = async (w: Awaited<ReturnType<typeof world>>, runId: string) =>
+    (await getRun(t.db, w.org.id, w.project.id, runId))?.stacks[0]?.approvalUrl;
+
+  test("is kept only while the stack is applying, reports whether it changed, and goes with the next move", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["a"]));
+    expect(await shown(w, run.id)).toBeNull();
+    // a stack that is not applying takes no link
+    expect(await link(w, run.id, "https://forge.example/job/1")).toBe(false);
+    expect(await shown(w, run.id)).toBeNull();
+
+    for (const [from, to] of [
+      ["queued", "planning"],
+      ["planning", "planned"],
+      ["planned", "applying"],
+    ] as const) {
+      await moveRunStack(t.db, w.org.id, w.project.id, run.id, "a", from, to);
+    }
+    expect(await link(w, run.id, "https://forge.example/job/1")).toBe(true);
+    expect(await shown(w, run.id)).toBe("https://forge.example/job/1");
+    // the same again changes nothing; none clears it
+    expect(await link(w, run.id, "https://forge.example/job/1")).toBe(false);
+    expect(await link(w, run.id, null)).toBe(true);
+    expect(await shown(w, run.id)).toBeNull();
+
+    // whoever moves the stack drops a link that was left
+    await link(w, run.id, "https://forge.example/job/2");
+    await moveRunStack(t.db, w.org.id, w.project.id, run.id, "a", "applying", "applied");
+    expect(await shown(w, run.id)).toBeNull();
+  });
+
+  test("another organization or project cannot set it, and the database refuses a link over 2000 characters", async () => {
+    const w = await world();
+    const other = await world();
+    const run = await createRun(t.db, input(w, ["a"]));
+    for (const [from, to] of [
+      ["queued", "planning"],
+      ["planning", "planned"],
+      ["planned", "applying"],
+    ] as const) {
+      await moveRunStack(t.db, w.org.id, w.project.id, run.id, "a", from, to);
+    }
+    expect(
+      await setStackApproval(
+        t.db,
+        other.org.id,
+        other.project.id,
+        run.id,
+        "a",
+        "https://x.example",
+      ),
+    ).toBe(false);
+    expect(await shown(w, run.id)).toBeNull();
+    expect(await refusedBy(link(w, run.id, `https://x.example/${"a".repeat(2000)}`))).toBe(
+      "run_stacks_approval_url_check",
+    );
+  });
+});
+
 describe("the apply mutex", () => {
   const ready = async (w: Awaited<ReturnType<typeof world>>, stack: string) => {
     const run = await createRun(t.db, input(w, [stack]));
@@ -507,6 +596,27 @@ describe("recordStackJobs", () => {
     ]);
   });
 
+  test("a retried plan job forgets the lint of the plan it replaces, and the same job noted again does not (DNS-11)", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net"]));
+    await recordStackJobs(...scope(w, run.id), "net", { planJobId: 11 });
+    await storePlanSummary(t.db, w.org.id, w.project.id, run.id, "net", {
+      add: 0,
+      change: 0,
+      destroy: 0,
+      resources: [],
+      lint: { errors: 1, warnings: 2 },
+    });
+    const lintOf = async () => {
+      const net = (await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks[0];
+      return [net?.lintErrors, net?.lintWarnings];
+    };
+    await recordStackJobs(...scope(w, run.id), "net", { planJobId: 11, summaryJobId: 12 });
+    expect(await lintOf()).toEqual([1, 2]);
+    await recordStackJobs(...scope(w, run.id), "net", { planJobId: 21 });
+    expect(await lintOf()).toEqual([null, null]);
+  });
+
   test("an id from another organization, project or run changes nothing, and a bad job id is refused", async () => {
     const w = await world();
     const other = await world();
@@ -597,6 +707,51 @@ describe("plan summaries", () => {
     // the refused summaries changed nothing
     const net = (await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks[0];
     expect([net?.costMonthlyDelta, net?.costCurrency]).toEqual([10, "EUR"]);
+  });
+
+  test("a zone's lint counts are stored with the summary, and a later summary without them removes them (DNS-11)", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net", "app"]));
+    const lint = { errors: 2, warnings: 5 };
+    expect(await store(w, run.id, "net", { ...summary, lint })).toMatchObject({
+      lintErrors: 2,
+      lintWarnings: 5,
+    });
+    const read = async () => (await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks;
+    expect((await read())?.map((s) => [s.stack, s.lintErrors, s.lintWarnings])).toEqual([
+      ["app", null, null],
+      ["net", 2, 5],
+    ]);
+    // zero findings is an answer too: the lint ran
+    await store(w, run.id, "net", { ...summary, lint: { errors: 0, warnings: 0 } });
+    expect((await read())?.[1]).toMatchObject({ lintErrors: 0, lintWarnings: 0 });
+    await store(w, run.id, "net");
+    expect((await read())?.[1]).toMatchObject({ lintErrors: null, lintWarnings: null });
+  });
+
+  test("the database refuses lint counts that are half set, negative or beyond a million, whatever the caller checked", async () => {
+    const w = await world();
+    const run = await createRun(t.db, input(w, ["net"]));
+    await store(w, run.id, "net", { ...summary, lint: { errors: 1, warnings: 1 } });
+    for (const lint of [
+      { errors: -1, warnings: 0 },
+      { errors: 0, warnings: -1 },
+      { errors: 1_000_001, warnings: 0 },
+      { errors: 0, warnings: 1_000_001 },
+    ]) {
+      expect(await refusedBy(store(w, run.id, "net", { ...summary, lint }))).toBe(
+        "run_stacks_lint_check",
+      );
+    }
+    const half = await refusedBy(
+      t.db
+        .update(runStacks)
+        .set({ lintErrors: 1, lintWarnings: null })
+        .where(eq(runStacks.runId, run.id)),
+    );
+    expect(half).toBe("run_stacks_lint_check");
+    const net = (await getRun(t.db, w.org.id, w.project.id, run.id))?.stacks[0];
+    expect([net?.lintErrors, net?.lintWarnings]).toEqual([1, 1]);
   });
 
   test("only while the stack has no outcome: queued, planning and planned take one, the rest refuse", async () => {

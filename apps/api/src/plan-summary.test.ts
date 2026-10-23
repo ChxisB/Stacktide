@@ -5,6 +5,7 @@ import {
   auditEvents,
   createApiToken,
   createCiToken,
+  createDnsZone,
   createOrganization,
   createProject,
   createRun,
@@ -450,6 +451,29 @@ describe("what a summary may hold", () => {
     await refused("not text", one([1]));
   });
 
+  test("the summary of a DNS zone (DNS-4) is accepted as it is: counts, and <zone>/<name>/<TYPE> with one action", async () => {
+    // what the plan job's jq filter makes of a DNSControl report: the apex is "@", no record value anywhere
+    const dns = summary({
+      add: 1,
+      change: 1,
+      destroy: 1,
+      resources: [
+        { address: "example.test/@/TXT", actions: ["update"] },
+        { address: "example.test/www/A", actions: ["create"] },
+        { address: "example.test/_canary/TXT", actions: ["delete"] },
+        { address: "example.test", actions: ["create"] },
+      ],
+    });
+    const res = await send(dns);
+    expect(res.status).toBe(204);
+    expect(await getPlanResources(t.db, ids.o1, ids.p1, res.runId, "net")).toEqual(dns.resources);
+    expect(await stackRow(res.runId, "net")).toMatchObject({
+      planAdd: 1,
+      planChange: 1,
+      planDestroy: 1,
+    });
+  });
+
   test("counts are whole numbers from 0 to a million", async () => {
     expect(
       (await send(summary({ add: 1_000_000, change: 0, destroy: 0, resources: [] }))).status,
@@ -754,6 +778,62 @@ describe("the summary of a drift run", () => {
     expect(await known()).toMatchObject([{ status: "drifted", planAdd: 3 }]);
     expect(await driftAudits()).toHaveLength(events + 1);
   });
+
+  test("a zone drifts when the plan of its config has a change and is in sync when it has none; news once per episode (DNS-12)", async () => {
+    const zone = "drifting.example";
+    const events = () => driftAudits().then((all) => all.filter((e) => e.resourceId === "zone"));
+    const status = async () => (await known()).filter((k) => k.stack === "zone");
+    // a zone's drift run, as the scheduled check makes it: a plan of a stack that has a dnsPrune setting
+    async function zoneDrift(job: number, resources: { address: string; actions: string[] }[]) {
+      const run = await createRun(t.db, {
+        organizationId: ids.o1,
+        projectId: ids.p2,
+        ref: DRIFT_REF,
+        sha: SHA,
+        kind: "drift",
+        stacks: ["zone"],
+        uncosted: ["zone"],
+        dnsPrune: { zone: false },
+      });
+      await recordStackJobs(t.db, ids.o1, ids.p2, run.id, "zone", { summaryJobId: job });
+      const token = await ciToken({ projectId: ids.p2, ref: DRIFT_REF, jobId: job });
+      const body = {
+        stack: "zone",
+        add: resources.filter((r) => r.actions.includes("create")).length,
+        change: resources.filter((r) => r.actions.includes("update")).length,
+        destroy: 0,
+        resources,
+      };
+      return (await post(summaryPath(run.id, ids.p2), body, { bearer: token.bearer })).status;
+    }
+    const change = (name: string) => ({ address: `${zone}/${name}/A`, actions: ["update"] });
+
+    expect(await zoneDrift(930, [])).toBe(204);
+    expect(await status()).toMatchObject([{ status: "clean", planAdd: 0, planChange: 0 }]);
+    expect(await events()).toEqual([]);
+
+    expect(await zoneDrift(931, [change("www")])).toBe(204);
+    expect(await status()).toMatchObject([{ status: "drifted", planChange: 1 }]);
+    expect(await events()).toHaveLength(1);
+    expect(await events()).toMatchObject([
+      { metadata: { stack: "zone", status: "drifted", add: 0, change: 1, destroy: 0 } },
+    ]);
+    // the record is not in the trail
+    expect(JSON.stringify(await events())).not.toContain("www");
+
+    // found again: the counts are the latest, and there is no second event
+    expect(await zoneDrift(932, [change("www"), change("api")])).toBe(204);
+    expect(await status()).toMatchObject([{ status: "drifted", planChange: 2 }]);
+    expect(await events()).toHaveLength(1);
+
+    // put right: the end of the episode is the second event
+    expect(await zoneDrift(933, [])).toBe(204);
+    expect(await status()).toMatchObject([{ status: "clean", since: null }]);
+    expect((await events()).map((e) => (e.metadata as { status: string }).status).sort()).toEqual([
+      "clean",
+      "drifted",
+    ]);
+  });
 });
 
 describe("the summary of a drift run tells the sinks that asked", () => {
@@ -857,5 +937,326 @@ describe("the summary of a drift run tells the sinks that asked", () => {
     expect(text).not.toContain("URLTOKEN123");
     expect(text).not.toContain("whsec_x");
     expect(text).not.toContain(run.bearer);
+  });
+});
+
+describe("a DNS zone's plan is judged by the claims and the stack's prune setting (DNS-7)", () => {
+  const ZONE_JOB = 903;
+  let n = 0;
+  const fresh = () => `judged${++n}.example`;
+  async function zoneRun(prune: boolean | null = false) {
+    const run = await createRun(t.db, {
+      organizationId: ids.o1,
+      projectId: ids.p1,
+      ref: REF,
+      sha: SHA,
+      stacks: ["zone"],
+      uncosted: ["zone"],
+      ...(prune === null ? {} : { dnsPrune: { zone: prune } }),
+    });
+    await recordStackJobs(t.db, ids.o1, ids.p1, run.id, "zone", { summaryJobId: ZONE_JOB });
+    return run.id;
+  }
+  const claim = (zone: string, over: { stack?: string } = {}) =>
+    createDnsZone(t.db, {
+      organizationId: ids.o1,
+      projectId: ids.p1,
+      zone,
+      stack: over.stack ?? "zone",
+    });
+  const rec = (address: string, ...actions: string[]) => ({ address, actions });
+  const plan = (resources: ReturnType<typeof rec>[]) => {
+    const count = (a: string) => resources.filter((r) => r.actions.includes(a)).length;
+    return {
+      stack: "zone",
+      add: count("create"),
+      change: count("update"),
+      destroy: count("delete"),
+      resources,
+    };
+  };
+  async function sendPlan(runId: string, body: ReturnType<typeof plan> & { lint?: unknown }) {
+    const token = await ciToken({ jobId: ZONE_JOB });
+    const res = await post(summaryPath(runId), body, { bearer: token.bearer });
+    expect(res.status).toBe(204);
+    return await stackRow(runId, "zone");
+  }
+  const policyAudits = (runId: string) =>
+    t.db
+      .select()
+      .from(auditEvents)
+      .where(and(eq(auditEvents.action, "run.policy"), eq(auditEvents.resourceId, runId)));
+
+  test("a zone the stack has not claimed is denied by name, as a policy deny is, and the audit trail says how many", async () => {
+    const zone = fresh();
+    const runId = await zoneRun();
+    const row = await sendPlan(runId, plan([rec(`${zone}/www/A`, "create")]));
+    expect(row).toMatchObject({
+      policyVerdict: "deny",
+      policyDenied: [`dns-zone-unclaimed:${zone}`],
+      policyWarned: [],
+    });
+    const events = await policyAudits(runId);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      actorKind: "ci",
+      metadata: { stack: "zone", verdict: "deny", denied: 1, warned: 0, evaluated: true },
+    });
+    // the record's name is for the run's readers, not for the audit trail
+    expect(JSON.stringify(events)).not.toContain("www");
+  });
+
+  test("a claimed zone with no deletes passes", async () => {
+    const zone = fresh();
+    await claim(zone);
+    const row = await sendPlan(
+      await zoneRun(),
+      plan([rec(`${zone}/www/A`, "create"), rec(`${zone}/@/MX`, "update")]),
+    );
+    expect(row).toMatchObject({ policyVerdict: "pass", policyDenied: [] });
+  });
+
+  test("a claim of another stack of the project does not count", async () => {
+    const zone = fresh();
+    await claim(zone, { stack: "sibling" });
+    const row = await sendPlan(await zoneRun(), plan([rec(`${zone}/www/A`, "create")]));
+    expect(row).toMatchObject({
+      policyVerdict: "deny",
+      policyDenied: [`dns-zone-unclaimed:${zone}`],
+    });
+  });
+
+  test("a delete is denied while the stack does not prune, and allowed when it does", async () => {
+    const zone = fresh();
+    await claim(zone);
+    const drop = plan([rec(`${zone}/old/A`, "delete"), rec(`${zone}/www/A`, "create")]);
+    expect(await sendPlan(await zoneRun(false), drop)).toMatchObject({
+      policyVerdict: "deny",
+      policyDenied: [`dns-delete-without-prune:${zone}`],
+    });
+    expect(await sendPlan(await zoneRun(true), drop)).toMatchObject({
+      policyVerdict: "pass",
+      policyDenied: [],
+    });
+  });
+
+  test("a zone with no changes is not checked: nothing to harm, nothing to claim", async () => {
+    const row = await sendPlan(await zoneRun(), plan([]));
+    expect(row).toMatchObject({ policyVerdict: "pass", policyDenied: [] });
+  });
+
+  test("a second summary judges again: a claim made since, and a plan with no delete, clear the denial", async () => {
+    const zone = fresh();
+    const runId = await zoneRun();
+    const body = plan([rec(`${zone}/www/A`, "create")]);
+    expect(await sendPlan(runId, body)).toMatchObject({ policyVerdict: "deny" });
+    await claim(zone);
+    expect(await sendPlan(runId, body)).toMatchObject({ policyVerdict: "pass", policyDenied: [] });
+    expect(await policyAudits(runId)).toHaveLength(2);
+  });
+
+  test("a zone's name that is not a zone is one fixed rule, with none of its text in the answer or the stack", async () => {
+    const row = await sendPlan(await zoneRun(), plan([rec("Evil <b>zone</b>/www/A", "create")]));
+    expect(row).toMatchObject({ policyVerdict: "deny", policyDenied: ["dns-zone-invalid"] });
+    expect(JSON.stringify(row)).not.toContain("Evil");
+  });
+
+  test("a plan that is a zone's: a stack that is not one is not judged, whatever its addresses look like", async () => {
+    const runId = await newRun();
+    const token = await ciToken();
+    const body = summary({
+      add: 1,
+      change: 0,
+      destroy: 0,
+      resources: [{ address: "unclaimed.example/www/A", actions: ["create"] }],
+    });
+    expect((await post(summaryPath(runId), body, { bearer: token.bearer })).status).toBe(204);
+    expect(await stackRow(runId, "net")).toMatchObject({ policyVerdict: null, policyAt: null });
+    expect(await policyAudits(runId)).toHaveLength(0);
+  });
+
+  test("a stack whose run recorded no prune setting is not a zone of the run: it is not judged", async () => {
+    const zone = fresh();
+    const runId = await zoneRun(null);
+    const row = await sendPlan(runId, plan([rec(`${zone}/www/A`, "create")]));
+    expect(row).toMatchObject({ policyVerdict: null });
+  });
+
+  describe("with the lint of the zone's config (DNS-11)", () => {
+    const finding = (rule: string, severity: string, address: string) => ({
+      rule,
+      severity,
+      address,
+    });
+    const lint = (findings: ReturnType<typeof finding>[], over: Record<string, number> = {}) => ({
+      errors: findings.filter((f) => f.severity === "error").length,
+      warnings: findings.filter((f) => f.severity === "warn").length,
+      findings,
+      ...over,
+    });
+    const lintOf = (row: Awaited<ReturnType<typeof stackRow>>) => [
+      row?.lintErrors,
+      row?.lintWarnings,
+    ];
+    // what the summary job posts when it has nothing else to say: no change, one lint block
+    const linted = (l: unknown) => ({ ...plan([]), lint: l });
+    const refuse = async (what: string, l: unknown) => {
+      const runId = await zoneRun();
+      const token = await ciToken({ jobId: ZONE_JOB });
+      const res = await post(summaryPath(runId), linted(l), { bearer: token.bearer });
+      expect([what, res.status]).toEqual([what, 422]);
+      expect(await stackRow(runId, "zone")).toMatchObject({ planAdd: null, lintErrors: null });
+      expect(res.text).not.toContain("evil");
+    };
+
+    test("an error finding denies by rule and zone, like any rule that fired; the counts are stored and the audit trail has counts only", async () => {
+      const zone = fresh();
+      await claim(zone);
+      const runId = await zoneRun();
+      const row = await sendPlan(
+        runId,
+        linted(lint([finding("spf-single", "error", `${zone}/lintname/TXT`)])),
+      );
+      expect(row).toMatchObject({
+        policyVerdict: "deny",
+        policyDenied: [`dns-lint-spf-single:${zone}`],
+        policyWarned: [],
+      });
+      expect(lintOf(row)).toEqual([1, 0]);
+      const events = await policyAudits(runId);
+      expect(events).toHaveLength(1);
+      expect(events[0]?.metadata).toMatchObject({ verdict: "deny", denied: 1, warned: 0 });
+      // the record's name is for the people who open the plan job
+      expect(JSON.stringify([...events, ...(await audits(runId))])).not.toContain("lintname");
+    });
+
+    test("a warning does not deny: the verdict is a warn, with the rule and the zone, and the audit trail says one warned", async () => {
+      const zone = fresh();
+      await claim(zone);
+      const runId = await zoneRun();
+      const row = await sendPlan(
+        runId,
+        linted(lint([finding("ttl-range", "warn", `${zone}/www/A`)])),
+      );
+      expect(row).toMatchObject({
+        policyVerdict: "warn",
+        policyDenied: [],
+        policyWarned: [`dns-lint-ttl-range:${zone}`],
+      });
+      expect(lintOf(row)).toEqual([0, 1]);
+      expect((await policyAudits(runId))[0]?.metadata).toMatchObject({
+        verdict: "warn",
+        denied: 0,
+        warned: 1,
+      });
+    });
+
+    test("no finding is stored as zero and zero: the lint ran, and the plan passes", async () => {
+      const runId = await zoneRun();
+      const row = await sendPlan(runId, linted(lint([])));
+      expect(row).toMatchObject({ policyVerdict: "pass" });
+      expect(lintOf(row)).toEqual([0, 0]);
+    });
+
+    test("a summary with no lint block stores none, and one posted again without it removes the earlier answer and its denial", async () => {
+      const zone = fresh();
+      await claim(zone);
+      const runId = await zoneRun();
+      const first = await sendPlan(runId, linted(lint([finding("keep-unknown", "error", zone)])));
+      expect(first).toMatchObject({
+        policyVerdict: "deny",
+        policyDenied: [`dns-lint-keep-unknown:${zone}`],
+      });
+      const second = await sendPlan(runId, plan([]));
+      expect(lintOf(second)).toEqual([null, null]);
+      expect(second).toMatchObject({ policyVerdict: "pass", policyDenied: [] });
+      expect(lintOf(await sendPlan(await zoneRun(), plan([])))).toEqual([null, null]);
+    });
+
+    test("an error the list does not show (the count is higher) is denied by one more rule", async () => {
+      const zone = fresh();
+      await claim(zone);
+      const row = await sendPlan(
+        await zoneRun(),
+        linted(lint([finding("spf-single", "error", `${zone}/@/TXT`)], { errors: 4 })),
+      );
+      expect(row).toMatchObject({
+        policyVerdict: "deny",
+        policyDenied: [`dns-lint-spf-single:${zone}`, "dns-lint-truncated"],
+      });
+      expect(lintOf(row)).toEqual([4, 0]);
+    });
+
+    test("the lint adds to the claim's denial, and does not replace it", async () => {
+      const zone = fresh();
+      const row = await sendPlan(
+        await zoneRun(),
+        linted(lint([finding("spf-single", "error", `${zone}/@/TXT`)])),
+      );
+      expect(row?.policyDenied).toEqual([`dns-lint-spf-single:${zone}`]);
+      const both = await sendPlan(await zoneRun(), {
+        ...plan([rec(`${zone}/www/A`, "create")]),
+        lint: lint([finding("spf-single", "error", `${zone}/@/TXT`)]),
+      });
+      expect(both?.policyDenied).toEqual([
+        `dns-zone-unclaimed:${zone}`,
+        `dns-lint-spf-single:${zone}`,
+      ]);
+    });
+
+    test("an address that has no zone in it is one fixed rule, and its text is in neither the stack nor the audit trail", async () => {
+      const runId = await zoneRun();
+      const row = await sendPlan(
+        runId,
+        linted(lint([finding("spf-single", "error", "Evil <b>zone</b>/@/TXT")])),
+      );
+      expect(row).toMatchObject({ policyVerdict: "deny", policyDenied: ["dns-zone-invalid"] });
+      expect(JSON.stringify([row, await policyAudits(runId), await audits(runId)])).not.toContain(
+        "Evil",
+      );
+    });
+
+    test("500 findings are the most, and the counts are whole numbers from 0 to a million", async () => {
+      const zone = fresh();
+      const list = (n: number) =>
+        Array.from({ length: n }, (_, i) => finding("ttl-range", "warn", `${zone}/n${i}/A`));
+      const row = await sendPlan(await zoneRun(), linted(lint(list(500))));
+      expect(lintOf(row)).toEqual([0, 500]);
+      await refuse("501 findings", lint(list(501)));
+      await refuse("negative", { errors: -1, warnings: 0, findings: [] });
+      await refuse("a fraction", { errors: 0, warnings: 0.5, findings: [] });
+      await refuse("too many", { errors: 0, warnings: 1_000_001, findings: [] });
+      await refuse("text", { errors: "0", warnings: 0, findings: [] });
+      await refuse("missing counts", { findings: [] });
+      await refuse("missing list", { errors: 0, warnings: 0 });
+    });
+
+    test("nothing else: a rule the platform knows, a severity of two, an address of plain characters, no extra field", async () => {
+      const ok = finding("spf-single", "error", "a.example/@/TXT");
+      await refuse("an unknown rule", lint([{ ...ok, rule: "evil" }]));
+      await refuse("an unknown severity", lint([{ ...ok, severity: "evil" }]));
+      await refuse("a value", lint([{ ...ok, value: "evil" } as typeof ok]));
+      await refuse("an extra field on the block", { ...lint([ok]), message: "evil" });
+      await refuse("no address", lint([{ ...ok, address: "" }]));
+      await refuse(
+        "a long address",
+        lint([{ ...ok, address: `a.example/${"n".repeat(1100)}/TXT` }]),
+      );
+      await refuse("a control character", lint([{ ...ok, address: "a.example/evil\u0000/TXT" }]));
+      await refuse("a bidi override", lint([{ ...ok, address: "a.example/evil\u202e/TXT" }]));
+      await refuse("not a list", { errors: 0, warnings: 0, findings: "evil" });
+    });
+
+    test("a stack that is not a zone keeps the counts it posted and is not judged by them", async () => {
+      const runId = await newRun();
+      const token = await ciToken();
+      const body = summary({
+        lint: lint([finding("spf-single", "error", "unclaimed.example/@/TXT")]),
+      });
+      expect((await post(summaryPath(runId), body, { bearer: token.bearer })).status).toBe(204);
+      const row = await stackRow(runId, "net");
+      expect(row).toMatchObject({ policyVerdict: null, policyAt: null });
+      expect(await policyAudits(runId)).toHaveLength(0);
+    });
   });
 });

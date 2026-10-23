@@ -239,7 +239,7 @@ describe("identities", () => {
     expect(await add({ provider: "gitlab", ssoProviderId: p.id })).toBe(
       "user_identities_provider_check",
     );
-    expect(await add({ provider: "github" })).toBe("user_identities_provider_check");
+    expect(await add({ provider: "bitbucket" })).toBe("user_identities_provider_check");
   });
 
   test("deleting a provider removes its identities, not the person", async () => {

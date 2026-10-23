@@ -13,11 +13,13 @@ describe("tool images", () => {
         ORCH_TERRAFORM_IMAGE: "registry.example.com/tf-orch",
         ORCH_TOFU_IMAGE: "registry.example.com/tofu-orch",
         ORCH_TERRAGRUNT_IMAGE: "registry.example.com/tg",
+        ORCH_DNSCONTROL_IMAGE: "registry.example.com/dns-orch",
       }),
     ).toEqual({
       terraform: "registry.example.com/tf-orch",
       tofu: "registry.example.com/tofu-orch",
       terragrunt: "registry.example.com/tg",
+      dnscontrol: "registry.example.com/dns-orch",
     });
     expect(toolImages({ ORCH_TOFU_IMAGE: "registry.example.com/tofu-orch" })).toEqual({
       tofu: "registry.example.com/tofu-orch",
@@ -26,6 +28,7 @@ describe("tool images", () => {
 
   test("a setting is a non-empty string or nothing", () => {
     expect(Object.keys(toolImageEnv).sort()).toEqual([
+      "ORCH_DNSCONTROL_IMAGE",
       "ORCH_TERRAFORM_IMAGE",
       "ORCH_TERRAGRUNT_IMAGE",
       "ORCH_TOFU_IMAGE",

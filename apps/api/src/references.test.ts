@@ -77,7 +77,12 @@ beforeAll(async () => {
 });
 afterAll(() => t.drop());
 
-type Entry = { key: string; level: "organization" | "project" | "environment"; value: string };
+type Entry = {
+  key: string;
+  level: "organization" | "project" | "environment";
+  value: string;
+  folder?: string;
+};
 const entry = (key: string, value: string, level: Entry["level"] = "project"): Entry => ({
   key,
   level,
@@ -319,6 +324,35 @@ describe("resolveReferences", () => {
     expect(logged).toContain("references could not be read");
   });
 
+  test("the same key in two folders is two variables: each wins at its own address", async () => {
+    vault.seed("app/r12/root", { f: "root-pw" });
+    vault.seed("app/r12/pay", { f: "pay-pw" });
+    vault.seed("app/r12/shadowed", { f: "never read" });
+    const found = await resolve([
+      entry("DB", "vault://vault/r12/root#f", "organization"),
+      { ...entry("DB", "vault://vault/r12/pay#f"), folder: "/pay" },
+      // in one folder the most specific level still wins
+      { ...entry("OTHER", "vault://vault/r12/shadowed#f"), folder: "/pay" },
+      { ...entry("OTHER", "a literal", "environment"), folder: "/pay" },
+    ]);
+    expect(Object.fromEntries(found)).toEqual({
+      "vault://vault/r12/root#f": "root-pw",
+      "vault://vault/r12/pay#f": "pay-pw",
+    });
+  });
+
+  test("a failure names a variable in a folder by its address, and one at the root by its key", async () => {
+    const e = await failure(
+      resolve([
+        entry("AT_ROOT", "vault://vault/r13/gone#f"),
+        { ...entry("IN_FOLDER", "vault://vault/r13/gone#f"), folder: "/pay" },
+      ]),
+    );
+    expect(e.message).toContain("2 variable(s)");
+    expect(e.message).toContain("/pay/IN_FOLDER ");
+    expect(e.message).toMatch(/(^|: |; )AT_ROOT /);
+  });
+
   test("a long list of failures names ten variables and counts the rest", async () => {
     const many = Array.from({ length: 14 }, (_, i) =>
       entry(`K${String(i).padStart(2, "0")}`, `vault://vault/r11/s${i}#f`),
@@ -386,6 +420,16 @@ describe("substitute", () => {
     const out = substitute(chain, resolved);
     expect(out).toEqual(chain);
     expect(out[0]).toBe(chain[0]);
+  });
+
+  test("the winner is by address: the same key in another folder does not shadow it", () => {
+    const out = substitute([E({ level: "organization" }), E({ folder: "/pay" })], resolved);
+    expect(out.map((e) => e.value)).toEqual(["from the store", "from the store"]);
+    const shadowed = substitute(
+      [E({ folder: "/pay" }), E({ folder: "/pay", level: "environment" })],
+      resolved,
+    );
+    expect(shadowed.map((e) => e.value)).toEqual(["vault://vault/a/b#f", "from the store"]);
   });
 
   test("a pointer at the winning level is replaced in every entry of that level that holds it", () => {

@@ -1,5 +1,7 @@
 import { accessTokensApi } from "./access-tokens";
 import { type ClientOptions, createGitlabClient, type GitlabClient } from "./client";
+import { deploymentsApi } from "./deployments";
+import { instanceApi } from "./instance";
 import { membersApi } from "./members";
 import { mergeRequestsApi } from "./merge-requests";
 import { pipelinesApi } from "./pipelines";
@@ -18,6 +20,8 @@ export function gitlabApi(client: GitlabClient) {
     ...membersApi(client),
     ...mergeRequestsApi(client),
     ...pipelinesApi(client),
+    ...deploymentsApi(client),
+    ...instanceApi(client),
     ...variablesApi(client),
     ...accessTokensApi(client),
     ...runnersApi(client),

@@ -6,10 +6,12 @@ import {
   changeRequests,
   createApiToken,
   createChangeRequest,
+  createDeployRequest,
   createEnvironment,
   createOrganization,
   createProject,
   createSession,
+  recordDeployment,
   setEnvironmentProtection,
   upsertUser,
 } from "@orch/db";
@@ -987,6 +989,312 @@ describe("the expiry job", () => {
     }
     await changeRequestExpireHandler({ db: t.db })(ctx());
     expect(await stateOf(old.id)).toEqual({ status: "expired", sealed: false });
+  });
+});
+
+describe("asking to deploy (DEP-16)", () => {
+  const SHA = "a1".repeat(20);
+  const OTHER = "b2".repeat(20);
+  let gitlabId = 5000;
+  const deployed = (sha: string, status = "success") =>
+    recordDeployment(t.db, {
+      organizationId: ids.o1,
+      projectId: ids.p1,
+      connectionId: null,
+      gitlabDeploymentId: ++gitlabId,
+      environment: "dev",
+      sha,
+      ref: "main",
+      status,
+      jobId: null,
+      pipelineId: null,
+      finishedAt: new Date(),
+      observedAt: new Date(),
+    });
+  const slugOf = async (env: string) => (await call("alice", "GET", envBase(env))).json.slug;
+  const askFor = (who: Who | null, env: string, body: unknown) =>
+    call(who, "POST", crsOf(env), body);
+  const ask = async (env: string, sha = SHA, who: Who = "bob") => {
+    const res = await askFor(who, env, { kind: "deploy", sha });
+    expect(res.status).toBe(201);
+    return res.json as { id: string; status: string };
+  };
+  beforeAll(async () => {
+    await deployed(SHA);
+    await deployed(OTHER, "failed");
+  });
+
+  test("a developer asks; the request shows the environment and the commit, and no run", async () => {
+    const env = await makeEnv({ KEEP: ["secret", sekrit("deploy")] });
+    const res = await askFor("bob", env, { kind: "deploy", sha: SHA });
+    expect(res.status).toBe(201);
+    expect(res.json).toMatchObject({
+      kind: "deploy",
+      status: "open",
+      environmentId: env,
+      diff: [{ action: "apply", key: await slugOf(env) }],
+      subject: { sha: SHA },
+      author: { kind: "user", id: people.bob.id },
+      decidedBy: null,
+    });
+    expect(res.json.subject.runId).toBeUndefined();
+    const [event] = await eventsOf("change_request.create", res.json.id);
+    expect(event).toMatchObject({
+      actorId: people.bob.id,
+      metadata: { environmentId: env, kind: "deploy", count: 1, sha: SHA },
+    });
+    const list = await call("carol", "GET", crsOf(env));
+    expect(list.json.items.map((r: { id: string }) => r.id)).toEqual([res.json.id]);
+  });
+
+  test("asking is for developers: a reporter is refused, a stranger finds no such project, no one signed in is refused", async () => {
+    const env = await makeEnv({});
+    for (const [who, status] of [
+      ["bob", 201],
+      ["gina", 201],
+      ["carol", 403],
+      ["dave", 404],
+      [null, 401],
+    ] as const) {
+      expect([who, (await askFor(who, env, { kind: "deploy", sha: SHA })).status]).toEqual([
+        who,
+        status,
+      ]);
+    }
+  });
+
+  test("only a protected environment has a request to deploy", async () => {
+    const env = await makeEnv({}, { protect: false });
+    const res = await askFor("bob", env, { kind: "deploy", sha: SHA });
+    expect([res.status, res.json.code]).toEqual([409, "environment_not_protected"]);
+    expect((await call("alice", "GET", crsOf(env))).json.items).toEqual([]);
+  });
+
+  test("only a build that was deployed successfully, named by its full sha", async () => {
+    const env = await makeEnv({});
+    for (const [sha, status, code] of [
+      ["c3".repeat(20), 422, "unknown_build"],
+      [OTHER, 422, "unknown_build"],
+      ["abc123", 400, "invalid_sha"],
+      [SHA.toUpperCase(), 400, "invalid_sha"],
+    ] as const) {
+      const res = await askFor("bob", env, { kind: "deploy", sha });
+      expect([sha, res.status, res.json.code]).toEqual([sha, status, code]);
+    }
+    for (const body of [{ kind: "deploy" }, { kind: "deploy", sha: SHA, extra: 1 }]) {
+      expect((await askFor("bob", env, body)).status).toBe(422);
+    }
+    expect((await call("alice", "GET", crsOf(env))).json.items).toEqual([]);
+  });
+
+  test("a maintainer other than the author approves; it stays approved, applies nothing, and a rejection revokes it", async () => {
+    const env = await makeEnv({});
+    const cr = await ask(env);
+    const mine = await ask(env, SHA, "gina");
+    const self = await call("gina", "POST", crsOf(env, `${mine.id}/approve`));
+    expect([self.status, self.json.code]).toEqual([403, "self_approval"]);
+    expect((await call("gina", "POST", crsOf(env, `${cr.id}/approve`))).status).toBe(200);
+    const approved = await call("alice", "GET", crsOf(env, cr.id));
+    expect(approved.json).toMatchObject({
+      status: "approved",
+      decidedBy: { kind: "user", id: people.gina.id },
+      appliedAt: null,
+    });
+    const [event] = await eventsOf("change_request.approve", cr.id);
+    expect(event?.metadata).toMatchObject({ kind: "deploy", authorId: people.bob.id });
+    expect((await call("alice", "POST", crsOf(env, `${cr.id}/approve`))).json.code).toBe(
+      "change_request_closed",
+    );
+    const revoked = await call("alice", "POST", crsOf(env, `${cr.id}/reject`));
+    expect([revoked.status, revoked.json.status]).toEqual([200, "rejected"]);
+    expect((await call("alice", "GET", crsOf(env, cr.id))).json.status).toBe("rejected");
+  });
+
+  test("a developer cannot approve or reject, and a request of another environment is not found", async () => {
+    const env = await makeEnv({});
+    const elsewhere = await makeEnv({});
+    const cr = await ask(env);
+    expect((await call("bob", "POST", crsOf(env, `${cr.id}/approve`))).status).toBe(403);
+    expect((await call("bob", "POST", crsOf(env, `${cr.id}/reject`))).status).toBe(403);
+    expect((await call("alice", "POST", crsOf(elsewhere, `${cr.id}/approve`))).status).toBe(404);
+  });
+
+  test("the expiry job closes one that lapsed, approved or not, and writes a record for each", async () => {
+    const env = await makeEnv({});
+    const at = { organizationId: ids.o1, projectId: ids.p1, environmentId: env };
+    const lapsed = (expiresAt: Date) =>
+      createDeployRequest(t.db, {
+        ...at,
+        sha: SHA,
+        diff: [{ action: "apply", key: "x" }],
+        author: asPerson("bob"),
+        expiresAt,
+      });
+    const open = await lapsed(new Date(Date.now() - 1000));
+    const approved = await lapsed(new Date(Date.now() + 200));
+    await call("alice", "POST", crsOf(env, `${approved.id}/approve`));
+    const live = await ask(env);
+    await Bun.sleep(250);
+    await changeRequestExpireHandler({ db: t.db })({
+      id: "job",
+      queue: "change_request.expire",
+      payload: {},
+      attempt: 1,
+      maxAttempts: 1,
+      log: createLogger({ level: "debug", write: () => {} }),
+      signal: new AbortController().signal,
+    });
+    const statusOf = async (id: string) => (await call("alice", "GET", crsOf(env, id))).json.status;
+    expect([await statusOf(open.id), await statusOf(approved.id), await statusOf(live.id)]).toEqual(
+      ["expired", "expired", "open"],
+    );
+    expect(await eventsOf("change_request.expire", approved.id)).toHaveLength(1);
+  });
+});
+
+describe("variables in folders (FLD-7)", () => {
+  const foldersAt = () => `/organizations/${ids.o1}/projects/${ids.p1}/folders`;
+  let folderN = 0;
+  const folder = async () => {
+    const res = await call("alice", "POST", foldersAt(), { name: `cr${++folderN}` });
+    expect(res.status).toBe(201);
+    return res.json as { id: string; path: string };
+  };
+  const rmdir = async (f: { id: string }) =>
+    expect((await call("alice", "DELETE", `${foldersAt()}/${f.id}`)).status).toBe(204);
+  const inFolder = async (env: string, path: string, key: string) => {
+    const list = await call("alice", "GET", `${varsOf(env)}?folder=${encodeURIComponent(path)}`);
+    const found = list.json.items.find((v: { key: string }) => v.key === key);
+    if (!found) return undefined;
+    return (await call("alice", "GET", `${varsOf(env)}/${found.id}/value`)).json.value as string;
+  };
+  type Meta = { changeRequestId?: string; folder?: string; key?: string };
+  const by = async (action: string, id: string) =>
+    (await eventsOf(action)).map((e) => e.metadata as Meta).filter((m) => m.changeRequestId === id);
+
+  test("the diff names the folder of a step and says nothing of the root; approving applies each step in its own", async () => {
+    const f = await folder();
+    const env = await makeEnv({ SAME: ["plain", "root"] }, { protect: false });
+    const direct = await call("alice", "POST", varsOf(env), {
+      key: "SAME",
+      kind: "plain",
+      value: "pay",
+      folder: f.path,
+    });
+    expect(direct.status).toBe(201);
+    await setProtection(env, true);
+    const secret = sekrit("cr-folder");
+    const made = await call("bob", "POST", crsOf(env), {
+      ops: [
+        { op: "set", folder: f.path, key: "SAME", value: "pay2" },
+        { op: "set", key: "SAME", value: "root2" },
+        { op: "set", folder: f.path, key: "NEW", kind: "secret", value: secret },
+        { op: "set", folder: "/", key: "ROOTED", kind: "plain", value: "r" },
+      ],
+    });
+    expect(made.status).toBe(201);
+    expect(made.json.diff).toEqual([
+      { action: "set", key: "SAME", folder: f.path },
+      { action: "set", key: "SAME" },
+      { action: "set", key: "NEW", kind: "secret", folder: f.path },
+      { action: "set", key: "ROOTED", kind: "plain" },
+    ]);
+    expect(made.text).not.toContain(secret);
+    const read = await call("alice", "GET", crsOf(env, made.json.id));
+    expect(read.json.diff).toEqual(made.json.diff);
+    expect(read.text).not.toContain(secret);
+    expect(await inFolder(env, f.path, "SAME")).toBe("pay"); // nothing is applied by proposing
+
+    const done = await call("alice", "POST", crsOf(env, `${made.json.id}/approve`));
+    expect([done.status, done.json.status]).toEqual([200, "applied"]);
+    expect(await inFolder(env, f.path, "SAME")).toBe("pay2");
+    expect(await inFolder(env, f.path, "NEW")).toBe(secret);
+    expect(await inFolder(env, "/", "ROOTED")).toBe("r");
+    expect((await variableOf(env, "SAME"))?.value).toBe("root2");
+    expect(await keysOf(env)).toEqual(["ROOTED", "SAME"]); // NEW is in the folder, not at the root
+
+    // the trail names the folder of each variable it touched, and the root's say nothing
+    const updated = await by("variable.update", made.json.id);
+    expect(updated.map((m) => m.folder).sort()).toEqual([f.path, undefined]);
+    const created = await by("variable.create", made.json.id);
+    expect(created.map((m) => [m.key, m.folder]).sort()).toEqual([
+      ["NEW", f.path],
+      ["ROOTED", undefined],
+    ]);
+  });
+
+  test("a proposal that names a folder that is not there, or not a path, is refused whole, and nothing is proposed", async () => {
+    const env = await makeEnv({ A: ["plain", "1"] });
+    const gone = await folder();
+    await rmdir(gone);
+    for (const path of ["/nope", gone.path, `${gone.path}/deeper`]) {
+      const res = await call("bob", "POST", crsOf(env), {
+        ops: [
+          { op: "set", key: "A", value: "2" },
+          { op: "set", folder: path, key: "B", value: "1" },
+        ],
+      });
+      expect([path, res.status]).toEqual([path, 404]);
+      const del = await call("bob", "POST", crsOf(env), {
+        ops: [{ op: "delete", folder: path, key: "B" }],
+      });
+      expect([path, del.status]).toEqual([path, 404]);
+    }
+    for (const path of ["pay", "/Pay", "/pay/", ""]) {
+      const res = await call("bob", "POST", crsOf(env), {
+        ops: [{ op: "set", folder: path, key: "B", value: "1" }],
+      });
+      expect([path, res.status]).toEqual([path, 422]);
+    }
+    // one address named twice, however the root is spelled
+    const twice = await call("bob", "POST", crsOf(env), {
+      ops: [
+        { op: "set", key: "A", value: "1" },
+        { op: "set", folder: "/", key: "A", value: "2" },
+      ],
+    });
+    expect(twice.status).toBe(422);
+    expect((await call("alice", "GET", crsOf(env))).json.items).toEqual([]);
+  });
+
+  test("a folder deleted after the proposal makes its sets a conflict, and a delete there is done", async () => {
+    const empty = await folder();
+    const full = await folder();
+    const env = await makeEnv({ ROOT_K: ["plain", "1"] }, { protect: false });
+    const d = await call("alice", "POST", varsOf(env), {
+      key: "D",
+      kind: "plain",
+      value: "1",
+      folder: full.path,
+    });
+    expect(d.status).toBe(201);
+    await setProtection(env, true);
+    const setting = await propose("bob", env, [
+      { op: "set", key: "ROOT_K", value: "2" },
+      { op: "set", folder: empty.path, key: "N", kind: "plain", value: "n" },
+    ]);
+    const deleting = await propose("bob", env, [
+      { op: "set", key: "ROOT_K", value: "3" },
+      { op: "delete", folder: full.path, key: "D" },
+    ]);
+    // the variable and both folders go meanwhile
+    await setProtection(env, false);
+    expect((await call("alice", "DELETE", `${varsOf(env)}/${d.json.id}`)).status).toBe(204);
+    await setProtection(env, true);
+    await rmdir(empty);
+    await rmdir(full);
+
+    const res = await call("alice", "POST", crsOf(env, `${setting.id}/approve`));
+    expect([res.status, res.json.code]).toEqual([409, "change_conflict"]);
+    expect(res.json.detail ?? res.text).toContain(`(${empty.path}/N)`); // only the set that was headed there
+    // all or nothing: the root's step was not applied either, and the request is still open
+    expect((await variableOf(env, "ROOT_K"))?.value).toBe("1");
+    expect((await call("alice", "GET", crsOf(env, setting.id))).json.status).toBe("open");
+    expect(await eventsOf("change_request.approve", setting.id)).toHaveLength(0);
+
+    const ok = await call("alice", "POST", crsOf(env, `${deleting.id}/approve`));
+    expect([ok.status, ok.json.status]).toEqual([200, "applied"]);
+    expect((await variableOf(env, "ROOT_K"))?.value).toBe("3");
   });
 });
 

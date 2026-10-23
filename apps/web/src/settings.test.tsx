@@ -4,7 +4,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { eq } from "drizzle-orm";
 import { newQueryClient } from "./app";
-import { type Backend, clientVia, mount, pathOf, startBackend } from "./testing";
+import { type Backend, clientVia, mount, pathOf, startBackend, visibleText } from "./testing";
 import { must, scene as sceneOn } from "./variables.fixture";
 
 let backend: Backend;
@@ -137,17 +137,56 @@ describe("connections", () => {
     const { mock, connection } = await connect(s);
     mount(s.client);
     const user = userEvent.setup();
-    await user.click(
-      within(rowOf(await connections(), "Mock GitLab")).getByRole("button", {
-        name: "Test Mock GitLab",
-      }),
-    );
+    const test = within(rowOf(await connections(), "Mock GitLab")).getByRole("button", {
+      name: "Test Mock GitLab",
+    });
+    // one word on the page; the whole name stays for assistive technology
+    expect(visibleText(test)).toBe("Test");
+    await user.click(test);
     await waitFor(() => expect(statusText()?.includes("mock-token-user")).toBe(true), {
       timeout: 5000,
     });
     expect(statusText()).toContain("Scopes: read_api.");
     expect(onPage(mock.token)).toBe(false);
     expect((await audited("connection.test", connection.id)).length).toBe(1);
+  });
+
+  test("tests one on an older Community Edition, and says what it lacks", async () => {
+    const s = await sceneOn(backend);
+    const { mock } = await connect(s);
+    mock.setVersion("17.3.2", false);
+    mount(s.client);
+    const user = userEvent.setup();
+    await user.click(
+      within(rowOf(await connections(), "Mock GitLab")).getByRole("button", {
+        name: "Test Mock GitLab",
+      }),
+    );
+    await waitFor(() => expect(statusText()?.includes("GitLab 17.3.2.")).toBe(true), {
+      timeout: 5000,
+    });
+    expect(statusText()).toContain(
+      "Not available here: Hidden variables (needs GitLab 17.4 or later)",
+    );
+    expect(statusText()).toContain("Environment scopes on group variables");
+    expect(statusText()).not.toContain("Cannot be told");
+  });
+
+  test("a newer GitLab with a licence it cannot read says which thing it cannot tell", async () => {
+    const s = await sceneOn(backend);
+    await connect(s);
+    mount(s.client);
+    const user = userEvent.setup();
+    await user.click(
+      within(rowOf(await connections(), "Mock GitLab")).getByRole("button", {
+        name: "Test Mock GitLab",
+      }),
+    );
+    await waitFor(() => expect(statusText()?.includes("GitLab 18.1.1-ee.")).toBe(true), {
+      timeout: 5000,
+    });
+    expect(statusText()).toContain("Cannot be told: Environment scopes on group variables");
+    expect(statusText()).not.toContain("Not available here");
   });
 
   test("a test that fails says why, in the words the API gives", async () => {

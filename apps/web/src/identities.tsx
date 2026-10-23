@@ -2,10 +2,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { Card } from "./components";
 import { Loading, stamp, when } from "./ui";
 
+const FORGE_NAME = { gitlab: "GitLab", github: "GitHub" };
+
 /**
- * The person's own ways to sign in (SSO-7, ADR-0016). The GitLab one is the account's own and stays; an SSO one can be
+ * The person's own ways to sign in (SSO-7, ADR-0016). The GitLab or GitHub one is the account's own and stays; an SSO one can be
  * given up while another way in is left, and the role it gave goes with it. Linking another sends the browser through
  * that organization's provider and back here.
  */
@@ -27,11 +30,10 @@ export function SignInMethods() {
   });
   const identities = list.data;
   return (
-    <section className="stack" aria-labelledby="identities-title">
-      <h2 id="identities-title">Sign-in methods</h2>
+    <Card title="Sign-in methods">
       <p className="muted">
         The ways you can sign in. Giving up a single sign-on one ends the role it gave you; GitLab
-        is your account's own and stays.
+        or GitHub is your account's own and stays.
       </p>
       {list.isPending && <Loading what="Loading sign-in methods" />}
       {list.error && identities === undefined && (
@@ -54,13 +56,13 @@ export function SignInMethods() {
             {identities.map((i) => (
               <tr key={i.id}>
                 <td>
-                  {i.kind === "gitlab" ? (
-                    "GitLab"
-                  ) : (
+                  {i.kind === "sso" ? (
                     <>
                       Single sign-on: {i.organizationName}{" "}
                       <span className="muted">({i.organizationSlug})</span>
                     </>
+                  ) : (
+                    FORGE_NAME[i.kind]
                   )}
                 </td>
                 <td>{i.email ?? <span className="muted">None</span>}</td>
@@ -108,7 +110,7 @@ export function SignInMethods() {
         </p>
       )}
       <LinkAnother />
-    </section>
+    </Card>
   );
 }
 

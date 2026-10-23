@@ -1,5 +1,6 @@
 import { can, DomainError, type Logger } from "@orch/core";
 import { checkSessionTtl, createSession, deleteSession, findSession, upsertUser } from "@orch/db";
+import type { GithubOAuth } from "@orch/github";
 import { GitlabError, type GitlabOAuth, pkceChallenge } from "@orch/gitlab";
 import { Elysia } from "elysia";
 import { z } from "zod";
@@ -8,12 +9,17 @@ import { guardPlugin, unauthenticated } from "../guard";
 import type { OidcDeps } from "../oidc";
 import { problem } from "../problem";
 import { rateLimitPlugin } from "../rate-limit";
+import type { Roles } from "../session";
 import { hashToken, randomToken, safeEqual } from "../tokens";
 import { problemSchema, type RouteDeps } from "./shared";
 
 export interface AuthDeps {
   /** Sign in with GitLab. Left out, `/auth/login` answers 503 (sessions still work). */
   oauth?: GitlabOAuth;
+  /** Sign in with GitHub (FRG-25). Needs `githubRoles` too: without both, `/auth/github/login` answers 503. */
+  github?: GithubOAuth;
+  /** What a GitHub account holds here, by its GitHub user id. A sign-in with no role is refused. */
+  githubRoles?: (githubId: number) => Promise<Roles>;
   /** How long a session lasts, in total. Default 12 hours. */
   sessionTtlMs?: number;
   /** Cookies get `Secure`: set when the API is served over https. */

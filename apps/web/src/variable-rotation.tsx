@@ -1,9 +1,10 @@
+import { ROOT } from "@orch/core/folders";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
 import { Loading, stamp, when } from "./ui";
-import { type Cell, type Env, Form, useWrite, variablesAt } from "./variable-parts";
+import { type Cell, type Env, Form, InFolder, useWrite, variablesAt } from "./variable-parts";
 
 const SKIPPED: Record<string, string> = {
   claim_lost: "a worker was rotating it at the same moment and finished first",
@@ -22,16 +23,17 @@ export function Rotation({
   projectId,
   cell,
   env,
+  folder = ROOT,
   changed,
-  close,
 }: {
   orgId: string;
   projectId: string;
   cell: Cell;
   env: Env;
+  /** The folder the variable is in, named at the top. */
+  folder?: string;
   /** A rotation changed the value: the grid reloads, so no old revealed value sits beside the new one. */
   changed: () => Promise<void>;
-  close: () => void;
 }) {
   const client = useClient();
   const [confirming, setConfirming] = useState(false);
@@ -112,7 +114,7 @@ export function Rotation({
   }
   return (
     <section className="stack card" aria-label={`Rotation of ${cell.key}`}>
-      <h2>Rotation of {cell.key}</h2>
+      <InFolder folder={folder} />
       {status.error ? (
         <ErrorPanel error={status.error} retry={() => void status.refetch()} />
       ) : current === undefined ? (
@@ -171,21 +173,16 @@ export function Rotation({
           {toggle.error}
         </p>
       )}
-      <div className="row">
-        {current && (
-          <>
-            <button type="button" disabled={toggle.pending} onClick={() => void toggle.go()}>
-              {current.enabled ? "Switch off" : "Switch on"}
-            </button>
-            <button type="button" onClick={() => setConfirming(true)}>
-              Rotate now
-            </button>
-          </>
-        )}
-        <button type="button" onClick={close}>
-          Close
-        </button>
-      </div>
+      {current && (
+        <div className="detail-actions">
+          <button type="button" disabled={toggle.pending} onClick={() => void toggle.go()}>
+            {current.enabled ? "Switch off" : "Switch on"}
+          </button>
+          <button type="button" onClick={() => setConfirming(true)}>
+            Rotate now
+          </button>
+        </div>
+      )}
     </section>
   );
 }

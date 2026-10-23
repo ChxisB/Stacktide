@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { Card } from "./components";
 import { ProjectPicker } from "./projects";
 import { Loading, stamp, when } from "./ui";
 
@@ -40,31 +41,33 @@ function Stack({ orgId, projectId, stack }: { orgId: string; projectId: string; 
   if (versions.data.length === 0) return <p>No state for {stack} in this project.</p>;
   return (
     <>
-      <table>
-        <caption>State versions</caption>
-        <thead>
-          <tr>
-            <th scope="col">Serial</th>
-            <th scope="col">Written</th>
-            <th scope="col">Size</th>
-            <th scope="col">By</th>
-          </tr>
-        </thead>
-        <tbody>
-          {versions.data.map((v) => (
-            <tr key={v.serial}>
-              <th scope="row">{v.serial}</th>
-              <td>
-                <time dateTime={stamp(v.createdAt)}>{when(v.createdAt)}</time>
-              </td>
-              <td>{v.sizeBytes} bytes</td>
-              <td>
-                <code>{v.createdBy}</code>
-              </td>
+      <Card title="State versions">
+        <table>
+          <caption className="visually-hidden">State versions</caption>
+          <thead>
+            <tr>
+              <th scope="col">Serial</th>
+              <th scope="col">Written</th>
+              <th scope="col">Size</th>
+              <th scope="col">By</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {versions.data.map((v) => (
+              <tr key={v.serial}>
+                <th scope="row">{v.serial}</th>
+                <td>
+                  <time dateTime={stamp(v.createdAt)}>{when(v.createdAt)}</time>
+                </td>
+                <td>{v.sizeBytes} bytes</td>
+                <td>
+                  <code>{v.createdBy}</code>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
       {resources.error ? (
         <ErrorPanel error={resources.error} retry={() => void resources.refetch()} />
       ) : !resources.data ? (
@@ -72,31 +75,33 @@ function Stack({ orgId, projectId, stack }: { orgId: string; projectId: string; 
       ) : resources.data.length === 0 ? (
         <p>The newest version holds no resources.</p>
       ) : (
-        <table>
-          <caption>Resources in the newest version</caption>
-          <thead>
-            <tr>
-              <th scope="col">Address</th>
-              <th scope="col">Type</th>
-              <th scope="col">Provider</th>
-              <th scope="col">Module</th>
-            </tr>
-          </thead>
-          <tbody>
-            {resources.data.map((r) => (
-              <tr key={r.address}>
-                <th scope="row">
-                  <code>{r.address}</code>
-                </th>
-                <td>{r.type}</td>
-                <td>
-                  <code>{r.provider}</code>
-                </td>
-                <td>{r.module ?? "root"}</td>
+        <Card title="Resources in the newest version">
+          <table>
+            <caption className="visually-hidden">Resources in the newest version</caption>
+            <thead>
+              <tr>
+                <th scope="col">Address</th>
+                <th scope="col">Type</th>
+                <th scope="col">Provider</th>
+                <th scope="col">Module</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {resources.data.map((r) => (
+                <tr key={r.address}>
+                  <th scope="row">
+                    <code>{r.address}</code>
+                  </th>
+                  <td>{r.type}</td>
+                  <td>
+                    <code>{r.provider}</code>
+                  </td>
+                  <td>{r.module ?? "root"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
       )}
     </>
   );
@@ -110,21 +115,23 @@ function Look({ orgId, projectId }: { orgId: string; projectId: string }) {
     setStack(draft);
   };
   return (
-    <div className="stack">
-      <p className="muted">
-        What the platform holds for a stack, by name: who wrote each version and the resources in
-        the newest one. Never the state itself: outputs and attribute values are not shown, and
-        nothing here changes it. The newest 20 versions are kept.
-      </p>
-      <form className="row" onSubmit={submit}>
-        <label>
-          Stack
-          <input value={draft} maxLength={63} onChange={(e) => setDraft(e.target.value)} />
-        </label>
-        <button type="submit" disabled={!STACK.test(draft)}>
-          Show state
-        </button>
-      </form>
+    <div className="stack wide">
+      <Card>
+        <p className="muted">
+          What the platform holds for a stack, by name: who wrote each version and the resources in
+          the newest one. Never the state itself: outputs and attribute values are not shown, and
+          nothing here changes it. The newest 20 versions are kept.
+        </p>
+        <form className="row" onSubmit={submit}>
+          <label>
+            Stack
+            <input value={draft} maxLength={63} onChange={(e) => setDraft(e.target.value)} />
+          </label>
+          <button type="submit" disabled={!STACK.test(draft)}>
+            Show state
+          </button>
+        </form>
+      </Card>
       {stack && <Stack orgId={orgId} projectId={projectId} stack={stack} />}
     </div>
   );

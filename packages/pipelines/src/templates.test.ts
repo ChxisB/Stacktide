@@ -14,14 +14,21 @@ const rendered = (name: string) => {
 };
 
 describe("the starter templates", () => {
-  test("are the three the catalog starts with, all sound", () => {
-    expect(names).toEqual(["bun-app@1.0.0", "docker-image@1.0.0", "node-app@1.0.0"]);
+  test("are the four the catalog starts with, all sound", () => {
+    expect(names).toEqual([
+      "bun-app@1.0.0",
+      "docker-deploy@1.0.0",
+      "docker-image@1.0.0",
+      "node-app@1.0.0",
+    ]);
   });
 
   test.each([
     ["bun-app", ["bun"]],
     ["node-app", ["node"]],
     ["docker-image", ["docker"]],
+    // chosen, not recommended: a Docker project is still offered docker-image
+    ["docker-deploy", []],
   ])("%s suits %j projects", (name, tags) => {
     expect<string[]>(rendered(name).t.manifest.detects).toEqual(tags);
   });

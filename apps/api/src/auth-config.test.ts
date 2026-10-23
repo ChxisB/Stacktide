@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ConfigError, createLogger, loadConfig } from "@orch/core";
-import { createOrganization, upsertUser } from "@orch/db";
+import { createOrganization, type Db, upsertUser } from "@orch/db";
 import { createTestDb } from "@orch/db/testing";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import { z } from "zod";
@@ -16,7 +16,9 @@ const full = {
 const load = (env: Record<string, string>) => authFromEnv(loadConfig(authEnv, env));
 
 describe("CI exchange config", () => {
-  const ci = (env: Record<string, string>) => ciFromEnv(loadConfig(authEnv, env));
+  // these tests read the settings only; the database is for the connections' addresses, when a token is exchanged
+  const noDb = {} as Db;
+  const ci = (env: Record<string, string>) => ciFromEnv(loadConfig(authEnv, env), noDb);
 
   test("without an audience the exchange is off", () => {
     expect(ci({})).toBeUndefined();
@@ -46,6 +48,11 @@ describe("CI exchange config", () => {
 });
 
 describe("auth config", () => {
+  test("a deployment with the exchange on also takes GitHub Actions tokens (FRG-23)", () => {
+    const env = { ...full, ORCH_CI_AUDIENCE: "orch.example.com" };
+    expect(typeof ciFromEnv(loadConfig(authEnv, env), {} as Db)?.github).toBe("function");
+  });
+
   test("nothing set: sign-in is simply off", () => {
     expect(load({})).toEqual({});
   });
@@ -107,6 +114,57 @@ describe("auth config", () => {
       "http://localhost:3000/auth/sso/callback",
     ]) {
       expect(load({ ORCH_SSO_REDIRECT_URI: ok }).ssoRedirectUri).toBe(ok);
+    }
+  });
+
+  test("the GitHub settings turn GitHub sign-in on with or without the others, and https makes cookies Secure", () => {
+    const hub = {
+      GITHUB_OAUTH_CLIENT_ID: "Iv1.app",
+      GITHUB_OAUTH_CLIENT_SECRET: SECRET,
+      GITHUB_OAUTH_REDIRECT_URI: "https://orch.example.com/auth/github/callback",
+    };
+    const only = load(hub);
+    expect(only.github).toBeDefined();
+    expect(only.oauth).toBeUndefined();
+    expect(only.secureCookies).toBe(true);
+    expect(load({ ...hub, ...full }).oauth).toBeDefined();
+    const dev = load({
+      ...hub,
+      GITHUB_OAUTH_REDIRECT_URI: "http://localhost:3000/auth/github/callback",
+    });
+    expect(dev.github).toBeDefined();
+    expect(dev.secureCookies).toBe(false);
+    // the roles source is built at start, from the database and the master keys: not here
+    expect(only.githubRoles).toBeUndefined();
+  });
+
+  test("a partial GitHub setting, or a redirect address that is not this API's GitHub callback, is a startup error that names the key and echoes no value", () => {
+    const hub = {
+      GITHUB_OAUTH_CLIENT_ID: "Iv1.app",
+      GITHUB_OAUTH_CLIENT_SECRET: SECRET,
+      GITHUB_OAUTH_REDIRECT_URI: "https://orch.example.com/auth/github/callback",
+    };
+    const { GITHUB_OAUTH_CLIENT_ID: _, ...partial } = hub;
+    const refused = (env: Record<string, string>) => {
+      try {
+        load(env);
+        return expect.unreachable();
+      } catch (e) {
+        expect((e as ConfigError).message).not.toContain(SECRET);
+        expect((e as ConfigError).message).not.toContain("orch.example.com");
+        return (e as ConfigError).keys;
+      }
+    };
+    expect(refused(partial)).toEqual(["GITHUB_OAUTH_CLIENT_ID"]);
+    for (const bad of [
+      "http://orch.example.com/auth/github/callback", // codes and cookies in the clear
+      "https://orch.example.com/auth/callback", // GitLab's route
+      "https://orch.example.com/auth/sso/callback", // SSO's route
+      "https://orch.example.com/auth/github/callback/", // the route has no trailing slash
+    ]) {
+      expect(refused({ ...hub, GITHUB_OAUTH_REDIRECT_URI: bad })).toEqual([
+        "GITHUB_OAUTH_REDIRECT_URI",
+      ]);
     }
   });
 

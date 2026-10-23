@@ -8,12 +8,18 @@ import { OrgProvider, RequireOrg } from "./org";
 import { type Backend, clientVia, down, mount, pathOf, startBackend } from "./testing";
 import { VariablesPage } from "./variables";
 import {
+  addEnvironment,
+  addNew,
   cellOf,
+  detailsOf,
+  editOf,
+  fromMenu,
   holding as holdingOn,
   must,
   ref,
   SECRET,
   scene as sceneOn,
+  showCompare,
   tagsOf,
 } from "./variables.fixture";
 
@@ -70,15 +76,18 @@ describe("before there is anything to show", () => {
     const s = await scene({ environments: [] });
     mount(s.client);
     await screen.findByText(/no environments yet/);
-    expect(screen.queryByRole("button", { name: "Add a variable" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add New" })).toBeNull();
     const user = userEvent.setup();
-    const add = screen.getByRole("button", { name: "Add environment" });
-    await user.type(screen.getByLabelText("New environment"), "!!!");
+    await user.click(screen.getByRole("button", { name: "Add environment" }));
+    const form = await screen.findByRole("form", { name: "Add an environment" });
+    const add = within(form).getByRole("button", { name: "Add environment" });
+    await user.type(within(form).getByLabelText("New environment"), "!!!");
     expect((add as HTMLButtonElement).disabled).toBe(true);
-    await user.clear(screen.getByLabelText("New environment"));
-    await user.type(screen.getByLabelText("New environment"), "Pre Production");
+    await user.clear(within(form).getByLabelText("New environment"));
+    await user.type(within(form).getByLabelText("New environment"), "Pre Production");
     await user.click(add);
-    await screen.findByText(/No variables yet/);
+    // the first environment brings the menu, and the page opens on its list (one environment is never a matrix)
+    await screen.findByText("No variables in Pre Production yet.");
     const listed = must(await s.scope.environments.get({ query: { limit: 100 } })).items;
     expect(listed.map((e) => [e.name, e.slug])).toEqual([["Pre Production", "pre-production"]]);
   });
@@ -86,18 +95,17 @@ describe("before there is anything to show", () => {
   test("an environment the API refuses says why", async () => {
     const s = await scene({ environments: ["dev"] });
     mount(s.client);
-    await screen.findByText(/No variables yet/);
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText("New environment"), "Dev");
-    await user.click(screen.getByRole("button", { name: "Add environment" }));
+    await addEnvironment(user, "Dev");
     expect((await screen.findByRole("alert")).textContent).toMatch(/slug/i);
   });
 
   test("a project with environments and no variables says so", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     await screen.findByText(/No variables yet/);
-    expect(screen.getByRole("button", { name: "Add a variable" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add New" })).toBeTruthy();
   });
 });
 
@@ -111,6 +119,7 @@ describe("where each value comes from", () => {
     await s.put.env("staging", "COLOR", "green");
     await s.put.env("staging", "ONLY_STAGING", "yes");
     mount(s.client);
+    await showCompare();
     await screen.findByRole("table", { name: "Variables by environment" });
 
     expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
@@ -145,6 +154,7 @@ describe("where each value comes from", () => {
     await s.put.org("TOKEN_URL", "https://org.example");
     await s.put.env("dev", "TOKEN_URL", "https://dev.example");
     mount(s.client);
+    await showCompare();
     await screen.findByRole("table");
     expect(tagsOf(cellOf("TOKEN_URL", "dev"))).toEqual(["Overrides organization"]);
     expect(tagsOf(cellOf("TOKEN_URL", "staging"))).toEqual(["From organization"]);
@@ -155,6 +165,7 @@ describe("where each value comes from", () => {
     await s.put.project("DB_PASSWORD", SECRET, true);
     await s.put.project("DB_URL", `postgres://u:${ref("DB_PASSWORD")}@db/app`);
     mount(s.client);
+    await showCompare();
     await screen.findByRole("table");
     const password = cellOf("DB_PASSWORD", "dev");
     expect(password.textContent).not.toContain(SECRET);
@@ -169,6 +180,7 @@ describe("where each value comes from", () => {
     const s = await scene();
     await s.put.project("BROKEN", `${ref("NOT_THERE")}/x`);
     mount(s.client);
+    await showCompare();
     await screen.findByRole("table");
     expect(cellOf("BROKEN", "dev").textContent).toContain("refers to a variable that is not set");
     expect(cellOf("BROKEN", "staging").textContent).toContain("refers to a variable");
@@ -201,6 +213,7 @@ describe("where each value comes from", () => {
         return send();
       });
       mount(client);
+      await showCompare();
       await asked;
       // the sets themselves are quick: give them time to arrive, and the table must still not be there
       await Bun.sleep(400);
@@ -221,15 +234,23 @@ describe("where each value comes from", () => {
         .projects({ projectId: other.id })
         .environments.post({ name: "prod", slug: "prod" }),
     );
+    // a second one: a single environment is a list, and these tests are about the matrix
+    must(
+      await s.client
+        .organizations({ orgId: s.org.id })
+        .projects({ projectId: other.id })
+        .environments.post({ name: "qa", slug: "qa" }),
+    );
     await s.put.org("REGION", "eu");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     await user.selectOptions(screen.getByLabelText("Project"), "acme/api");
     await waitFor(() => expect(cellOf("REGION", "prod").textContent).toContain("eu"));
     await user.selectOptions(screen.getByLabelText("Project"), "acme/web");
     await screen.findByRole("columnheader", { name: "dev" });
-    await user.click(await screen.findByRole("button", { name: "Edit REGION in dev" }));
+    await editOf(user, "REGION", "dev");
     const box = screen.getByLabelText("New value");
     await user.clear(box);
     await user.type(box, "us");
@@ -254,7 +275,15 @@ describe("where each value comes from", () => {
         .projects({ projectId: other.id })
         .environments.post({ name: "prod", slug: "prod" }),
     );
+    // a second one: a single environment is a list, and these tests are about the matrix
+    must(
+      await s.client
+        .organizations({ orgId: s.org.id })
+        .projects({ projectId: other.id })
+        .environments.post({ name: "qa", slug: "qa" }),
+    );
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("rowheader", { name: "ONLY_WEB" });
     await user.selectOptions(screen.getByLabelText("Project"), "acme/api");
@@ -274,14 +303,22 @@ describe("switching project", () => {
         .projects({ projectId: other.id })
         .environments.post({ name: "prod", slug: "prod" }),
     );
+    // a second one: a single environment is a list, and these tests are about the matrix
+    must(
+      await s.client
+        .organizations({ orgId: s.org.id })
+        .projects({ projectId: other.id })
+        .environments.post({ name: "qa", slug: "qa" }),
+    );
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     // visit the other project first, so its sets are cached and a switch to it is instant
-    await screen.findByRole("button", { name: "Add a variable" });
+    await screen.findByRole("button", { name: "Add New" });
     await user.selectOptions(screen.getByLabelText("Project"), "acme/api");
     await screen.findByText(/This project has no environments yet|No variables yet/);
     await user.selectOptions(screen.getByLabelText("Project"), "acme/web");
-    await user.click(await screen.findByRole("button", { name: "Add a variable" }));
+    await addNew(user, "Add a variable");
     await user.type(screen.getByLabelText("Name"), "LEAK");
     await user.selectOptions(screen.getByLabelText("Project"), "acme/api");
     await waitFor(() => expect(screen.queryByLabelText("Name") === null).toBe(true));
@@ -293,8 +330,9 @@ describe("adding", () => {
   test("a secret for every environment: masked in the table, never on the page, audited without its value", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Add a variable" }));
+    await addNew(user, "Add a variable");
     const box = screen.getByLabelText("Value");
     expect(box.getAttribute("type")).toBe("password");
     // no autofill or spell checker keeps what is typed
@@ -322,8 +360,9 @@ describe("adding", () => {
   test("a plain value for one environment is shown, and only that environment has it", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Add a variable" }));
+    await addNew(user, "Add a variable");
     await user.selectOptions(screen.getByLabelText("Kind"), "plain");
     expect(screen.getByLabelText("Value").tagName).toBe("TEXTAREA");
     await user.type(screen.getByLabelText("Name"), "LOG_LEVEL");
@@ -340,8 +379,9 @@ describe("adding", () => {
   test("a plain value may be empty and shows as empty, a masked one may not be", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Add a variable" }));
+    await addNew(user, "Add a variable");
     expect((screen.getByLabelText("Value") as HTMLInputElement).required).toBe(true);
     await user.selectOptions(screen.getByLabelText("Kind"), "file");
     expect((screen.getByLabelText("Value") as HTMLTextAreaElement).required).toBe(true);
@@ -358,8 +398,9 @@ describe("adding", () => {
   test("for the whole organization, and the API's refusal of a name or a repeat is shown", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Add a variable" }));
+    await addNew(user, "Add a variable");
     await user.type(screen.getByLabelText("Name"), "SHARED");
     await user.type(screen.getByLabelText("Value"), "one");
     await user.selectOptions(
@@ -370,7 +411,7 @@ describe("adding", () => {
     await screen.findByRole("rowheader", { name: "SHARED" });
     expect(tagsOf(cellOf("SHARED", "dev"))).toEqual(["From organization", "secret"]);
 
-    await user.click(screen.getByRole("button", { name: "Add a variable" }));
+    await addNew(user, "Add a variable");
     await user.type(screen.getByLabelText("Name"), "SHARED");
     await user.type(screen.getByLabelText("Value"), "two");
     await user.selectOptions(
@@ -390,8 +431,9 @@ describe("adding", () => {
   test("a reporter who may not write sees the API's refusal, and nothing is created", async () => {
     const s = await scene({ reporter: true });
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Add a variable" }));
+    await addNew(user, "Add a variable");
     await user.type(screen.getByLabelText("Name"), "NOPE");
     await user.type(screen.getByLabelText("Value"), "x");
     await user.click(screen.getByRole("button", { name: "Add variable" }));
@@ -403,9 +445,10 @@ describe("adding", () => {
     const s = await scene();
     await s.put.project("REGION", "eu");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Override REGION in staging" }));
+    await fromMenu(user, "REGION", "staging", "Add override");
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("REGION");
     expect(
       (screen.getByLabelText("Applies to") as HTMLSelectElement).selectedOptions[0]?.text,
@@ -423,10 +466,11 @@ describe("adding", () => {
     const s = await scene();
     await s.put.env("dev", "LEVEL", "from-dev");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     expect(tagsOf(cellOf("LEVEL", "dev"))).toEqual(["Set here"]);
-    await user.click(screen.getByRole("button", { name: "Add a variable" }));
+    await addNew(user, "Add a variable");
     await user.type(screen.getByLabelText("Name"), "LEVEL");
     await user.selectOptions(screen.getByLabelText("Kind"), "plain");
     await user.type(screen.getByLabelText("Value"), "from-project");
@@ -439,9 +483,14 @@ describe("adding", () => {
     const s = await scene();
     await s.put.env("staging", "ONLY_STAGING", "yes");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Set ONLY_STAGING in dev" }));
+    await user.click(
+      within(cellOf("ONLY_STAGING", "dev")).getByRole("button", {
+        name: "Set ONLY_STAGING in dev",
+      }),
+    );
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("ONLY_STAGING");
     expect(
       (screen.getByLabelText("Applies to") as HTMLSelectElement).selectedOptions[0]?.text,
@@ -454,8 +503,9 @@ describe("a typed secret", () => {
     const s = await scene();
     const page = holding(s.cookie);
     mount(page.client);
+    await showCompare();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Add a variable" }));
+    await addNew(user, "Add a variable");
     await user.type(screen.getByLabelText("Name"), "API_KEY");
     await user.type(screen.getByLabelText("Value"), SECRET);
     page.hold();
@@ -473,9 +523,10 @@ describe("a typed secret", () => {
     await s.put.project("API_KEY", "old-value", true);
     const page = holding(s.cookie);
     mount(page.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Edit API_KEY in dev" }));
+    await editOf(user, "API_KEY", "dev");
     await user.type(screen.getByLabelText("New value"), SECRET);
     page.hold();
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -493,9 +544,10 @@ describe("changing", () => {
     const s = await scene();
     await s.put.env("dev", "LOG_LEVEL", "info");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Edit LOG_LEVEL in dev" }));
+    await editOf(user, "LOG_LEVEL", "dev");
     const box = screen.getByLabelText("New value") as HTMLTextAreaElement;
     expect(box.value).toBe("info");
     expect(screen.queryByText("The current value is not shown here.") === null).toBe(true);
@@ -511,9 +563,10 @@ describe("changing", () => {
     const s = await scene();
     await s.put.project("API_KEY", SECRET, true);
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Edit API_KEY in dev" }));
+    await editOf(user, "API_KEY", "dev");
     const box = screen.getByLabelText("New value") as HTMLInputElement;
     expect(box.type).toBe("password");
     expect(box.value).toBe("");
@@ -524,12 +577,9 @@ describe("changing", () => {
     await waitFor(() =>
       expect(screen.queryByRole("form", { name: "Edit API_KEY" }) === null).toBe(true),
     );
-    await user.click(
-      await within(cellOf("API_KEY", "dev")).findByRole("button", {
-        name: "Reveal API_KEY in dev",
-      }),
-    );
-    await within(cellOf("API_KEY", "dev")).findByText("replacement-77");
+    const dialog = await detailsOf(user, "API_KEY", "dev");
+    await user.click(await within(dialog).findByRole("button", { name: "Reveal API_KEY in dev" }));
+    await within(dialog).findByText("replacement-77");
     expect(document.body.textContent).not.toContain(SECRET);
   });
 
@@ -537,9 +587,10 @@ describe("changing", () => {
     const s = await scene();
     await s.put.project("REGION", "eu");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Edit REGION in staging" }));
+    await editOf(user, "REGION", "staging");
     expect(screen.getByText(/belongs to the project/).textContent).toContain("everywhere");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("form", { name: "Edit REGION" })).toBeNull();
@@ -550,9 +601,10 @@ describe("changing", () => {
     const s = await scene({ reporter: true });
     await s.put.env("dev", "LOG_LEVEL", "info");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Edit LOG_LEVEL in dev" }));
+    await editOf(user, "LOG_LEVEL", "dev");
     await user.type(screen.getByLabelText("New value"), "x");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/permission|allowed|forbidden/i);
@@ -561,25 +613,36 @@ describe("changing", () => {
 });
 
 describe("revealing a secret", () => {
+  /** What a variable's details show once asked for: Reveal is a button of the details, not of the line. */
+  const reveal = async (user: ReturnType<typeof userEvent.setup>, key: string, env = "dev") => {
+    const dialog = await detailsOf(user, key, env);
+    await user.click(
+      await within(dialog).findByRole("button", { name: `Reveal ${key} in ${env}` }),
+    );
+    return dialog;
+  };
+
   test("is masked until asked for, shows the value, is audited, hides again, and is never cached", async () => {
     const s = await scene();
     await s.put.project("API_KEY", SECRET, true);
     const { queries } = mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const cell = cellOf("API_KEY", "dev");
     expect(cell.textContent).not.toContain(SECRET);
     expect(await s.audit("variable.reveal")).toHaveLength(0);
 
-    await user.click(within(cell).getByRole("button", { name: "Reveal API_KEY in dev" }));
-    await within(cell).findByText(SECRET);
-    expect(within(cell).getByRole("button", { name: "Hide API_KEY in dev" })).toBeTruthy();
+    const dialog = await reveal(user, "API_KEY");
+    await within(dialog).findByText(SECRET);
+    expect(within(dialog).getByRole("button", { name: "Hide API_KEY in dev" })).toBeTruthy();
     const audit = await s.audit("variable.reveal");
     expect(audit).toHaveLength(1);
     expect(JSON.stringify(audit)).not.toContain(SECRET);
-    // the other environment's copy stays masked: each reveal is its own request and its own audit row
+    // the line behind and the other environment's copy stay masked: each reveal is its own request and its own audit row
+    expect(cell.textContent).not.toContain(SECRET);
     expect(cellOf("API_KEY", "staging").textContent).not.toContain(SECRET);
-    // the value lives in the cell only
+    // the value lives in the details only
     const held = JSON.stringify([
       queries
         .getQueryCache()
@@ -592,9 +655,9 @@ describe("revealing a secret", () => {
     ]);
     expect(held).not.toContain(SECRET);
 
-    await user.click(within(cell).getByRole("button", { name: "Hide API_KEY in dev" }));
+    await user.click(within(dialog).getByRole("button", { name: "Hide API_KEY in dev" }));
     expect(document.body.textContent).not.toContain(SECRET);
-    expect(within(cell).getByRole("button", { name: "Reveal API_KEY in dev" })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Reveal API_KEY in dev" })).toBeTruthy();
   });
 
   test("a secret from the organization, the project or one environment each reveals from its own level", async () => {
@@ -603,6 +666,7 @@ describe("revealing a secret", () => {
     await s.put.project("FROM_PROJECT", "project-secret-2", true);
     await s.put.env("dev", "FROM_ENV", "env-secret-3", true);
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     for (const [key, value] of [
@@ -610,9 +674,10 @@ describe("revealing a secret", () => {
       ["FROM_PROJECT", "project-secret-2"],
       ["FROM_ENV", "env-secret-3"],
     ] as const) {
-      const cell = cellOf(key, "dev");
-      await user.click(within(cell).getByRole("button", { name: `Reveal ${key} in dev` }));
-      await within(cell).findByText(value);
+      const dialog = await reveal(user, key);
+      await within(dialog).findByText(value);
+      await user.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
     }
     expect(await s.audit("variable.reveal")).toHaveLength(3);
   });
@@ -621,12 +686,12 @@ describe("revealing a secret", () => {
     const s = await scene();
     await s.put.project("API_KEY", SECRET, true);
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    const cell = cellOf("API_KEY", "dev");
-    await user.click(within(cell).getByRole("button", { name: "Reveal API_KEY in dev" }));
-    await within(cell).findByText(SECRET);
-    await user.click(within(cell).getByRole("button", { name: "Edit API_KEY in dev" }));
+    const dialog = await reveal(user, "API_KEY");
+    await within(dialog).findByText(SECRET);
+    await user.click(within(dialog).getByRole("button", { name: "Edit API_KEY in dev" }));
     await user.type(screen.getByLabelText("New value"), "replacement-77");
     await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
@@ -634,7 +699,7 @@ describe("revealing a secret", () => {
     );
     expect(document.body.textContent?.includes(SECRET)).toBe(false);
     expect(
-      within(cellOf("API_KEY", "dev")).getByRole("button", { name: "Reveal API_KEY in dev" }),
+      await within(dialog).findByRole("button", { name: "Reveal API_KEY in dev" }),
     ).toBeTruthy();
   });
 
@@ -642,13 +707,13 @@ describe("revealing a secret", () => {
     const s = await scene();
     await s.put.project("API_KEY", SECRET, true);
     mountPage(s.client, 300);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    const cell = cellOf("API_KEY", "dev");
-    await user.click(within(cell).getByRole("button", { name: "Reveal API_KEY in dev" }));
-    await within(cell).findByText(SECRET);
+    const dialog = await reveal(user, "API_KEY");
+    await within(dialog).findByText(SECRET);
     await waitFor(() => expect(document.body.textContent).not.toContain(SECRET), { timeout: 3000 });
-    expect(within(cell).getByRole("button", { name: "Reveal API_KEY in dev" })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Reveal API_KEY in dev" })).toBeTruthy();
   });
 
   test("a file's value can be revealed too, and a plain value needs no reveal", async () => {
@@ -656,12 +721,16 @@ describe("revealing a secret", () => {
     await s.scope.variables.post({ key: "CERT", kind: "file", value: "line one\nline two" });
     await s.put.project("PLAIN", "visible");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    expect(within(cellOf("PLAIN", "dev")).queryByRole("button", { name: /Reveal/ })).toBeNull();
+    const plain = await detailsOf(user, "PLAIN", "dev");
+    await within(plain).findByText("Version");
+    expect(within(plain).queryByRole("button", { name: /Reveal/ })).toBeNull();
+    await user.keyboard("{Escape}");
     expect(tagsOf(cellOf("CERT", "dev"))).toEqual(["From project", "file"]);
-    await user.click(within(cellOf("CERT", "dev")).getByRole("button", { name: /Reveal CERT/ }));
-    const shown = await within(cellOf("CERT", "dev")).findByText(/line one/);
+    const dialog = await reveal(user, "CERT");
+    const shown = await within(dialog).findByText(/line one/);
     expect(shown.textContent).toBe("line one\nline two");
   });
 
@@ -669,18 +738,18 @@ describe("revealing a secret", () => {
     const s = await scene({ reporter: true });
     await s.put.project("API_KEY", SECRET, true);
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    const cell = cellOf("API_KEY", "dev");
-    await user.click(within(cell).getByRole("button", { name: "Reveal API_KEY in dev" }));
-    expect((await within(cell).findByRole("alert")).textContent).toMatch(
+    const dialog = await reveal(user, "API_KEY");
+    expect((await within(dialog).findByRole("alert")).textContent).toMatch(
       /permission|allowed|forbidden/i,
     );
     expect(document.body.textContent).not.toContain(SECRET);
     expect(await s.audit("variable.reveal")).toHaveLength(0);
     // and the reveal can be tried again
     expect(
-      (within(cell).getByRole("button", { name: "Reveal API_KEY in dev" }) as HTMLButtonElement)
+      (within(dialog).getByRole("button", { name: "Reveal API_KEY in dev" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false);
   });
@@ -691,9 +760,10 @@ describe("deleting", () => {
     const s = await scene();
     await s.put.env("dev", "LOG_LEVEL", "info");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Delete LOG_LEVEL in dev" }));
+    await fromMenu(user, "LOG_LEVEL", "dev", "Delete");
     const form = screen.getByRole("form", { name: "Delete LOG_LEVEL" });
     expect(form.textContent).toContain("Delete LOG_LEVEL from this environment?");
     expect(form.textContent).not.toContain("Every environment that gets it");
@@ -707,9 +777,10 @@ describe("deleting", () => {
     const s = await scene();
     await s.put.env("dev", "LOG_LEVEL", "info");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Delete LOG_LEVEL in dev" }));
+    await fromMenu(user, "LOG_LEVEL", "dev", "Delete");
     await user.click(screen.getByRole("button", { name: "Delete variable" }));
     await screen.findByText(/No variables yet/);
     expect(await s.audit("variable.delete")).toHaveLength(1);
@@ -726,9 +797,10 @@ describe("deleting", () => {
     const s = await scene();
     await s.put.project("REGION", "eu");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Delete REGION in staging" }));
+    await fromMenu(user, "REGION", "staging", "Delete");
     const form = screen.getByRole("form", { name: "Delete REGION" });
     expect(form.textContent).toContain("Delete REGION from the project?");
     expect(form.textContent).toContain("Every environment that gets it from there loses it too.");
@@ -741,9 +813,10 @@ describe("deleting", () => {
     const s = await scene({ reporter: true });
     await s.put.env("dev", "LOG_LEVEL", "info");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(screen.getByRole("button", { name: "Delete LOG_LEVEL in dev" }));
+    await fromMenu(user, "LOG_LEVEL", "dev", "Delete");
     await user.click(screen.getByRole("button", { name: "Delete variable" }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/permission|allowed|forbidden/i);
     expect(cellOf("LOG_LEVEL", "dev").textContent).toContain("info");
@@ -759,6 +832,7 @@ describe("when the server fails", () => {
       broken && pathOf(request).endsWith("/resolved-variables") ? down("Down.") : send(),
     );
     mount(client);
+    await showCompare();
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Down.");
     broken = false;
@@ -777,17 +851,19 @@ describe("when the server fails", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("No environments.");
   });
 
-  test("a failed reveal says so in the cell", async () => {
+  test("a failed reveal says so in the details", async () => {
     const s = await scene();
     await s.put.project("API_KEY", SECRET, true);
     const client = clientVia(backend.api, s.cookie, async (request, send) =>
       pathOf(request).endsWith("/value") ? down("Cannot open it.") : send(),
     );
     mount(client);
+    await showCompare();
     await screen.findByRole("table");
-    const cell = cellOf("API_KEY", "dev");
-    await userEvent.setup().click(within(cell).getByRole("button", { name: /Reveal/ }));
-    expect((await within(cell).findByRole("alert")).textContent).toBe("Cannot open it.");
+    const user = userEvent.setup();
+    const dialog = await detailsOf(user, "API_KEY", "dev");
+    await user.click(await within(dialog).findByRole("button", { name: /Reveal/ }));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("Cannot open it.");
   });
 });
 
@@ -795,6 +871,7 @@ describe("the page in the app", () => {
   test("is in the navigation, marked as the current page", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const link = await screen.findByRole("link", { name: "Variables" });
     expect(link.getAttribute("href")).toBe("#/variables");
     expect(link.getAttribute("aria-current")).toBe("page");

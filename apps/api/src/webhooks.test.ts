@@ -344,6 +344,26 @@ describe("events", () => {
       },
     ],
     [
+      "Deployment Hook",
+      "deployment",
+      {
+        object_kind: "deployment",
+        project: { id: 5 },
+        deployment_id: 15,
+        status: "success",
+        environment: "staging",
+        // what GitLab also sends: who ran it and what the commit said, which no job may carry
+        user: { id: 77, username: CANARY, name: CANARY, email: `${CANARY}@example.test` },
+        user_url: `https://gitlab.example/${CANARY}`,
+        commit_title: CANARY,
+        commit_url: `https://gitlab.example/-/commit/${CANARY}`,
+        short_sha: "279484c0",
+        environment_external_url: `https://${CANARY}.example`,
+        deployable_url: `https://gitlab.example/-/jobs/${CANARY}`,
+      },
+      { deploymentId: 15, status: "success", environment: "staging" },
+    ],
+    [
       "Note Hook",
       "note",
       {

@@ -13,5 +13,6 @@ secrets.json
 
 # Playwright
 apps/web/e2e/.state.json
+apps/web/demo/shots
 apps/web/test-results
 apps/web/playwright-report

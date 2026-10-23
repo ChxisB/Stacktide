@@ -2,7 +2,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { type Project, ProjectPicker, useConnections } from "./projects";
+import { Card } from "./components";
+import { lacks, type Project, ProjectPicker, useConnections } from "./projects";
 import { Loading } from "./ui";
 
 interface Pool {
@@ -91,7 +92,7 @@ function Check({
   );
 }
 
-/** Asking GitLab takes the organization's connection and a project to ask about. */
+/** Asking GitLab takes the organization's GitLab connection and a project to ask about. */
 function HealthCheck({
   orgId,
   pools,
@@ -101,7 +102,7 @@ function HealthCheck({
   pools: Pool[];
   onChecked: (checked: Checked) => void;
 }) {
-  const connections = useConnections(orgId);
+  const connections = useConnections(orgId, "gitlab");
   if (connections.error && !connections.data) {
     return <ErrorPanel error={connections.error} retry={() => void connections.refetch()} />;
   }
@@ -116,15 +117,19 @@ function HealthCheck({
   }
   return (
     <ProjectPicker orgId={orgId}>
-      {(project) => (
-        <Check
-          orgId={orgId}
-          project={project}
-          connectionId={connection.id}
-          pools={pools}
-          onChecked={onChecked}
-        />
-      )}
+      {(project) =>
+        lacks(project, "runners") ? (
+          <p className="muted">{lacks(project, "runners")}</p>
+        ) : (
+          <Check
+            orgId={orgId}
+            project={project}
+            connectionId={connection.id}
+            pools={pools}
+            onChecked={onChecked}
+          />
+        )
+      }
     </ProjectPicker>
   );
 }
@@ -137,8 +142,7 @@ export function Pools({ orgId, actions }: { orgId: string; actions: readonly str
   const pools = usePools(orgId);
   const [checked, setChecked] = useState<Checked>();
   return (
-    <section className="stack" aria-labelledby="pools-title">
-      <h2 id="pools-title">Worker pools</h2>
+    <Card title="Worker pools">
       <p className="muted">
         The runner tags a stack's jobs ask for, so its plans and applies run on your own runners.
         Tags route a job; they do not isolate it: anyone who can register a runner with these tags
@@ -193,6 +197,6 @@ export function Pools({ orgId, actions }: { orgId: string; actions: readonly str
             )}
           </>
         ))}
-    </section>
+    </Card>
   );
 }

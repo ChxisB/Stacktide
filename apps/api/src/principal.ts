@@ -6,10 +6,25 @@ import { Elysia } from "elysia";
 export interface CiJob {
   /** Null when the exchange's claims carried no job id. */
   gitlabJobId: number | null;
+  /** The GitHub Actions run a job without a job id belongs to; null for a GitLab job. */
+  gitlabPipelineId: number | null;
   ref: string;
   /** When the CI token ends: nothing it makes may outlive it. */
   expiresAt: Date;
 }
+
+/**
+ * What a CI job is called where the platform counts jobs (the cap on leases, the owner of a state lock): its GitLab
+ * job id, or, for a GitHub Actions job, which sends none, its run. shortcut: the jobs of one GitHub run share a
+ * name, so they share a lease allowance and a lock; upgrade by recording the job from the `check_run_id` claim if
+ * GitHub sends it.
+ */
+export const jobKey = (job: CiJob | undefined) =>
+  job?.gitlabJobId
+    ? `job-${job.gitlabJobId}`
+    : job?.gitlabPipelineId
+      ? `run-${job.gitlabPipelineId}`
+      : undefined;
 
 /**
  * Who is calling. `dev` is the local-development stand-in and may do anything; every other kind

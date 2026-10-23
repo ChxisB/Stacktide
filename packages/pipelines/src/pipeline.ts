@@ -60,6 +60,19 @@ function usage(tree: unknown, path: string, used: Set<string>, problems: string[
   }
 }
 
+/** The placeholders a tree uses, and each parameter used and not declared (a typo). */
+function mentions(manifest: Manifest, tree: Tree) {
+  const used = new Set<string>();
+  const problems: string[] = [];
+  usage(tree, "", used, problems);
+  for (const name of used)
+    if (!Object.hasOwn(manifest.params.properties, name))
+      problems.push(`parameter ${name} is used but not declared in the manifest`);
+  return { used, problems };
+}
+
+const unreadable = (e: unknown) => [e instanceof Error ? e.message : "cannot be read"];
+
 /**
  * What is wrong with a template's pipeline, one line each (none: it is sound): not YAML the
  * renderer can read, a placeholder that is malformed or in a key, a parameter used and not declared,
@@ -70,16 +83,48 @@ export function checkPipeline(manifest: Manifest, text: string): string[] {
   try {
     tree = parsePipeline(text);
   } catch (e) {
-    return [e instanceof Error ? e.message : "cannot be read"];
+    return unreadable(e);
   }
-  const used = new Set<string>();
-  const problems: string[] = [];
-  usage(tree, "", used, problems);
-  const declared = Object.keys(manifest.params.properties);
-  for (const name of used)
-    if (!Object.hasOwn(manifest.params.properties, name))
-      problems.push(`parameter ${name} is used but not declared in the manifest`);
-  for (const name of declared)
+  const { used, problems } = mentions(manifest, tree);
+  for (const name of Object.keys(manifest.params.properties))
     if (!used.has(name)) problems.push(`parameter ${name} is declared but never used`);
+  return problems;
+}
+
+/** What a workflow file holds at its top (GitHub's keys); `include`, `stages`, `default`, `image`, `variables` and the rest are GitLab's. */
+export const WORKFLOW_KEYS = [
+  "name",
+  "run-name",
+  "on",
+  "permissions",
+  "env",
+  "defaults",
+  "concurrency",
+  "jobs",
+] as const;
+
+/** The top-level keys of a workflow that are not a workflow's, in a sentence; none: it holds only GitHub's. */
+export function foreignKeys(tree: Tree): string | undefined {
+  const keys = Object.keys(tree).filter((k) => !(WORKFLOW_KEYS as readonly string[]).includes(k));
+  if (keys.length === 0) return undefined;
+  const named = keys.map((k) => `\`${k}\``).join(", ");
+  return `${named}: GitLab's, not a workflow's (a workflow has ${WORKFLOW_KEYS.join(", ")})`;
+}
+
+/**
+ * What is wrong with a template's `workflow.yml`: the same as its pipeline, bar one thing. A parameter may go
+ * unused (GitHub's runner may need none of what GitLab's does), and it must hold only GitHub's keys and some jobs.
+ */
+export function checkWorkflow(manifest: Manifest, text: string): string[] {
+  let tree: Tree;
+  try {
+    tree = parsePipeline(text);
+  } catch (e) {
+    return unreadable(e);
+  }
+  const { problems } = mentions(manifest, tree);
+  const foreign = foreignKeys(tree);
+  if (foreign) problems.push(foreign);
+  if (!isMap(tree.jobs)) problems.push("there is no `jobs` mapping");
   return problems;
 }

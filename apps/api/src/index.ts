@@ -6,6 +6,7 @@ import { z } from "zod";
 import { createApp } from "./app";
 import { accessEnv, authEnv, authFromEnv, ciFromEnv, rolesFromEnv } from "./auth-config";
 import { callerPrincipal } from "./credentials";
+import { githubRoles } from "./github-roles";
 import { guardrailEnv, guardrailsOf } from "./guardrails";
 import { hardeningEnv, hardeningOf } from "./hardening";
 import { metricsEnv } from "./metrics";
@@ -71,6 +72,13 @@ if (!devAuth && !config.GITLAB_MEMBERSHIP_TOKEN) {
   );
 }
 const auth = authFromEnv(config);
+// Sign in with GitHub needs the OAuth app and a way to read the connections' tokens (roles come from a repository's
+// permission, read with them).
+const hubRoles = auth.github && keys && !devAuth ? githubRoles({ db, keys, logger }) : undefined;
+if (auth.github && !hubRoles && !devAuth) {
+  logger.warn("GitHub sign-in is off: it needs ORCH_MASTER_KEYS to read the connections' tokens");
+}
+auth.githubRoles = hubRoles;
 const app = createApp({
   logger,
   db,
@@ -80,10 +88,11 @@ const app = createApp({
         db,
         platformAdmins: config.ORCH_PLATFORM_ADMIN_GITLAB_IDS,
         roles: rolesFromEnv(config, db, logger),
+        githubRoles: hubRoles,
       }),
   ready: () => pingDb(db),
   auth,
-  ci: ciFromEnv(config),
+  ci: ciFromEnv(config, db),
   keys,
   images: toolImages(config),
   platform: platformOf(config.ORCH_API_URL, config.ORCH_CI_AUDIENCE),

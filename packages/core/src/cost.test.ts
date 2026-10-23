@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { type CostLimit, type CostResult, costVerdict, limitFor, planVerdict } from "./cost";
+import {
+  type CostLimit,
+  type CostResult,
+  costVerdict,
+  limitFor,
+  limitOf,
+  planVerdict,
+} from "./cost";
 import type { PolicyReport, PolicyVerdict } from "./policy";
 
 const limit = (tag: string | null, maxMonthlyDelta: number, over: Partial<CostLimit> = {}) => ({
@@ -60,6 +67,29 @@ describe("the limit that applies to a stack", () => {
     expect(limitFor(limits, tags)).toBe(prod);
     expect(tags).toEqual(["prod", "prod"]);
     expect(limits).toHaveLength(2);
+  });
+});
+
+describe("the limit that applies to a stack of a tool", () => {
+  test("a DNS zone has no price, so no limit judges it, the organization's own included", () => {
+    const all = limit(null, 100);
+    const prod = limit("prod", 5);
+    expect(limitOf([all, prod], { tool: "dnscontrol", tags: ["prod"] })).toBeUndefined();
+    expect(limitOf([all], { tool: "dnscontrol", tags: [] })).toBeUndefined();
+  });
+
+  test("every other tool is judged as `limitFor` judges it", () => {
+    const all = limit(null, 100);
+    const prod = limit("prod", 5);
+    for (const tool of ["terraform", "tofu", "terragrunt"]) {
+      expect(limitOf([all, prod], { tool, tags: ["prod"] })).toBe(prod);
+      expect(limitOf([all, prod], { tool, tags: [] })).toBe(all);
+    }
+  });
+
+  test("a stack the scan does not know is judged by the organization's own limit, as before", () => {
+    const all = limit(null, 100);
+    expect(limitOf([all], undefined)).toBe(all);
   });
 });
 

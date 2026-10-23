@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Jwk } from "@orch/gitlab";
-import { IdTokenError, keyCache, verifyIdToken } from "./id-token";
+import { IdTokenError, keyCache, peekIssuer, verifyIdToken } from "./id-token";
 import { b64, makeKey, type Signer, sign } from "./jwt-testing";
 
 const ISSUER = "https://gitlab.example.com";
@@ -285,5 +285,29 @@ describe("keyCache", () => {
     const all = await Promise.all([s.get("a"), s.get("a"), s.get("a")]);
     expect(all.every((x) => x?.kid === "a")).toBe(true);
     expect(s.calls()).toBe(1);
+  });
+});
+
+describe("peekIssuer", () => {
+  test("reads the issuer a token claims, signed or not, and nothing from anything else", async () => {
+    await setup;
+    expect(peekIssuer(await sign(signer, claimsOk))).toBe(ISSUER);
+    // not verified: a forged token names whatever it likes, and that is all this says
+    expect(peekIssuer(await sign(other, { ...claimsOk, iss: "https://elsewhere.example" }))).toBe(
+      "https://elsewhere.example",
+    );
+    for (const bad of [
+      "",
+      "not-a-jwt",
+      "a.b.c",
+      `a.${b64({ no: "iss" })}.c`,
+      `a.${b64({ iss: 5 })}.c`,
+      `a.${b64({ iss: "" })}.c`,
+      `a.${b64([1])}.c`,
+      "a.%%%.c",
+      `a.${b64({ iss: ISSUER })}`,
+    ]) {
+      expect(peekIssuer(bad)).toBeUndefined();
+    }
   });
 });

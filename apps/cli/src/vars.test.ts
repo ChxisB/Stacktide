@@ -1017,3 +1017,305 @@ describe("run", () => {
     }
   });
 });
+
+describe("folders (FLD-10)", () => {
+  const bun = process.execPath;
+  const base = () => `/organizations/${ids.org}/projects/${ids.web}`;
+  const file = (name: string) => join(dir, name);
+  const dumpEnv = "await Bun.write(process.env.GOT, JSON.stringify(process.env))";
+  const paySecret = sekrit("pay-secret");
+  const inPayments = { PAY_KEY: "pk-1", PAY_URL: "https://pk-1.example", PAY_SECRET: paySecret };
+  const project = (extra: string[] = []) => ["--org", "acme", "--project", "web", ...extra];
+
+  const send = (method: string, path: string, body?: unknown) =>
+    fetch(`${api}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${tokens.admin}`, "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  /** The keys and kinds an environment holds in one folder, as the API lists them. */
+  async function heldIn(envId: string, folder: string) {
+    const res = await send(
+      "GET",
+      `${base()}/environments/${envId}/variables?limit=100&folder=${encodeURIComponent(folder)}`,
+    );
+    const body = (await res.json()) as { items: { key: string; kind: string }[] };
+    return Object.fromEntries(body.items.map((i) => [i.key, i.kind]));
+  }
+  const names = async () => {
+    const res = await send("GET", `${base()}/folders`);
+    return ((await res.json()) as { items: { path: string }[] }).items.map((f) => f.path);
+  };
+
+  beforeAll(async () => {
+    for (const [parent, name] of [
+      [undefined, "payments"],
+      ["/payments", "eu"],
+      ["/payments", "bad"],
+      [undefined, "empty"],
+    ]) {
+      expect((await send("POST", `${base()}/folders`, { parent, name })).status).toBe(201);
+    }
+    const set = async (path: string, folder: string, key: string, kind: string, value: string) =>
+      expect((await send("POST", `${path}/variables`, { folder, key, kind, value })).status).toBe(
+        201,
+      );
+    await set(base(), "/payments", "PAY_KEY", "plain", "pk-1");
+    await set(base(), "/payments", "PAY_URL", "plain", "https://${PAY_KEY}.example");
+    await set(`${base()}/environments/${ids.dev}`, "/payments", "PAY_SECRET", "secret", paySecret);
+    await set(base(), "/payments/eu", "EU_ONLY", "plain", "eu");
+    await set(base(), "/payments/bad", "BAD_REF", "plain", "x${MISSING}y");
+  });
+
+  const json = (res: { out: string[] }) => JSON.parse(res.out.join("\n"));
+
+  test("pull and export read one folder: its own variables, not the root's and not a subfolder's", async () => {
+    const pulled = await orch(
+      ["pull", ...dev(["--folder", "/payments", "--format", "json"])],
+      read,
+    );
+    expect(pulled.code).toBe(0);
+    expect(json(pulled)).toEqual(inPayments);
+    const exported = await orch(["export", ...dev(["--folder", "/payments/eu"])], read);
+    expect(exported.out).toEqual(["export EU_ONLY='eu'"]);
+    // `/` is the root, as no flag is
+    const root = await orch(["pull", ...dev(["--folder", "/", "--format", "json"])], read);
+    expect(json(root)).toEqual(expectedDev);
+    const none = await orch(["pull", ...dev(["--format", "json"])], read);
+    expect(json(none)).toEqual(expectedDev);
+  });
+
+  test("run --folder gives the command that folder's variables and not the root's; with no flag, the root's", async () => {
+    const got = file("run-folder.json");
+    const res = await orch(["run", ...dev(["--folder", "/payments"]), "--", bun, "-e", dumpEnv], {
+      env: { GOT: got },
+    });
+    expect(res).toEqual({ code: 0, out: [], err: [] });
+    const seen = JSON.parse(await readFile(got, "utf8"));
+    expect(seen).toMatchObject(inPayments);
+    for (const key of Object.keys(expectedDev)) expect(seen).not.toHaveProperty(key);
+    expect(seen).not.toHaveProperty("EU_ONLY");
+
+    const rootGot = file("run-root.json");
+    const plain = await orch(["run", ...dev(), "--", bun, "-e", dumpEnv], {
+      env: { GOT: rootGot },
+    });
+    expect(plain.code).toBe(0);
+    const rootSeen = JSON.parse(await readFile(rootGot, "utf8"));
+    expect(rootSeen).toMatchObject(expectedDev);
+    for (const key of Object.keys(inPayments)) expect(rootSeen).not.toHaveProperty(key);
+  });
+
+  test("a folder that is not a path is a usage error; one that is not there is the API's answer", async () => {
+    for (const folder of ["payments", "/Pay", "/a//b", "/payments/", ""]) {
+      for (const command of ["pull", "export"]) {
+        const res = await orch([command, ...dev(["--folder", folder])], read);
+        expect({ command, folder, code: res.code }).toEqual({ command, folder, code: 2 });
+        expect(res.err[0]).toContain("--folder");
+        expect(res.out).toEqual([]);
+      }
+    }
+    const run = await orch(["run", ...dev(["--folder", "payments"]), "--", "true"]);
+    expect(run.code).toBe(2);
+    const gone = await orch(["pull", ...dev(["--folder", "/nope"])], read);
+    expect(gone.code).toBe(1);
+    expect(gone.err).toEqual(["error: Folder not found (not_found)"]);
+    expect(gone.out).toEqual([]);
+  });
+
+  test("a folder that does not resolve fails closed, names the folder and the key, and leaves the others alone", async () => {
+    const res = await orch(["pull", ...dev(["--folder", "/payments/bad"])], read);
+    expect(res.code).toBe(1);
+    expect(res.out).toEqual([]);
+    expect(res.err[0]).toContain(
+      "acme/web/dev:/payments/bad does not resolve (missing BROKEN".replace("BROKEN", "BAD_REF"),
+    );
+    const partial = await orch(
+      ["pull", ...dev(["--folder", "/payments/bad", "--ignore-issues"])],
+      read,
+    );
+    expect(partial.code).toBe(0);
+    expect(partial.out).toEqual([]);
+    expect(partial.err[0]).toContain("warning: left out 1");
+  });
+
+  describe("push --folder", () => {
+    const put = async (name: string, text: string) => {
+      await writeFile(file(name), text);
+      return name;
+    };
+
+    test("previews, asks and imports into that folder, and the root is untouched", async () => {
+      const value = sekrit("folder-push");
+      const name = await put("fp.env", `FP_ONE=${value}\nFP_PLAIN=visible\n`);
+      const dry = await orch([
+        "push",
+        name,
+        ...at("stage", ["--folder", "/payments", "--dry-run"]),
+      ]);
+      expect(dry.out).toEqual([
+        "create        /payments/FP_ONE (secret)",
+        "create        /payments/FP_PLAIN (secret)",
+        "acme/web/stage:/payments: 2 to write, 0 unchanged, 0 in conflict, 0 skipped",
+      ]);
+      expect(await heldIn(ids.stage, "/payments")).not.toHaveProperty("FP_ONE");
+
+      const before = asked.length;
+      const res = await orch(["push", name, ...at("stage", ["--folder", "/payments"])], {
+        answer: true,
+      });
+      expect(res.code).toBe(0);
+      expect(asked.slice(before)).toEqual(["Apply 2 changes to acme/web/stage:/payments?"]);
+      expect(res.out.at(-1)).toBe("acme/web/stage:/payments: 2 created, 0 updated");
+      expect(await heldIn(ids.stage, "/payments")).toMatchObject({
+        FP_ONE: "secret",
+        FP_PLAIN: "secret",
+      });
+      expect(await heldIn(ids.stage, "/")).not.toHaveProperty("FP_ONE");
+      expect(await held(ids.stage)).not.toHaveProperty("FP_PLAIN");
+      const back = await orch(
+        ["pull", ...at("stage", ["--folder", "/payments", "--format", "json"])],
+        read,
+      );
+      expect(json(back)).toMatchObject({ FP_ONE: value, FP_PLAIN: "visible" });
+      const root = await orch(["pull", ...at("stage", ["--format", "json"])], read);
+      expect(json(root)).not.toHaveProperty("FP_ONE");
+    });
+
+    test("--json names the folder; at the root the document has none", async () => {
+      const name = await put("fj.env", "FJ_ONE=1\n");
+      const res = await orch([
+        "--json",
+        "push",
+        name,
+        ...at("stage", ["--folder", "/payments", "--yes"]),
+      ]);
+      expect(res.code).toBe(0);
+      expect(JSON.parse(res.out.at(-1) ?? "")).toEqual({
+        environment: "acme/web/stage",
+        folder: "/payments",
+        applied: true,
+        changes: [{ change: "create", key: "FJ_ONE", kind: "secret" }],
+        skipped: [],
+      });
+      const rootName = await put("fr.env", "FJ_ROOT=1\n");
+      const root = await orch(["--json", "push", rootName, ...at("stage", ["--yes"])]);
+      expect(JSON.parse(root.out.at(-1) ?? "")).not.toHaveProperty("folder");
+    });
+
+    test("a bad or missing folder changes nothing", async () => {
+      const name = await put("fb.env", "FB_ONE=1\n");
+      const bad = await orch(["push", name, ...at("stage", ["--folder", "nope", "--yes"])]);
+      expect(bad.code).toBe(2);
+      const missing = await orch(["push", name, ...at("stage", ["--folder", "/nope", "--yes"])]);
+      expect(missing.code).toBe(1);
+      expect(missing.err[0]).toContain("not_found");
+      expect(await heldIn(ids.stage, "/")).not.toHaveProperty("FB_ONE");
+    });
+  });
+
+  describe("orch folders", () => {
+    test("list prints the paths from the root down, and --json the ids too", async () => {
+      const res = await orch(["folders", "list", ...project()]);
+      expect(res.code).toBe(0);
+      expect(res.out).toEqual(["/empty\n/payments\n/payments/bad\n/payments/eu"]);
+      const asJson = await orch(["--json", "folders", "list", ...project()]);
+      const doc = JSON.parse(asJson.out.join("\n"));
+      expect(doc.project).toBe("acme/web");
+      expect(doc.folders.map((f: { path: string }) => f.path)).toEqual(
+        (res.out[0] ?? "").split("\n"),
+      );
+      expect(doc.folders[0].id).toMatch(/^[0-9a-f-]{36}$/);
+      const bare = await orch(["folders", "list", "--org", "bare", "--project", "p"]);
+      expect(bare.out).toEqual(["no folders in bare/p"]);
+    });
+
+    test("create makes a folder under its parent; a missing parent, a taken name and a bad path are said", async () => {
+      const made = await orch(["folders", "create", "/payments/us", ...project()]);
+      expect(made.code).toBe(0);
+      expect(made.out).toEqual(["created folder /payments/us in acme/web"]);
+      const top = await orch(["folders", "create", "/billing", ...project()]);
+      expect(top.code).toBe(0);
+      expect(await names()).toEqual(expect.arrayContaining(["/billing", "/payments/us"]));
+      const orphan = await orch(["folders", "create", "/nowhere/deep", ...project()]);
+      expect(orphan.code).toBe(1);
+      expect(orphan.err).toEqual(["error: Parent folder not found (not_found)"]);
+      const taken = await orch(["folders", "create", "/payments/eu", ...project()]);
+      expect(taken.code).toBe(1);
+      expect(taken.err[0]).toContain("folder_taken");
+      for (const path of ["/", "payments", "/Pay", "/a/b/c/d/e/f"]) {
+        const bad = await orch(["folders", "create", path, ...project()]);
+        expect({ path, code: bad.code }).toEqual({ path, code: 2 });
+      }
+      expect(await names()).not.toContain("/nowhere");
+    });
+
+    test("rm removes an empty folder; one with variables or folders in it prints the API's message, exits 1 and stays", async () => {
+      const full = await orch(["folders", "rm", "/payments/eu", ...project()]);
+      expect(full.code).toBe(1);
+      expect(full.err).toEqual([
+        "error: A folder with variables or folders in it cannot be deleted: empty it first (folder_not_empty)",
+      ]);
+      const parent = await orch(["folders", "rm", "/payments", ...project()]);
+      expect(parent.code).toBe(1);
+      expect(parent.err[0]).toContain("folder_not_empty");
+      expect(await names()).toEqual(expect.arrayContaining(["/payments", "/payments/eu"]));
+
+      const gone = await orch(["folders", "rm", "/empty", ...project()]);
+      expect(gone.code).toBe(0);
+      expect(gone.out).toEqual(["removed folder /empty from acme/web"]);
+      expect(await names()).not.toContain("/empty");
+      const again = await orch(["folders", "rm", "/empty", ...project()]);
+      expect(again.code).toBe(2);
+      expect(again.err[0]).toContain("no folder '/empty'; known: /billing");
+      // a path is the whole path: /pay is not /payments
+      const prefix = await orch(["folders", "rm", "/pay", ...project()]);
+      expect(prefix.code).toBe(2);
+      expect(prefix.err[0]).toContain("no folder '/pay'");
+      expect(await names()).toContain("/payments");
+    });
+
+    test("usage: a step, one path where one is wanted, and no flag that does nothing", async () => {
+      for (const argv of [
+        ["folders"],
+        ["folders", "bogus"],
+        ["folders", "bogus", "/payments/eu", ...project()],
+        ["folders", "list", "/payments", ...project()],
+        ["folders", "create", ...project()],
+        ["folders", "create", "/a", "/b", ...project()],
+        ["folders", "rm", ...project()],
+        ["folders", "list", ...project(["--folder", "/payments"])],
+      ]) {
+        const res = await orch(argv);
+        expect({ argv, code: res.code }).toEqual({ argv, code: 2 });
+      }
+    });
+
+    test("a reporter reads the tree and may not change it", async () => {
+      const read = await orch(["folders", "list", ...project()], { token: tokens.reporter });
+      expect(read.code).toBe(0);
+      const before = await names();
+      const create = await orch(["folders", "create", "/reporter", ...project()], {
+        token: tokens.reporter,
+      });
+      expect(create.code).toBe(1);
+      expect(create.err[0]).toContain("forbidden");
+      const rm = await orch(["folders", "rm", "/billing", ...project()], {
+        token: tokens.reporter,
+      });
+      expect(rm.code).toBe(1);
+      expect(await names()).toEqual(before);
+    });
+
+    test("a long tree is not listed whole when a path is unknown", async () => {
+      for (let i = 1; i <= 11; i++) {
+        const name = `many-${String(i).padStart(2, "0")}`;
+        expect((await send("POST", `${base()}/folders`, { name })).status).toBe(201);
+      }
+      const res = await orch(["folders", "rm", "/nope", ...project()]);
+      expect(res.code).toBe(2);
+      expect(res.err[0]).toMatch(/^error: no folder '\/nope'; known: \/billing, .*, \.\.\.$/);
+      expect(res.err[0]).not.toContain("/payments");
+    });
+  });
+});

@@ -4,6 +4,7 @@ export * from "./aws-sm";
 export * from "./aws-ssm";
 export * from "./errors";
 export * from "./fake";
+export * from "./github-actions";
 export * from "./gitlab-variables";
 export * from "./guardrails";
 export { type Check, type CheckReason, CloudError, type Fetch } from "./http";

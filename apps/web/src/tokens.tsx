@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { Card } from "./components";
 import { Loading, stamp, when } from "./ui";
 
 /** How long a new token lasts, in days; the API's own cap is a year. */
@@ -213,8 +214,7 @@ export function Tokens() {
   // a token that has just run out is shown as expired on the next look, which is soon enough
   const now = Date.now();
   return (
-    <section className="stack" aria-labelledby="tokens-title">
-      <h2 id="tokens-title">Your API tokens</h2>
+    <Card title="Your API tokens">
       <p className="muted">
         A token acts as you, limited to its scopes, for the command line and for scripts. It always
         expires. Tokens are yours, not the organization's.
@@ -252,6 +252,6 @@ export function Tokens() {
         ))}
       {/* while a token is on show the form is away: a second one would take its place, and the first could not be had again */}
       {!fresh && <CreateToken onCreated={setFresh} />}
-    </section>
+    </Card>
   );
 }

@@ -26,12 +26,15 @@ const visible = {
 };
 export type Connection = Omit<
   typeof connections.$inferSelect,
-  "secretEnc" | "dekKeyId" | "dekWrapped" | "webhookSecretHash"
+  "secretEnc" | "dekKeyId" | "dekWrapped" | "webhookSecretHash" | "webhookSecretEnc"
 >;
 
 // What the secret and the data key are bound to: a ciphertext (or a wrapped key) moved to
 // another row, or to another organization's row, does not open.
 const secretAad = (organizationId: string, id: string) => aad("connection", organizationId, id);
+// A different kind from the token's, so the two sealed values of one row cannot stand in for each other.
+const webhookAad = (organizationId: string, id: string) =>
+  aad("connection_webhook", organizationId, id);
 const keyContext = (id: string) => `connection:${id}`;
 
 export { keyContext as connectionKeyContext }; // `rewrap.ts` needs the same context to move a key
@@ -40,8 +43,9 @@ const inOrg = (organizationId: string, id: string) =>
   and(eq(connections.id, id), eq(connections.organizationId, organizationId));
 
 /**
- * Stores a connection. `token` is sealed with a data key made for this connection, and that key is
- * wrapped by the provider's current master key: the plaintext is never written anywhere.
+ * Stores a connection. `token` (and `webhookSecret`, when the system signs its webhooks, as GitHub does) is
+ * sealed with a data key made for this connection, and that key is wrapped by the provider's current master
+ * key: the plaintext is never written anywhere.
  */
 export async function createConnection(
   db: Executor,
@@ -52,6 +56,7 @@ export async function createConnection(
     name: string;
     config?: Record<string, unknown>;
     token: string;
+    webhookSecret?: string | undefined;
   },
 ): Promise<Connection> {
   const id = Bun.randomUUIDv7(); // the ids are part of what the ciphertext is bound to
@@ -66,6 +71,10 @@ export async function createConnection(
       name: input.name,
       config: input.config ?? {},
       secretEnc: encrypt(dek, input.token, secretAad(input.organizationId, id)),
+      webhookSecretEnc:
+        input.webhookSecret === undefined
+          ? null
+          : encrypt(dek, input.webhookSecret, webhookAad(input.organizationId, id)),
       dekKeyId: wrap.keyId,
       dekWrapped: wrap.wrapped,
     })
@@ -140,4 +149,32 @@ export async function openConnection(
   );
   const { secretEnc, dekKeyId: _k, dekWrapped: _w, ...connection } = row;
   return { connection, token: decrypt(dek, secretEnc, secretAad(row.organizationId, row.id)) };
+}
+
+/**
+ * A connection's webhook secret, for the code that checks the signature of a delivery. Undefined when the
+ * connection is unknown or has none. Like `openConnection`, the plaintext goes nowhere else; throws a
+ * `CryptoError` when the master key is gone or the row was altered.
+ */
+export async function openWebhookSecret(
+  db: Executor,
+  keys: KeyProvider,
+  organizationId: string,
+  id: string,
+): Promise<string | undefined> {
+  const [row] = await db
+    .select({
+      webhookSecretEnc: connections.webhookSecretEnc,
+      dekKeyId: connections.dekKeyId,
+      dekWrapped: connections.dekWrapped,
+    })
+    .from(connections)
+    .where(inOrg(organizationId, id));
+  if (!row?.webhookSecretEnc) return undefined;
+  const dek = await unwrapDek(
+    keys,
+    { keyId: row.dekKeyId, wrapped: row.dekWrapped },
+    keyContext(id),
+  );
+  return decrypt(dek, row.webhookSecretEnc, webhookAad(organizationId, id));
 }

@@ -1,0 +1,6 @@
+example.test	@	300	IN	SOA	default_not_set. default_not_set. 1 3600 600 604800 1440
+example.test	@	300	IN	A	192.0.2.1
+example.test	@	300	IN	MX	10 mail.example.test.
+example.test	@	300	IN	TXT	v=spf1 -all
+_canary.example.test	_canary	300	IN	TXT	CANARY-VALUE-7f3a
+www.example.test	www	300	IN	A	192.0.2.2

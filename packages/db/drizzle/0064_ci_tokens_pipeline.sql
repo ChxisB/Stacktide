@@ -1,0 +1,1 @@
+ALTER TABLE "ci_tokens" ADD COLUMN "gitlab_pipeline_id" bigint;

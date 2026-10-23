@@ -2,8 +2,12 @@ import type { Gitlab, ProjectRef } from "@orch/gitlab";
 import { changedStacks, type Watching } from "./changes";
 import type { RepoSource } from "./scan";
 
-/** A repository on GitLab at one ref, read through the platform's own GitLab client. */
-export function gitlabSource(gitlab: Gitlab, project: ProjectRef, ref: string): RepoSource {
+/** A repository on GitLab (or GitHub: only `repository` is read) at one ref, read through the platform's own client. */
+export function gitlabSource(
+  gitlab: Pick<Gitlab, "repository">,
+  project: ProjectRef,
+  ref: string,
+): RepoSource {
   return {
     async *files() {
       for await (const entry of gitlab.repository.tree(project, { ref, recursive: true })) {
@@ -27,7 +31,7 @@ const MAX_COMPARE_FILES = 1000;
  * returned as changed. The caller adds dependents with `graph.affected`.
  */
 export async function detectChanges(
-  gitlab: Gitlab,
+  gitlab: Pick<Gitlab, "repository">,
   project: ProjectRef,
   from: string,
   to: string,

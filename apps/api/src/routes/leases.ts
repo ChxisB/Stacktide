@@ -6,7 +6,7 @@ import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { guardPlugin } from "../guard";
 import { issueLease, type Recorder, revokeLease } from "../lease";
-import { type Principal, personOf } from "../principal";
+import { jobKey, type Principal, personOf } from "../principal";
 import { rateLimitPlugin } from "../rate-limit";
 import {
   iso,
@@ -69,10 +69,10 @@ const sealed = { 500: z.any(), 503: z.any() } as const;
  * across organizations and job ids are only unique within one GitLab. Anyone else is the person behind
  * the session or token.
  */
-const holderOf = (p: Principal, projectId: string) =>
-  p.kind === "ci" && "job" in p && p.job?.gitlabJobId
-    ? `ci:${projectId}:job-${p.job.gitlabJobId}`
-    : personOf(p).ref;
+const holderOf = (p: Principal, projectId: string) => {
+  const job = p.kind === "ci" && "job" in p ? jobKey(p.job) : undefined;
+  return job ? `ci:${projectId}:${job}` : personOf(p).ref;
+};
 
 /** A provider failure as a code and a fixed sentence: the provider's text can carry names we keep to ourselves. */
 const failed = (e: unknown) => {

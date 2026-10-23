@@ -1,8 +1,17 @@
-import { type CostLimit, DomainError, type Logger, POLICY_RULE, RUN_STATES } from "@orch/core";
+import {
+  type CostLimit,
+  DomainError,
+  isCosted,
+  type Logger,
+  POLICY_RULE,
+  POLICY_VERDICTS,
+  RUN_STATES,
+} from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import {
   allCostLimits,
   auditedStacks,
+  claimedZones,
   connectionOfRun,
   createRun,
   getProject,
@@ -14,19 +23,29 @@ import {
   type RunWithStacks,
   recordStackDrift,
   ruleNames,
+  runOfPipeline,
   storePlanSummary,
   storePolicyVerdict,
 } from "@orch/db";
 import { GitlabError } from "@orch/gitlab";
-import type { Platform, Tool } from "@orch/iac";
+import {
+  LINT_RULES,
+  type LintRule,
+  MAX_LINT_FINDINGS,
+  type Platform,
+  type Tool,
+  ZONE,
+} from "@orch/iac";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { noKeys, WHY } from "../connections";
 import { costViewOf } from "../cost-view";
+import { dnsVerdict, zonesOf } from "../dns-gate";
 import { guardPlugin } from "../guard";
 import type { Principal } from "../principal";
 import { applyRun } from "../run-apply";
+import { type RunOrder, runOrder } from "../run-order";
 import { gitlabFor } from "./pipeline";
 import {
   iso,
@@ -62,10 +81,22 @@ const runSchema = z.object({
     z.object({
       name: z.string(),
       status: z.enum(RUN_STATES),
+      /**
+       * The stacks of this run it waits for (FLW-1), the nearest ones, through stacks that are not in the run. From the
+       * project's registered stacks, which are the default branch's as last scanned, not this run's commit.
+       */
+      dependsOn: z.array(z.string()),
+      /** Its column in a graph of the run: 0 for a stack that waits for none of the run's stacks. */
+      wave: z.number().int().min(0),
       /** Why it failed, in fixed words; empty unless it did. */
       error: z.string().nullable(),
       /** When it last changed state. */
       updatedAt: z.iso.datetime(),
+      /**
+       * The page of the apply job a forge holds for a person to approve (GitHub's environment reviewers), while it holds
+       * it; null otherwise. The platform approves nothing: a person follows the link.
+       */
+      approvalUrl: z.string().nullable(),
       /**
        * What its plan is estimated to cost and what the cost limit that reaches it makes of that, judged
        * as an apply would judge it now. Null until the plan has a summary, and when there is neither an
@@ -94,30 +125,78 @@ const runSchema = z.object({
           rules: z.array(z.string()),
         })
         .nullable(),
+      /**
+       * A DNS zone's own facts (DNS-16): whether its plan may delete records (`dns.prune` in the commit) and how many
+       * findings the lint of its config made, null when it was not linted. Null for a stack that is not a zone.
+       */
+      dns: z
+        .object({
+          prune: z.boolean(),
+          lint: z.object({ errors: z.number().int(), warnings: z.number().int() }).nullable(),
+        })
+        .nullable(),
+      /**
+       * What the policy sets, and for a zone its claim, the delete rule and the lint, said of the plan: the verdict
+       * and the names of the rules that fired, never what they said. Null until the plan has been judged.
+       */
+      policy: z
+        .object({
+          verdict: z.enum(POLICY_VERDICTS),
+          denied: z.array(z.string()),
+          warned: z.array(z.string()),
+        })
+        .nullable(),
     }),
   ),
   ...stamps,
 });
 
-const dto = (r: RunWithStacks, limits: readonly CostLimit[]): z.infer<typeof runSchema> => ({
-  id: r.id,
-  organizationId: r.organizationId,
-  projectId: r.projectId,
-  ref: r.ref,
-  sha: r.sha,
-  mergeRequestIid: r.mergeRequestIid,
-  kind: r.kind as "plan" | "drift",
-  stacks: r.stacks.map((s) => ({
-    name: s.stack,
-    status: s.status as (typeof RUN_STATES)[number],
-    error: s.error,
-    updatedAt: iso(s.updatedAt),
-    cost: costViewOf(s, limits),
-  })),
-  createdAt: iso(r.createdAt),
-  // a run has no state of its own, so it last changed when its newest stack did
-  updatedAt: iso(r.stacks.reduce((at, s) => (s.updatedAt > at ? s.updatedAt : at), r.updatedAt)),
-});
+const dto = (
+  r: RunWithStacks,
+  limits: readonly CostLimit[],
+  order: RunOrder,
+): z.infer<typeof runSchema> => {
+  const ordered = order(r.stacks.map((s) => s.stack));
+  return {
+    id: r.id,
+    organizationId: r.organizationId,
+    projectId: r.projectId,
+    ref: r.ref,
+    sha: r.sha,
+    mergeRequestIid: r.mergeRequestIid,
+    kind: r.kind as "plan" | "drift",
+    stacks: r.stacks.map((s) => ({
+      name: s.stack,
+      ...(ordered.get(s.stack) as { dependsOn: string[]; wave: number }),
+      status: s.status as (typeof RUN_STATES)[number],
+      error: s.error,
+      updatedAt: iso(s.updatedAt),
+      approvalUrl: s.approvalUrl,
+      cost: costViewOf(s, limits),
+      dns:
+        s.dnsPrune === null
+          ? null
+          : {
+              prune: s.dnsPrune,
+              lint:
+                s.lintErrors === null || s.lintWarnings === null
+                  ? null
+                  : { errors: s.lintErrors, warnings: s.lintWarnings },
+            },
+      policy:
+        s.policyVerdict === null
+          ? null
+          : {
+              verdict: s.policyVerdict as (typeof POLICY_VERDICTS)[number],
+              denied: ruleNames(s.policyDenied),
+              warned: ruleNames(s.policyWarned),
+            },
+    })),
+    createdAt: iso(r.createdAt),
+    // a run has no state of its own, so it last changed when its newest stack did
+    updatedAt: iso(r.stacks.reduce((at, s) => (s.updatedAt > at ? s.updatedAt : at), r.updatedAt)),
+  };
+};
 
 const body = z.strictObject({
   /** The branch the plans are made from. */
@@ -151,6 +230,14 @@ const count = z.number().int().min(0).max(1_000_000);
 /** A trillion: the database's check says the same. */
 const MAX_AMOUNT = 1e12;
 
+// what terraform prints for a resource; it is shown to people, so nothing that hides or reorders
+// text: control and format characters (bidi overrides, zero-width) and line or paragraph separators
+const address = z
+  .string()
+  .min(1)
+  .max(1024)
+  .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+$/u, "not a resource address");
+
 const summaryBody = z.strictObject({
   stack: z.string().min(1).max(63),
   add: count,
@@ -159,13 +246,7 @@ const summaryBody = z.strictObject({
   resources: z
     .array(
       z.strictObject({
-        // what terraform prints for a resource; it is shown to people, so nothing that hides or reorders
-        // text: control and format characters (bidi overrides, zero-width) and line or paragraph separators
-        address: z
-          .string()
-          .min(1)
-          .max(1024)
-          .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+$/u, "not a resource address"),
+        address,
         actions: z
           .array(z.string().regex(/^[a-z][a-z-]{0,19}$/, "not an action"))
           .min(1)
@@ -182,6 +263,23 @@ const summaryBody = z.strictObject({
       monthlyTotal: z.number().min(0).max(MAX_AMOUNT),
       currency: z.string().regex(/^[A-Z]{3}$/, "not a currency code"),
       tool: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,39}$/, "not a tool name"),
+    })
+    .optional(),
+  // What `orch dns lint` said of a zone's config (DNS-11): whole counts, and the findings it lists (the
+  // errors first, at most MAX_LINT_FINDINGS). A finding is a rule, a severity and an address, never a value.
+  lint: z
+    .strictObject({
+      errors: count,
+      warnings: count,
+      findings: z
+        .array(
+          z.strictObject({
+            rule: z.enum(Object.values(LINT_RULES) as [LintRule, ...LintRule[]]),
+            severity: z.enum(["error", "warn"]),
+            address,
+          }),
+        )
+        .max(MAX_LINT_FINDINGS),
     })
     .optional(),
 });
@@ -263,10 +361,17 @@ export const runRoutes = ({
   images?: Partial<Record<Tool, string>> | undefined;
   platform?: Platform | undefined;
 }) => {
+  // the registry is read once for a request, whatever the number of runs it answers with
+  const orderFor = async (orgId: string, projectId: string) =>
+    runOrder(await listStacks(db, orgId, projectId), (kinds) =>
+      logger.warn("the order of a run's stacks was not worked out", { kinds }),
+    );
   // Only the CI job the platform recorded as this stack's summary job (from the pipeline's events),
   // on the run's own ref. A token holds `run.summary` for every job without an environment, so the
   // scope alone would let any job of the project post any stack's summary, or its policy verdict.
-  const onlyTheSummaryJob = (
+  // A GitHub job has no job id (FRG-33): its workflow run stands for it, and must be one of this run's plans.
+  // shortcut: every job of that workflow run may post any stack's summary, as they all come from the generated workflow; narrow it if GitHub sends a job id.
+  const onlyTheSummaryJob = async (
     run: RunWithStacks,
     caller: Principal | undefined,
     stack: string,
@@ -275,22 +380,31 @@ export const runRoutes = ({
   ) => {
     const job = caller?.kind === "ci" ? caller.job : undefined;
     const mine = run.stacks.find((s) => s.stack === stack);
+    const byRun = !!job && !job.gitlabJobId && !!job.gitlabPipelineId;
     const why = !job
       ? "the caller is not a CI job"
       : !mine
         ? "the stack is not in the run"
         : job.ref !== run.ref
           ? "the job's ref is not the run's"
-          : mine.summaryJobId === null
-            ? "no summary job is recorded for the stack yet"
-            : job.gitlabJobId !== mine.summaryJobId
-              ? "the job is not the stack's summary job"
-              : undefined;
+          : byRun
+            ? await notPlanOfRun(run, job.gitlabPipelineId as number)
+            : mine.summaryJobId === null
+              ? "no summary job is recorded for the stack yet"
+              : job.gitlabJobId !== mine.summaryJobId
+                ? "the job is not the stack's summary job"
+                : undefined;
     if (why) {
       // the caller gets one message; the log says which, for whoever finds a real job refused
       logger.warn(`${what} refused`, { request_id: requestId, reason: why });
       throw notTheJob();
     }
+  };
+  const notPlanOfRun = async (run: RunWithStacks, pipelineId: number) => {
+    const link = await runOfPipeline(db, run.organizationId, run.projectId, pipelineId);
+    return link?.run.id === run.id && link.action === "plan"
+      ? undefined
+      : "the job's workflow run is not a plan of this run";
   };
   return new Elysia({ prefix: "/organizations/:orgId/projects/:projectId/runs" })
     .use(auditPlugin(principal))
@@ -321,6 +435,11 @@ export const runRoutes = ({
             projectId,
             // the tags the project's stacks have; an apply reads the commit's, which can differ (docs/cost-gates.md)
             tags: Object.fromEntries(registered.map((s) => [s.name, s.tags])),
+            uncosted: registered.filter((s) => !isCosted(s.tool)).map((s) => s.name),
+            // shortcut: the registered stacks do not carry `dns.prune`, so a run made by hand judges a zone as one that does not prune; it has no merge request and cannot be applied, and the merge request planner reads the commit's setting; upgrade when the stacks table keeps it
+            dnsPrune: Object.fromEntries(
+              registered.filter((s) => s.tool === "dnscontrol").map((s) => [s.name, false]),
+            ),
           });
           await audit(tx, {
             action: "run.create",
@@ -340,7 +459,13 @@ export const runRoutes = ({
         });
         set.status = 201;
         // nothing of a new run is summarized, so no limit is read to judge it
-        return dto(run, []);
+        return dto(
+          run,
+          [],
+          runOrder(registered, (kinds) =>
+            logger.warn("the order of a run's stacks was not worked out", { kinds }),
+          ),
+        );
       },
       {
         params,
@@ -356,11 +481,12 @@ export const runRoutes = ({
       async ({ params: { orgId, projectId }, query }) => {
         if (!(await getProject(db, orgId, projectId))) throw notFound("Project");
         const limits = await allCostLimits(db, orgId);
+        const order = await orderFor(orgId, projectId);
         return paged(query, {
           key: z.tuple([z.uuid()]),
           keyOf: (r: RunWithStacks) => [r.id],
           fetch: (after, limit) => listRuns(db, orgId, projectId, { before: after?.[0], limit }),
-          dto: (r) => dto(r, limits),
+          dto: (r) => dto(r, limits, order),
         });
       },
       {
@@ -375,7 +501,7 @@ export const runRoutes = ({
       async ({ params: { orgId, projectId, runId } }) => {
         const run = await getRun(db, orgId, projectId, runId);
         if (!run) throw notFound("Run");
-        return dto(run, await allCostLimits(db, orgId));
+        return dto(run, await allCostLimits(db, orgId), await orderFor(orgId, projectId));
       },
       {
         params: params.extend({ runId: z.uuid() }),
@@ -388,7 +514,13 @@ export const runRoutes = ({
       async ({ params: { orgId, projectId, runId }, body, principal, audit, set }) => {
         const run = await getRun(db, orgId, projectId, runId);
         if (!run) throw notFound("Run");
-        onlyTheSummaryJob(run, principal, body.stack, "plan summary", set.headers["x-request-id"]);
+        await onlyTheSummaryJob(
+          run,
+          principal,
+          body.stack,
+          "plan summary",
+          set.headers["x-request-id"],
+        );
         await db.transaction(async (tx) => {
           const stored = await storePlanSummary(tx, orgId, projectId, runId, body.stack, body);
           if (!stored) {
@@ -397,6 +529,45 @@ export const runRoutes = ({
               409,
               "This stack's plan is no longer open to a summary",
             );
+          }
+          // A zone's plan is judged by the claims and the prune setting (DNS-7), stored as a policy verdict is
+          // so the run, the merge request note and the apply see one more rule and need no other code.
+          if (stored.dnsPrune !== null) {
+            const claimed = await claimedZones(
+              tx,
+              { organizationId: orgId, projectId, stack: body.stack },
+              zonesOf(body.resources).filter((z) => ZONE.test(z)),
+            );
+            const judged = await storePolicyVerdict(
+              tx,
+              orgId,
+              projectId,
+              runId,
+              body.stack,
+              dnsVerdict(body, { prune: stored.dnsPrune, claimed, lint: body.lint }),
+            );
+            if (!judged) {
+              throw new DomainError(
+                "stack_closed",
+                409,
+                "This stack's plan is no longer open to a summary",
+              );
+            }
+            await audit(tx, {
+              action: "run.policy",
+              resourceType: "run",
+              resourceId: runId,
+              organizationId: orgId,
+              projectId,
+              // the verdict and how many rules; the names (a zone's, at most) are on the stack
+              metadata: {
+                stack: body.stack,
+                verdict: judged.policyVerdict,
+                denied: ruleNames(judged.policyDenied).length,
+                warned: ruleNames(judged.policyWarned).length,
+                evaluated: true,
+              },
+            });
           }
           await audit(tx, {
             action: "run.summary",
@@ -457,7 +628,7 @@ export const runRoutes = ({
         // The body is read in full before the guard runs (Elysia parses first), so it is capped here.
         parse: cappedJson(MAX_SUMMARY_BYTES, "summary"),
         response: { 204: z.undefined(), ...writeErrors, 413: problemSchema },
-        audit: ["run.summary", "stack.drift"],
+        audit: ["run.summary", "run.policy", "stack.drift"],
         guard: "run.summary",
       },
     )
@@ -466,7 +637,7 @@ export const runRoutes = ({
       async ({ params: { orgId, projectId, runId }, body, principal, audit, set }) => {
         const run = await getRun(db, orgId, projectId, runId);
         if (!run) throw notFound("Run");
-        onlyTheSummaryJob(
+        await onlyTheSummaryJob(
           run,
           principal,
           body.stack,
@@ -554,6 +725,7 @@ export const runRoutes = ({
         return dto(
           (await getRun(db, orgId, projectId, runId)) ?? run,
           await allCostLimits(db, orgId),
+          await orderFor(orgId, projectId),
         );
       },
       {

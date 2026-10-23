@@ -1,0 +1,17 @@
+[
+  {
+    "domain": "example.test",
+    "corrections": 3,
+    "correction_details": [
+      "- DELETE _canary.example.test TXT \"CANARY-VALUE-7f3a\" ttl=300",
+      "+ CREATE api.example.test A 192.0.2.3 ttl=300",
+      "± MODIFY www.example.test A (192.0.2.2 ttl=300) -> (192.0.2.99 ttl=300)"
+    ],
+    "provider": "bind"
+  },
+  {
+    "domain": "example.test",
+    "corrections": 0,
+    "registrar": "none"
+  }
+]

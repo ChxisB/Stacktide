@@ -22,6 +22,10 @@ export type NewRun = Pick<
   stacks: readonly string[];
   /** Each stack's tags in the commit, by stack name; a stack left out has none. */
   tags?: Readonly<Record<string, readonly string[]>>;
+  /** Stacks of the run that have no price to estimate (a DNS zone); a name that is not a stack of the run is ignored. */
+  uncosted?: readonly string[];
+  /** A DNS zone's `dns.prune` in the commit, by stack name; a stack left out is not a zone. */
+  dnsPrune?: Readonly<Record<string, boolean>>;
 };
 
 // shortcut: a run holds at most 100 stacks (what the run route accepts and the merge request planner
@@ -63,7 +67,7 @@ const withStacks = async (db: Executor, rows: (typeof runs.$inferSelect)[]) => {
 
 /** A run with each of its stacks `queued`. All or nothing. */
 export async function createRun(db: Executor, input: NewRun): Promise<RunWithStacks> {
-  const { stacks, tags, ...fields } = input;
+  const { stacks, tags, uncosted, dnsPrune, ...fields } = input;
   if (stacks.length === 0) throw new Error("a run needs at least one stack");
   return db.transaction(async (tx) => {
     const run = (await tx.insert(runs).values(fields).returning())[0];
@@ -77,6 +81,8 @@ export async function createRun(db: Executor, input: NewRun): Promise<RunWithSta
           projectId: run.projectId,
           stack,
           tags: [...(tags?.[stack] ?? [])],
+          costed: !uncosted?.includes(stack),
+          dnsPrune: dnsPrune?.[stack] ?? null,
         })),
       )
       .returning(stackColumns);
@@ -142,7 +148,7 @@ export async function moveRunStack(
   if (!canTransition(from, to)) throw new IllegalTransition(from, to);
   const [row] = await db
     .update(runStacks)
-    .set({ status: to, error: isFinishedRun(to) ? (error ?? null) : null })
+    .set({ status: to, error: isFinishedRun(to) ? (error ?? null) : null, approvalUrl: null })
     .where(
       and(
         eq(runStacks.runId, runId),
@@ -154,6 +160,36 @@ export async function moveRunStack(
     )
     .returning(stackColumns);
   return row;
+}
+
+/**
+ * Notes the page a forge holds an apply job at for a person to approve, or that it holds it no more (`null`). Only a
+ * stack that is `applying` takes a link, so a stack that moved on while the forge was read keeps none. Returns whether
+ * the row changed.
+ */
+export async function setStackApproval(
+  db: Executor,
+  organizationId: string,
+  projectId: string,
+  runId: string,
+  stack: string,
+  url: string | null,
+): Promise<boolean> {
+  const rows = await db
+    .update(runStacks)
+    .set({ approvalUrl: url })
+    .where(
+      and(
+        eq(runStacks.runId, runId),
+        eq(runStacks.stack, stack),
+        eq(runStacks.projectId, projectId),
+        eq(runStacks.organizationId, organizationId),
+        eq(runStacks.status, "applying"),
+        sql`${runStacks.approvalUrl} IS DISTINCT FROM ${url}`,
+      ),
+    )
+    .returning({ stack: runStacks.stack });
+  return rows.length > 0;
 }
 
 export interface NewRunPipeline {
@@ -268,6 +304,9 @@ export async function recordStackJobs(
           costMonthlyTotal: forgotten(runStacks.costMonthlyTotal),
           costCurrency: forgotten(runStacks.costCurrency),
           costTool: forgotten(runStacks.costTool),
+          // and so was the lint (DNS-11)
+          lintErrors: forgotten(runStacks.lintErrors),
+          lintWarnings: forgotten(runStacks.lintWarnings),
         }),
     ...(jobs.summaryJobId === undefined ? {} : { summaryJobId: jobs.summaryJobId }),
   };
@@ -286,6 +325,8 @@ export interface PlanSummary {
   resources: readonly { address: string; actions: readonly string[] }[];
   /** The estimator's answer, when the plan job had one (COST-1); posting none removes an earlier one. */
   cost?: PlanCost | undefined;
+  /** How many findings the lint of a zone's config made (DNS-11); posting none removes an earlier answer. */
+  lint?: { errors: number; warnings: number } | undefined;
 }
 
 /** What a plan is estimated to cost per month, in one currency that is never converted. */
@@ -332,6 +373,8 @@ export async function storePlanSummary(
       costMonthlyTotal: summary.cost?.monthlyTotal ?? null,
       costCurrency: summary.cost?.currency ?? null,
       costTool: summary.cost?.tool ?? null,
+      lintErrors: summary.lint?.errors ?? null,
+      lintWarnings: summary.lint?.warnings ?? null,
     })
     .where(
       and(

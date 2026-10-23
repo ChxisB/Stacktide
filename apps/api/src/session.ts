@@ -1,5 +1,5 @@
-import { ORG_ROLES, type OrgRole, type Subject } from "@orch/core";
-import { type Db, findSession, ssoRolesOf, type User } from "@orch/db";
+import { ORG_ROLES, type OrgRole, PROJECT_ROLES, type ProjectRole, type Subject } from "@orch/core";
+import { type Db, findSession, githubIdOf, ssoRolesOf, type User } from "@orch/db";
 import type { PrincipalResolver } from "./principal";
 import { readCookie, SESSION_COOKIE } from "./routes/auth";
 import { hashToken } from "./tokens";
@@ -16,6 +16,11 @@ export interface SessionOptions {
    * role. If it throws, the request fails: a lookup that did not finish never grants or guesses.
    */
   roles?: (user: GitlabUser) => Promise<Roles> | Roles;
+  /**
+   * What a person who signs in with GitHub may do, by their GitHub user id (FRG-25). Left out, a GitHub account
+   * holds no role. Like `roles`, a lookup that throws fails the request.
+   */
+  githubRoles?: (githubId: number) => Promise<Roles> | Roles;
   /** GitLab user ids that may create organizations. */
   platformAdmins?: readonly number[];
 }
@@ -25,8 +30,9 @@ export const subjectOf =
   ({
     db,
     roles = () => ({ orgRoles: {}, projectRoles: {} }),
+    githubRoles,
     platformAdmins = [],
-  }: Pick<SessionOptions, "db" | "roles" | "platformAdmins">) =>
+  }: Pick<SessionOptions, "db" | "roles" | "githubRoles" | "platformAdmins">) =>
   async (user: User, kind: Subject["kind"]): Promise<Subject> => {
     const gitlab = hasGitlab(user) ? await roles(user) : { orgRoles: {}, projectRoles: {} };
     // What an identity provider gave this person (SSO-4), asked every time: it ends with the session or the provider.
@@ -36,11 +42,21 @@ export const subjectOf =
     for (const [org, role] of Object.entries(sso)) {
       if (rank(role) > rank(orgRoles[org])) orgRoles[org] = role;
     }
+    // What GitHub says of a person who signs in with it (FRG-25): project roles, the higher of the two where both speak.
+    const githubId = githubRoles ? await githubIdOf(db, user.id) : undefined;
+    const github = githubRoles && githubId !== undefined ? await githubRoles(githubId) : undefined;
+    const projectRoles: Record<string, ProjectRole> = { ...gitlab.projectRoles };
+    for (const [project, role] of Object.entries(github?.projectRoles ?? {})) {
+      const held = projectRoles[project];
+      if (!held || PROJECT_ROLES.indexOf(role) > PROJECT_ROLES.indexOf(held)) {
+        projectRoles[project] = role;
+      }
+    }
     return {
       kind,
       platformAdmin: hasGitlab(user) && platformAdmins.includes(user.gitlabId),
       orgRoles,
-      projectRoles: gitlab.projectRoles,
+      projectRoles,
     };
   };
 

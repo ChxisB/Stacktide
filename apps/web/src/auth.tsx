@@ -41,9 +41,12 @@ export function LoginPage() {
       <div className="card">
         <h1>Orchastrature</h1>
         <p>Set up CI/CD, manage variables and sync them to GitLab, all in one place.</p>
-        {/* a full page navigation: the API sends the browser to GitLab and back */}
+        {/* a full page navigation: the API sends the browser to GitLab (or GitHub) and back */}
         <a className="button primary" href="/auth/login?return_to=/">
           Sign in with GitLab
+        </a>
+        <a className="button primary" href="/auth/github/login?return_to=/">
+          Sign in with GitHub
         </a>
         <h2>Or through your organization</h2>
         <SsoEntry query="return_to=/" label="Sign in with single sign-on" />

@@ -221,6 +221,10 @@ describe("coverage", () => {
       [`GET ${E}/:envId`]: "environment.read",
       [`PATCH ${E}/:envId`]: "environment.update",
       [`DELETE ${E}/:envId`]: "environment.delete",
+      [`GET ${P}/:projectId/folders`]: "variable.read",
+      [`POST ${P}/:projectId/folders`]: "variable.create",
+      [`PATCH ${P}/:projectId/folders/:folderId`]: "variable.update",
+      [`DELETE ${P}/:projectId/folders/:folderId`]: "variable.delete",
       [`PUT ${E}/:envId/protection`]: "environment.protect",
       [`GET ${E}/:envId/change-requests`]: "change_request.read",
       [`POST ${E}/:envId/change-requests`]: "change_request.create",
@@ -253,11 +257,19 @@ describe("coverage", () => {
       [`GET ${O}/:orgId/template-registry`]: "template.registry.read",
       [`GET ${P}/:projectId/pipeline-runs`]: "pipeline.read",
       [`GET ${P}/:projectId/pipeline-runs/latest`]: "pipeline.read",
+      [`GET ${P}/:projectId/pipeline-runs/:runId/jobs`]: "pipeline.read",
       [`POST ${P}/:projectId/pipeline-runs/:runId/retry`]: "pipeline.retry",
+      [`GET ${P}/:projectId/deployments`]: "deployment.read",
+      [`GET ${P}/:projectId/deployments/environments`]: "deployment.read",
+      [`GET ${P}/:projectId/deployments/stats`]: "deployment.read",
+      [`POST ${P}/:projectId/deployments/refresh`]: "deployment.refresh",
+      [`POST ${P}/:projectId/deployments/promote`]: "deployment.promote",
+      [`POST ${P}/:projectId/deployments/rollback`]: "deployment.rollback",
       [`GET ${P}/:projectId/runs`]: "run.read",
       [`POST ${P}/:projectId/runs`]: "run.create",
       [`GET ${P}/:projectId/runs/:runId`]: "run.read",
       [`POST ${P}/:projectId/runs/:runId/plan-summary`]: "run.summary",
+      [`GET ${P}/:projectId/runs/:runId/plan`]: "run.summary",
       [`POST ${P}/:projectId/runs/:runId/policy-verdict`]: "run.summary",
       [`GET ${P}/:projectId/state/:stack`]: "state.read",
       [`GET ${P}/:projectId/state/:stack/resources`]: "state.list",
@@ -294,6 +306,9 @@ describe("coverage", () => {
       [`GET ${O}/:orgId/cost-limits`]: "cost.limit.read",
       [`PUT ${O}/:orgId/cost-limits`]: "cost.limit.set",
       [`DELETE ${O}/:orgId/cost-limits/:limitId`]: "cost.limit.delete",
+      [`GET ${O}/:orgId/dns/zones`]: "dns.zone.read",
+      [`POST ${O}/:orgId/dns/zones`]: "dns.zone.create",
+      [`DELETE ${O}/:orgId/dns/zones/:zoneId`]: "dns.zone.delete",
       [`GET ${O}/:orgId/secret-gate`]: "secret.gate.read",
       [`PUT ${O}/:orgId/secret-gate`]: "secret.gate.update",
       [`GET ${O}/:orgId/pools`]: "pool.read",
@@ -320,6 +335,7 @@ describe("coverage", () => {
       ...rotationGuards(`${E}/:envId/variables`, "variable"),
       [`GET ${E}/:envId/resolved-variables`]: "variable.read",
       [`GET ${E}/:envId/resolved-variables/values`]: "secret.reveal",
+      [`GET ${P}/:projectId/variable-changes`]: "variable.read",
       [`POST ${O}/:orgId/variable-search`]: "variable.org.read",
     });
   });
@@ -331,6 +347,8 @@ describe("coverage", () => {
       "DELETE /auth/identities/:id",
       "GET /auth/callback",
       "GET /auth/cli",
+      "GET /auth/github/callback",
+      "GET /auth/github/login",
       "GET /auth/identities",
       "GET /auth/login",
       "GET /auth/me",
@@ -343,6 +361,7 @@ describe("coverage", () => {
       "POST /auth/cli/token",
       "POST /auth/logout",
       "POST /auth/sso/:slug/link",
+      "POST /webhooks/github/:connectionId",
       "POST /webhooks/gitlab/:connectionId",
     ]);
     expect(marked("x-signed-in").sort()).toEqual([
@@ -366,11 +385,14 @@ describe("coverage", () => {
       "GET /auth/login": "login",
       "GET /auth/callback": "login",
       "GET /auth/cli": "login",
+      "GET /auth/github/login": "login",
+      "GET /auth/github/callback": "login",
       "GET /auth/sso/:slug/login": "login",
       "GET /auth/sso/callback": "login",
       "POST /auth/sso/:slug/link": "login",
       "POST /auth/cli/token": "login",
       "POST /auth/ci/exchange": "ci_exchange",
+      "POST /webhooks/github/:connectionId": "webhook",
       "POST /webhooks/gitlab/:connectionId": "webhook",
       "POST /tokens": "token_create",
       "POST /organizations/:orgId/variables/:varId/rotation/rotate": "rotation_run",
@@ -413,7 +435,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(167);
+    expect(routes.length).toBe(183);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

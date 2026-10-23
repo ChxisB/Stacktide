@@ -125,6 +125,13 @@ const notificationShape = z.discriminatedUnion("event", [
     provider: z.string().max(32),
     attempts: z.number().int().min(1),
   }),
+  z.object({
+    ...notificationBase,
+    event: z.literal("deployment.failed"),
+    environment: z.string().max(100),
+    sha: z.string().max(8),
+    pipelineUrl: z.string().max(2000).nullable(),
+  }),
 ]);
 type Notification = z.infer<typeof notificationShape>;
 
@@ -134,6 +141,12 @@ const slackText = (s: string) =>
 
 function slackMessage(n: Notification) {
   const project = `project *${slackText(n.projectName)}*`;
+  if (n.event === "deployment.failed") {
+    const link = n.pipelineUrl === null ? "" : `: ${slackText(n.pipelineUrl)}`;
+    return {
+      text: `:x: Deployment of \`${slackText(n.sha)}\` to *${slackText(n.environment)}* in ${project} failed${link}`,
+    };
+  }
   if (n.event === "rotation.failing") {
     return {
       text: `:rotating_light: Rotation of *${slackText(n.key)}* (${slackText(n.provider)}) in ${project} has failed ${n.attempts} times; the old value is still in use`,
@@ -156,6 +169,12 @@ const webhookBody = (id: string, n: Notification) => {
     organizationId: n.organizationId,
     project: { id: n.projectId, name: n.projectName },
   };
+  if (n.event === "deployment.failed") {
+    return {
+      ...head,
+      deployment: { environment: n.environment, sha: n.sha, pipelineUrl: n.pipelineUrl },
+    };
+  }
   return n.event === "rotation.failing"
     ? { ...head, rotation: { key: n.key, provider: n.provider, attempts: n.attempts } }
     : {

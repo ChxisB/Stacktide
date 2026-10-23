@@ -4,7 +4,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { eq } from "drizzle-orm";
 import { type Backend, mount, startBackend } from "./testing";
-import { cellOf, must, SECRET, scene as sceneOn } from "./variables.fixture";
+import { cellOf, fromMenu, must, SECRET, scene as sceneOn, showCompare } from "./variables.fixture";
 
 let backend: Backend;
 beforeAll(async () => {
@@ -44,14 +44,12 @@ const panelOf = async (key: string) => {
   return region;
 };
 const openPanel = async (user: User, key: string, env: string) => {
-  await user.click(
-    within(cellOf(key, env)).getByRole("button", { name: `Rotation of ${key} in ${env}` }),
-  );
+  await fromMenu(user, key, env, "Rotation");
   return panelOf(key);
 };
 const buttonsOf = (region: HTMLElement) =>
   within(region)
-    .getAllByRole("button")
+    .queryAllByRole("button")
     .map((b) => b.textContent);
 
 describe("the rotation panel", () => {
@@ -60,19 +58,27 @@ describe("the rotation panel", () => {
     await s.put.project("REGION", "eu");
     await s.put.project("API_KEY", SECRET, true);
     mount(s.client);
+    await showCompare();
     await screen.findByRole("table");
-    expect(
-      within(cellOf("REGION", "dev")).queryByRole("button", { name: /^Rotation of/ }),
-    ).toBeNull();
-    expect(
-      within(cellOf("API_KEY", "dev")).getByRole("button", { name: "Rotation of API_KEY in dev" }),
-    ).toBeTruthy();
+    const user = userEvent.setup();
+    // the item is in a line's menu: a boolean, because bun prints a failed DOM node whole
+    const offered = async (key: string) => {
+      await user.click(
+        within(cellOf(key, "dev")).getByRole("button", { name: `More actions for ${key} in dev` }),
+      );
+      const items = screen.getAllByRole("menuitem").map((i) => i.textContent);
+      await user.keyboard("{Escape}");
+      return items.includes("Rotation");
+    };
+    expect(await offered("REGION")).toBe(false);
+    expect(await offered("API_KEY")).toBe(true);
   });
 
   test("a secret that does not rotate says so and points at the command that sets one", async () => {
     const s = await scene();
     await s.put.project("API_KEY", SECRET, true);
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openPanel(user, "API_KEY", "dev");
@@ -80,9 +86,9 @@ describe("the rotation panel", () => {
     expect(region.textContent).toContain(
       "orch rotation set API_KEY --provider random --interval 30",
     );
-    // nothing to switch or run, only to leave
-    expect(buttonsOf(region)).toEqual(["Close"]);
-    await user.click(within(region).getByRole("button", { name: "Close" }));
+    // nothing to switch or run; the X in the header is the way out
+    expect(buttonsOf(region)).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Close drawer" }));
     expect(screen.queryByRole("region", { name: "Rotation of API_KEY" })).toBeNull();
   });
 
@@ -91,6 +97,7 @@ describe("the rotation panel", () => {
     const v = await s.put.project("API_KEY", SECRET, true);
     await rotate(s, v.id, { graceDays: 2 });
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openPanel(user, "API_KEY", "dev");
@@ -102,7 +109,7 @@ describe("the rotation panel", () => {
       /^\d{4}-\d{2}-\d{2}T.*Z$/,
     );
     expect(text).not.toContain("Switched off");
-    expect(buttonsOf(region)).toEqual(["Switch off", "Rotate now", "Close"]);
+    expect(buttonsOf(region)).toEqual(["Switch off", "Rotate now"]);
     expect(text.includes(SECRET)).toBe(false);
   });
 
@@ -111,6 +118,7 @@ describe("the rotation panel", () => {
     const v = await s.put.project("API_KEY", SECRET, true);
     await rotate(s, v.id);
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     let region = await openPanel(user, "API_KEY", "dev");
@@ -148,6 +156,7 @@ describe("the rotation panel", () => {
       .set({ lastStatus: "failing", lastError: "denied", attempts: 3, lastAt: new Date() })
       .where(eq(variableRotations.variableId, v.id));
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openPanel(user, "API_KEY", "dev");
@@ -168,6 +177,7 @@ describe("the rotation panel", () => {
       .set({ config: { length: 1 } })
       .where(eq(variableRotations.variableId, v.id));
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openPanel(user, "API_KEY", "dev");
@@ -199,6 +209,7 @@ describe("the rotation panel", () => {
     );
     must(await staging.protection.put({ protected: true }));
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openPanel(user, "DB_PASSWORD", "staging");
@@ -217,6 +228,7 @@ describe("the rotation panel", () => {
     const v = await s.put.project("API_KEY", SECRET, true);
     await rotate(s, v.id, { graceDays: 2 });
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     let region = await openPanel(user, "API_KEY", "dev");
@@ -225,7 +237,7 @@ describe("the rotation panel", () => {
     await waitFor(() => expect(region.textContent).toContain("Switched off"));
     expect(region.textContent).toContain("It will not rotate by itself");
     expect(region.textContent).not.toContain("Next run");
-    expect(buttonsOf(region)).toEqual(["Switch on", "Rotate now", "Close"]);
+    expect(buttonsOf(region)).toEqual(["Switch on", "Rotate now"]);
     expect(must(await s.scope.variables({ varId: v.id }).rotation.get())).toMatchObject({
       enabled: false,
       intervalDays: 30,
@@ -246,6 +258,7 @@ describe("the rotation panel", () => {
     const v = await s.put.project("API_KEY", SECRET, true);
     await rotate(s, v.id);
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openPanel(user, "API_KEY", "dev");

@@ -1,0 +1,399 @@
+{
+  "registrars": [
+    {
+      "name": "none",
+      "type": "-"
+    }
+  ],
+  "dns_providers": [
+    {
+      "name": "bind",
+      "type": "-"
+    }
+  ],
+  "domains": [
+    {
+      "name": "good.test",
+      "uniquename": "good.test",
+      "registrar": "none",
+      "dnsProviders": {
+        "bind": -1
+      },
+      "records": [
+        {
+          "typenum": 1,
+          "type": "A",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "192.0.2.1",
+          "filepos": "[line:7:3]",
+          "rdata": {
+            "Addr": "192.0.2.1"
+          }
+        },
+        {
+          "typenum": 15,
+          "type": "MX",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "10 mail.good.test.",
+          "filepos": "[line:8:3]",
+          "rdata": {
+            "Preference": 10,
+            "Mx": "mail.good.test."
+          }
+        },
+        {
+          "typenum": 16,
+          "type": "TXT",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "\"v=spf1 -all\"",
+          "filepos": "[line:9:3]",
+          "rdata": {
+            "Txt": [
+              "v=spf1 -all"
+            ]
+          }
+        },
+        {
+          "typenum": 16,
+          "type": "TXT",
+          "ttl": 300,
+          "name": "_dmarc",
+          "name_unicode": "_dmarc",
+          "comparablev3": "\"v=DMARC1; p=reject\"",
+          "filepos": "[line:10:3]",
+          "rdata": {
+            "Txt": [
+              "v=DMARC1; p=reject"
+            ]
+          }
+        },
+        {
+          "typenum": 257,
+          "type": "CAA",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "0 issue \"letsencrypt.org\"",
+          "filepos": "[line:11:3]",
+          "rdata": {
+            "Flag": 0,
+            "Tag": "issue",
+            "Value": "letsencrypt.org"
+          }
+        },
+        {
+          "typenum": 16,
+          "type": "TXT",
+          "ttl": 300,
+          "name": "_canary",
+          "name_unicode": "_canary",
+          "comparablev3": "\"CANARY-VALUE-7f3a\"",
+          "filepos": "[line:12:3]",
+          "rdata": {
+            "Txt": [
+              "CANARY-VALUE-7f3a"
+            ]
+          }
+        }
+      ],
+      "keepunknown": true
+    },
+    {
+      "name": "spf.test",
+      "uniquename": "spf.test",
+      "registrar": "none",
+      "dnsProviders": {
+        "bind": -1
+      },
+      "records": [
+        {
+          "typenum": 15,
+          "type": "MX",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "10 mail.spf.test.",
+          "filepos": "[line:16:3]",
+          "rdata": {
+            "Preference": 10,
+            "Mx": "mail.spf.test."
+          }
+        },
+        {
+          "typenum": 16,
+          "type": "TXT",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "\"v=spf1 -all\"",
+          "filepos": "[line:17:3]",
+          "rdata": {
+            "Txt": [
+              "v=spf1 -all"
+            ]
+          }
+        },
+        {
+          "typenum": 16,
+          "type": "TXT",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "\"v=spf1 include:CANARY-VALUE-7f3a -all\"",
+          "filepos": "[line:18:3]",
+          "rdata": {
+            "Txt": [
+              "v=spf1 include:CANARY-VALUE-7f3a -all"
+            ]
+          }
+        },
+        {
+          "typenum": 16,
+          "type": "TXT",
+          "ttl": 300,
+          "name": "_dmarc",
+          "name_unicode": "_dmarc",
+          "comparablev3": "\"v=DMARC1; p=reject\"",
+          "filepos": "[line:19:3]",
+          "rdata": {
+            "Txt": [
+              "v=DMARC1; p=reject"
+            ]
+          }
+        },
+        {
+          "typenum": 257,
+          "type": "CAA",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "0 issue \"letsencrypt.org\"",
+          "filepos": "[line:20:3]",
+          "rdata": {
+            "Flag": 0,
+            "Tag": "issue",
+            "Value": "letsencrypt.org"
+          }
+        }
+      ],
+      "keepunknown": true
+    },
+    {
+      "name": "dmarc.test",
+      "uniquename": "dmarc.test",
+      "registrar": "none",
+      "dnsProviders": {
+        "bind": -1
+      },
+      "records": [
+        {
+          "typenum": 15,
+          "type": "MX",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "10 mail.dmarc.test.",
+          "filepos": "[line:24:3]",
+          "rdata": {
+            "Preference": 10,
+            "Mx": "mail.dmarc.test."
+          }
+        },
+        {
+          "typenum": 15,
+          "type": "MX",
+          "ttl": 300,
+          "name": "lists",
+          "name_unicode": "lists",
+          "comparablev3": "10 mail.dmarc.test.",
+          "filepos": "[line:25:3]",
+          "rdata": {
+            "Preference": 10,
+            "Mx": "mail.dmarc.test."
+          }
+        },
+        {
+          "typenum": 16,
+          "type": "TXT",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "\"v=spf1 -all\"",
+          "filepos": "[line:26:3]",
+          "rdata": {
+            "Txt": [
+              "v=spf1 -all"
+            ]
+          }
+        },
+        {
+          "typenum": 257,
+          "type": "CAA",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "0 issue \"letsencrypt.org\"",
+          "filepos": "[line:27:3]",
+          "rdata": {
+            "Flag": 0,
+            "Tag": "issue",
+            "Value": "letsencrypt.org"
+          }
+        }
+      ],
+      "keepunknown": true
+    },
+    {
+      "name": "caa.test",
+      "uniquename": "caa.test",
+      "registrar": "none",
+      "dnsProviders": {
+        "bind": -1
+      },
+      "records": [
+        {
+          "typenum": 1,
+          "type": "A",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "192.0.2.1",
+          "filepos": "[line:31:3]",
+          "rdata": {
+            "Addr": "192.0.2.1"
+          }
+        },
+        {
+          "typenum": 16,
+          "type": "TXT",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "\"v=spf1 -all\"",
+          "filepos": "[line:32:3]",
+          "rdata": {
+            "Txt": [
+              "v=spf1 -all"
+            ]
+          }
+        }
+      ],
+      "keepunknown": true
+    },
+    {
+      "name": "ttl.test",
+      "uniquename": "ttl.test",
+      "registrar": "none",
+      "dnsProviders": {
+        "bind": -1
+      },
+      "records": [
+        {
+          "typenum": 1,
+          "type": "A",
+          "ttl": 30,
+          "name": "short",
+          "name_unicode": "short",
+          "comparablev3": "192.0.2.1",
+          "filepos": "[line:36:3]",
+          "rdata": {
+            "Addr": "192.0.2.1"
+          }
+        },
+        {
+          "typenum": 1,
+          "type": "A",
+          "ttl": 60,
+          "name": "edge-low",
+          "name_unicode": "edge-low",
+          "comparablev3": "192.0.2.2",
+          "filepos": "[line:37:3]",
+          "rdata": {
+            "Addr": "192.0.2.2"
+          }
+        },
+        {
+          "typenum": 1,
+          "type": "A",
+          "ttl": 86400,
+          "name": "edge-high",
+          "name_unicode": "edge-high",
+          "comparablev3": "192.0.2.3",
+          "filepos": "[line:38:3]",
+          "rdata": {
+            "Addr": "192.0.2.3"
+          }
+        },
+        {
+          "typenum": 1,
+          "type": "A",
+          "ttl": 172800,
+          "name": "long",
+          "name_unicode": "long",
+          "comparablev3": "192.0.2.4",
+          "filepos": "[line:39:3]",
+          "rdata": {
+            "Addr": "192.0.2.4"
+          }
+        },
+        {
+          "typenum": 257,
+          "type": "CAA",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "0 issue \"letsencrypt.org\"",
+          "filepos": "[line:40:3]",
+          "rdata": {
+            "Flag": 0,
+            "Tag": "issue",
+            "Value": "letsencrypt.org"
+          }
+        }
+      ],
+      "keepunknown": true
+    },
+    {
+      "name": "purge.test",
+      "uniquename": "purge.test",
+      "registrar": "none",
+      "dnsProviders": {
+        "bind": -1
+      },
+      "records": [
+        {
+          "typenum": 1,
+          "type": "A",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "192.0.2.1",
+          "filepos": "[line:45:3]",
+          "rdata": {
+            "Addr": "192.0.2.1"
+          }
+        },
+        {
+          "typenum": 257,
+          "type": "CAA",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "0 issue \"letsencrypt.org\"",
+          "filepos": "[line:46:3]",
+          "rdata": {
+            "Flag": 0,
+            "Tag": "issue",
+            "Value": "letsencrypt.org"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -12,6 +12,7 @@ import {
   savePipelineConfig,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
+import { gitlabForge } from "@orch/forge";
 import { createGitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import { loadTemplates, render, type Template } from "@orch/pipelines";
@@ -81,7 +82,7 @@ async function world(count: number, params: (i: number) => Record<string, string
       gitlabProjectId: remote.id,
     });
     const applied = await applyPipeline(
-      { db: t.db, catalog: v1, gitlab: async () => client },
+      { db: t.db, catalog: v1, forge: async () => gitlabForge(client) },
       org.id,
       project.id,
       connection.id,
@@ -98,9 +99,9 @@ async function world(count: number, params: (i: number) => Record<string, string
   const deps: FleetDeps = {
     db: t.db,
     catalog: v2,
-    gitlab: async (connectionId) => {
+    forge: async (connectionId) => {
       opened.push(connectionId);
-      return client;
+      return gitlabForge(client);
     },
     record: async (projectId, applied) => {
       recorded.push(projectId);
@@ -622,9 +623,9 @@ describe("upgradeFleet: the apply", () => {
     let calls = 0;
     const deps: FleetDeps = {
       ...w.deps,
-      gitlab: async (c) => {
+      forge: async (c) => {
         if (++calls === 1) throw new Error(`token ${CANARY} rejected`);
-        return w.deps.gitlab(c);
+        return w.deps.forge(c);
       },
     };
     const r = await upgradeFleet(deps, w.org.id, w.request(), "apply");

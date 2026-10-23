@@ -1,0 +1,20 @@
+[
+  {
+    "domain": "example.test",
+    "corrections": 6,
+    "correction_details": [
+      "4 records not being deleted because of NO_PURGE:",
+      "A(\"example.test.\", 192.0.2.1),",
+      "MX(\"example.test.\", 10 mail.example.test.),",
+      "TXT(\"example.test.\", \"v=spf1 -all\"),",
+      "TXT(\"_canary.example.test.\", \"CANARY-VALUE-7f3a\"),",
+      "+ CREATE api.example.test A 192.0.2.9 ttl=300"
+    ],
+    "provider": "bind"
+  },
+  {
+    "domain": "example.test",
+    "corrections": 0,
+    "registrar": "none"
+  }
+]

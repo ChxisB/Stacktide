@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createLogger, DomainError } from "@orch/core";
-import { createOrganization, createProject, createSession, upsertUser } from "@orch/db";
+import { envKeyProvider } from "@orch/crypto";
+import {
+  createConnection,
+  createOrganization,
+  createProject,
+  createSession,
+  importProject,
+  upsertUser,
+} from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { createGitlab, type Gitlab, GitlabError } from "@orch/gitlab";
 import { createMockGitlab, type MockGitlab } from "@orch/gitlab/mock";
@@ -35,6 +43,7 @@ const roles = (over: Partial<Parameters<typeof gitlabRoles>[0]> = {}) =>
   gitlabRoles({
     db: t.db,
     gitlab: api,
+    baseUrl: mock.url,
     logger: createLogger({ level: "debug", write: (line) => lines.push(line) }),
     now: () => clock,
     ...over,
@@ -454,5 +463,81 @@ describe("through the API", () => {
     expect((await get(a, member.cookie, `/organizations/${org.id}`)).status).toBe(200);
     clock += 60_000;
     expect((await get(a, member.cookie, `/organizations/${org.id}`)).status).toBe(404);
+  });
+});
+
+describe("a second GitLab instance (FRG-6)", () => {
+  const keys = envKeyProvider(`k1:${Buffer.alloc(32, 1).toString("base64")}`);
+  const connect = (organizationId: string, baseUrl: string) =>
+    createConnection(t.db, keys, {
+      organizationId,
+      type: "gitlab",
+      name: "gl",
+      config: { baseUrl },
+      token: "glpat-x",
+    });
+  const bind = (organizationId: string, connectionId: string, gitlabProjectId: number) =>
+    importProject(t.db, {
+      organizationId,
+      connectionId,
+      gitlabProjectId,
+      name: `bound-${gitlabProjectId}`,
+      defaultBranch: "main",
+      types: [],
+    });
+
+  test("this instance's access levels never reach a project of another: user 100 there is not user 100 here", async () => {
+    const other = createMockGitlab();
+    try {
+      const user = await person();
+      const org = await createOrganization(t.db, { slug: "acme", name: "Acme" });
+      const here = mock.addProject({ path: "acme/web" });
+      const there = other.addProject({ path: "acme/web" });
+      expect(there.id).toBe(here.id); // the same number on both instances, which is the trap
+      mock.addMember({ project: here.id }, user.gitlabId, 40);
+      other.addMember({ project: there.id }, user.gitlabId, 20);
+      const unbound = await createProject(t.db, {
+        organizationId: org.id,
+        name: "web",
+        gitlabProjectId: here.id,
+      });
+      // in an organization of its own: an import into this one would adopt the unbound project (FRG-28)
+      const org2 = await createOrganization(t.db, { slug: "beta", name: "Beta" });
+      const foreign = await bind(org2.id, (await connect(org2.id, other.url)).id, there.id);
+      const got = await roles()(user);
+      expect(got.projectRoles).toEqual({ [unbound.id]: "maintainer" });
+      expect(got.projectRoles[foreign.project.id]).toBeUndefined();
+      // and the other instance was never asked, with this one's token or anyone's
+      expect(other.requests).toEqual([]);
+    } finally {
+      other.stop();
+    }
+  });
+
+  test("a project bound to a connection at this instance's own address is still asked about", async () => {
+    const user = await person();
+    const org = await createOrganization(t.db, { slug: "acme", name: "Acme" });
+    const gl = mock.addProject({ path: "acme/web" });
+    mock.addMember({ project: gl.id }, user.gitlabId, 30);
+    // the address is written with a trailing slash, the instance's URL without: the same instance
+    const bound = await bind(org.id, (await connect(org.id, `${mock.url}/`)).id, gl.id);
+    expect((await roles()(user)).projectRoles).toEqual({ [bound.project.id]: "developer" });
+  });
+
+  test("a GitHub connection's project is not a GitLab one, here or anywhere", async () => {
+    const user = await person();
+    const org = await createOrganization(t.db, { slug: "acme", name: "Acme" });
+    const gl = mock.addProject({ path: "acme/web" });
+    mock.addMember({ project: gl.id }, user.gitlabId, 40);
+    const gh = await createConnection(t.db, keys, {
+      organizationId: org.id,
+      type: "github",
+      name: "gh",
+      config: { baseUrl: mock.url },
+      token: "ghp-x",
+    });
+    await bind(org.id, gh.id, gl.id);
+    expect((await roles()(user)).projectRoles).toEqual({});
+    expect(memberRequests()).toEqual([]);
   });
 });

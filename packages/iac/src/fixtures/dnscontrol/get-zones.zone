@@ -1,0 +1,9 @@
+$ORIGIN example.test.
+$TTL 300
+@                IN SOA   default_not_set. default_not_set. 1 3600 600 604800 1440
+                 IN A     192.0.2.1
+                 IN MX    10 mail.example.test.
+                 IN TXT   "v=spf1 -all"
+_canary          IN TXT   "CANARY-VALUE-7f3a"
+www              IN A     192.0.2.2
+

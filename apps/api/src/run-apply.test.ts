@@ -12,6 +12,7 @@ import {
   changeRequests,
   createApplyRequest,
   createConnection,
+  createDnsZone,
   createEnvironment,
   createOrganization,
   createPolicySet,
@@ -20,6 +21,7 @@ import {
   createRun,
   createSession,
   deleteCostLimit,
+  deleteDnsZone,
   deletePolicySet,
   deletePool,
   dismissFinding,
@@ -46,10 +48,11 @@ import {
 import { createTestDb, type TestDb } from "@orch/db/testing";
 import { createGitlab, type Gitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
-import { PLAN_RETENTION_MS } from "@orch/iac";
+import { type LintFinding, PLAN_RETENTION_MS } from "@orch/iac";
 import { and, eq } from "drizzle-orm";
 import { type AppDeps, createApp } from "./app";
 import { callerPrincipal } from "./credentials";
+import { dnsVerdict } from "./dns-gate";
 import { type ApplyDeps, type ApplyRequest, applyRun, mrApplyHandler } from "./run-apply";
 import { runEventHandler } from "./run-ingest";
 import { hashToken, randomToken } from "./tokens";
@@ -86,6 +89,7 @@ const repo = (
   environment: Partial<Record<Name, string>> = {},
   pool: Partial<Record<Name, string>> = {},
   state: Partial<Record<Name, string>> = {},
+  zone = false,
 ) => ({
   ".gitlab-ci.yml": '"apply:net":\n  script: [echo]\n"apply:app":\n  script: [echo]\n',
   "stacks/net/stack.yml": `name: net\ntool: terraform\nversion: 1.9.0\n${
@@ -94,12 +98,14 @@ const repo = (
     environment.net ? `environment: ${environment.net}\n` : ""
   }${pool.net ? `pool: ${pool.net}\n` : ""}${state.net ? `state: ${state.net}\n` : ""}`,
   "stacks/net/main.tf": BACKEND,
-  "stacks/app/stack.yml": `name: app\ntool: terraform\nversion: 1.9.0\ndepends_on: [net]\n${
+  "stacks/app/stack.yml": `name: app\ntool: ${zone ? "dnscontrol" : "terraform"}\nversion: ${
+    zone ? "5.5.0" : "1.9.0"
+  }\ndepends_on: [net]\n${
     applyOn.app ? `apply_on: ${applyOn.app}\n` : ""
   }${tags.app ? `tags: [${tags.app.join(", ")}]\n` : ""}${
     environment.app ? `environment: ${environment.app}\n` : ""
   }`,
-  "stacks/app/main.tf": BACKEND,
+  ...(zone ? { "stacks/app/dnsconfig.js": "// a zone\n" } : { "stacks/app/main.tf": BACKEND }),
 });
 
 interface Opts {
@@ -112,6 +118,10 @@ interface Opts {
   pool?: Partial<Record<Name, string>>;
   /** The `state` of each stack's `stack.yml`: where its Terraform state lives. */
   state?: Partial<Record<Name, string>>;
+  /** `app` is a DNS zone (DNSControl), not a Terraform stack. */
+  zone?: boolean;
+  /** A zone's plan has been summarized and judged clean (a plan that changes nothing); `false` leaves it as when the summary has not come. */
+  judged?: boolean;
   /** Where each stack of the run is; planned when left out. */
   states?: Partial<Record<Name, "queued" | "planning" | "planned" | "failed">>;
   /** Stacks whose plan job was never recorded. */
@@ -138,7 +148,7 @@ async function world(o: Opts = {}) {
   const path = `ap/p${id}`;
   const gl = mock.addProject({
     path,
-    files: repo(o.applyOn, o.tags, o.environment, o.pool, o.state),
+    files: repo(o.applyOn, o.tags, o.environment, o.pool, o.state, o.zone),
   });
   const api = client();
   await api.repository.createBranch(gl.id, "feature", "main");
@@ -214,6 +224,18 @@ async function world(o: Opts = {}) {
         planJobId: s === GHOST ? 599 : PLAN_JOB[s as Name],
       });
     }
+  }
+  if (o.zone && o.judged !== false && (o.states?.app ?? "planned") === "planned") {
+    const nothing = { add: 0, change: 0, destroy: 0, resources: [] };
+    await storePlanSummary(t.db, o1, project.id, run.id, "app", nothing);
+    await storePolicyVerdict(
+      t.db,
+      o1,
+      project.id,
+      run.id,
+      "app",
+      dnsVerdict(nothing, { prune: false, claimed: new Set() }),
+    );
   }
   const posts = () =>
     mock.requests.filter(
@@ -863,6 +885,227 @@ describe("applying a stack whose state is on the platform (STATE-5)", () => {
     await mrApplyHandler({ db: t.db, gitlab: async () => client(), images, platform })(ctx);
     expect(await w.states()).toEqual({ app: "planned", net: "applying" });
     expect(signsIn((await jobsOf(w))["apply:net"])).toBe(true);
+  });
+});
+
+describe("applying a DNS zone (DNS-5)", () => {
+  // a zone's apply job reads the plan with jq and wget, so its image is the operator's own
+  const images = {
+    terraform: "registry.example.com/platform/terraform",
+    dnscontrol: "registry.example.com/platform/dnscontrol",
+  };
+  const jobsOf = async (w: World) => {
+    const [id] = await w.applyPipelines();
+    const yaml = mock.pipelineVariables(id as number)?.[0]?.value ?? "";
+    // biome-ignore lint/suspicious/noExplicitAny: a generated job read back from YAML
+    return Bun.YAML.parse(yaml) as Record<string, any>;
+  };
+
+  test("the zone's apply job pushes what its plan job previewed, after the stack it depends on", async () => {
+    const w = await world({ zone: true });
+    expect(await apply(w, {}, { images })).toEqual(["app", "net"]);
+    const jobs = await jobsOf(w);
+    const zone = jobs["apply:app"];
+    expect(zone.image.name ?? zone.image).toBe(`${images.dnscontrol}:5.5.0`);
+    const script = zone.script.join("\n");
+    expect(script).toContain("dnscontrol push");
+    // the plan job of the zone is 502: the report it wrote is the one the apply compares with
+    expect(script).toContain(`jobs/${PLAN_JOB.app}/artifacts/stacks/app/report.json`);
+    expect(zone.needs).toEqual([{ job: "apply:net", artifacts: false }]);
+    expect(jobs["apply:net"].script.join("\n")).not.toContain("dnscontrol");
+    expect(await w.states()).toEqual({ app: "applying", net: "applying" });
+  });
+
+  test("without an image that holds dnscontrol, jq and wget it is refused before anything is claimed or started", async () => {
+    const w = await world({ zone: true });
+    const e = await refused(apply(w, {}, { images: { terraform: images.terraform } }));
+    expect(e).toMatchObject({ status: 422, code: "cannot_generate" });
+    expect(e.message).toContain("jq and wget");
+    expect(w.triggered()).toBe(0);
+    expect(await w.states()).toEqual(PLANNED);
+  });
+
+  test("a zone is applied under the same preconditions as any stack: planned, and after what it depends on", async () => {
+    const queued = await world({ zone: true, states: { app: "queued" } });
+    const e = await refused(apply(queued, { stacks: ["app", "net"] }, { images }));
+    expect(e).toMatchObject({ status: 409, code: "not_planned" });
+    expect(queued.triggered()).toBe(0);
+    const early = await world({ zone: true });
+    expect(await refused(apply(early, { stacks: ["app"] }, { images }))).toMatchObject({
+      status: 409,
+      code: "dependency_not_applied",
+    });
+    expect(await early.states()).toEqual(PLANNED);
+  });
+
+  describe("under the DNS gate (DNS-7)", () => {
+    const judged = (w: World, over: { prune: boolean; claimed: string[] }, records: string[]) =>
+      storePolicyVerdict(
+        t.db,
+        o1,
+        w.project.id,
+        w.id,
+        "app",
+        dnsVerdict(
+          {
+            add: 0,
+            change: 0,
+            destroy: records.length,
+            resources: records.map((address) => ({ address, actions: ["delete"] })),
+          },
+          { prune: over.prune, claimed: new Set(over.claimed) },
+        ),
+      );
+
+    test("a zone the stack has not claimed is refused by name; nothing is started and every stack stays planned", async () => {
+      const w = await world({ zone: true });
+      await judged(w, { prune: true, claimed: [] }, ["other.example/www/A"]);
+      const e = await refused(apply(w, {}, { images }));
+      expect(e).toMatchObject({ status: 409, code: "policy_denied" });
+      expect(e.message).toContain("dns-zone-unclaimed:other.example");
+      expect(e.message).not.toContain("www");
+      expect(w.triggered()).toBe(0);
+      expect(await w.states()).toEqual(PLANNED);
+    });
+
+    test("a delete in a zone that does not prune is refused; with prune it is applied", async () => {
+      const w = await world({ zone: true });
+      await judged(w, { prune: false, claimed: ["a.example"] }, ["a.example/old/A"]);
+      expect(await refused(apply(w, {}, { images }))).toMatchObject({
+        status: 409,
+        code: "policy_denied",
+      });
+      expect(w.triggered()).toBe(0);
+      await judged(w, { prune: true, claimed: ["a.example"] }, ["a.example/old/A"]);
+      expect(await apply(w, {}, { images })).toEqual(["app", "net"]);
+    });
+
+    test("a zone whose plan was never judged (its summary has not come) waits and is not applied", async () => {
+      const w = await world({ zone: true, judged: false });
+      const e = await refused(apply(w, {}, { images }));
+      expect(e).toMatchObject({ status: 409, code: "policy_pending" });
+      expect(w.triggered()).toBe(0);
+      expect(await w.states()).toEqual(PLANNED);
+    });
+
+    test("a claim released after the plan was judged stops that plan's apply; claimed again, it goes", async () => {
+      const w = await world({ zone: true });
+      const plan = {
+        add: 1,
+        change: 0,
+        destroy: 0,
+        resources: [{ address: "a.example/_secret/TXT", actions: ["create"] }],
+      };
+      const claim = {
+        organizationId: o1,
+        projectId: w.project.id,
+        stack: "app",
+        zone: "a.example",
+      };
+      const held = await createDnsZone(t.db, claim);
+      await storePlanSummary(t.db, o1, w.project.id, w.id, "app", plan);
+      await storePolicyVerdict(
+        t.db,
+        o1,
+        w.project.id,
+        w.id,
+        "app",
+        dnsVerdict(plan, { prune: false, claimed: new Set(["a.example"]) }),
+      );
+      await deleteDnsZone(t.db, o1, held.id);
+      const e = await refused(apply(w, {}, { images }));
+      expect(e).toMatchObject({ status: 409, code: "policy_denied" });
+      expect(e.message).toContain("dns-zone-unclaimed:a.example");
+      expect(e.message).not.toContain("_secret");
+      expect(w.triggered()).toBe(0);
+      expect(await w.states()).toEqual(PLANNED);
+      await createDnsZone(t.db, claim);
+      expect(await apply(w, {}, { images })).toEqual(["app", "net"]);
+    });
+
+    // DNS-11: a plan that changes nothing is still refused when the lint of the config found an error
+    const linted = (w: World, findings: LintFinding[]) =>
+      storePolicyVerdict(
+        t.db,
+        o1,
+        w.project.id,
+        w.id,
+        "app",
+        dnsVerdict(
+          { add: 0, change: 0, destroy: 0, resources: [] },
+          {
+            prune: false,
+            claimed: new Set(["a.example"]),
+            lint: {
+              errors: findings.filter((f) => f.severity === "error").length,
+              findings,
+            },
+          },
+        ),
+      );
+
+    test("a lint error refuses the apply by rule and zone, never by record; nothing is started", async () => {
+      const w = await world({ zone: true });
+      await linted(w, [
+        { rule: "spf-single", severity: "error", address: "a.example/_secret/TXT" },
+      ]);
+      const e = await refused(apply(w, {}, { images }));
+      expect(e).toMatchObject({ status: 409, code: "policy_denied" });
+      expect(e.message).toContain("dns-lint-spf-single:a.example");
+      expect(e.message).not.toContain("_secret");
+      expect(w.triggered()).toBe(0);
+      expect(await w.states()).toEqual(PLANNED);
+    });
+
+    test("a lint warning does not stop the apply", async () => {
+      const w = await world({ zone: true });
+      await linted(w, [{ rule: "ttl-range", severity: "warn", address: "a.example/www/A" }]);
+      expect(await apply(w, {}, { images })).toEqual(["app", "net"]);
+    });
+  });
+
+  describe("under an organization's cost limit", () => {
+    afterEach(async () => {
+      for (const l of await allCostLimits(t.db, o1)) await deleteCostLimit(t.db, o1, l.id);
+    });
+    const limited = async (w: World) => {
+      await setCostLimit(t.db, {
+        organizationId: o1,
+        tag: null,
+        maxMonthlyDelta: 500,
+        warnAt: null,
+        currency: "USD",
+      });
+      // the Terraform stack was estimated; a zone has no price, so its summary has no estimate
+      const cost = { monthlyTotal: 10, monthlyDelta: 1, currency: "USD", tool: "infracost" };
+      await storePlanSummary(t.db, o1, w.project.id, w.id, "net", {
+        add: 1,
+        change: 0,
+        destroy: 0,
+        resources: [],
+        cost,
+      });
+      await storePlanSummary(t.db, o1, w.project.id, w.id, "app", {
+        add: 1,
+        change: 0,
+        destroy: 0,
+        resources: [],
+      });
+    };
+
+    test("a zone with no estimate is applied: no price is not an estimator that crashed", async () => {
+      const w = await world({ zone: true });
+      await limited(w);
+      expect(await apply(w, {}, { images })).toEqual(["app", "net"]);
+    });
+
+    test("the same limit still denies a Terraform stack with no estimate", async () => {
+      const w = await world();
+      await limited(w);
+      const e = await refused(apply(w, {}, { images }));
+      expect(e).toMatchObject({ status: 409, code: "cost_denied" });
+      expect(e.message).toContain("app");
+    });
   });
 });
 

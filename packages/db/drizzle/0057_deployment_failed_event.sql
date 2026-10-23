@@ -1,0 +1,2 @@
+ALTER TABLE "notification_subscriptions" DROP CONSTRAINT "notification_subscriptions_event_check";--> statement-breakpoint
+ALTER TABLE "notification_subscriptions" ADD CONSTRAINT "notification_subscriptions_event_check" CHECK ("notification_subscriptions"."event" in ('stack.drift', 'rotation.failing', 'deployment.failed'));

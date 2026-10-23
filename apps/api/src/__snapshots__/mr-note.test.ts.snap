@@ -23,3 +23,24 @@ Cost (estimate):
 
 <sub>Counts only: the plan itself stays in the job. This note is updated, not added to.</sub>"
 `;
+
+exports[`what the lint of a zone's config says, in the note (DNS-11) a zone with a lint error is denied in the policy section, by rule and zone, and the note has counts only 1`] = `
+"**orch plan**
+
+Commit \`a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0\`
+
+| Stack | Status | Add | Change | Destroy | Plan |
+| --- | --- | ---: | ---: | ---: | --- |
+| \`zone\` | planned | 1 | 0 | 0 | – |
+| \`net\` | planned | 2 | 0 | 0 | – |
+
+Policy:
+
+- \`zone\`: deny (\`dns-lint-spf-single:example.com\`, \`dns-lint-ttl-range:example.com\`)
+
+DNS lint:
+
+- \`zone\`: 1 error, 1 warning
+
+<sub>Counts only: the plan itself stays in the job. This note is updated, not added to.</sub>"
+`;

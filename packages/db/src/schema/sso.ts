@@ -49,8 +49,9 @@ export const ssoProviders = pgTable(
 );
 
 /**
- * One way a person signs in (ADR-0016). `provider` is `gitlab` (subject: the GitLab user id) or
- * `sso:<provider id>` (subject: the issuer's `sub`), so the same subject at two issuers is two identities. The
+ * One way a person signs in (ADR-0016). `provider` is `gitlab` (subject: the GitLab user id), `github` (subject:
+ * the GitHub user id, FRG-25) or `sso:<provider id>` (subject: the issuer's `sub`), so the same subject at two
+ * issuers is two identities. The
  * pair is unique: an identity belongs to one person. Deleting a provider takes its identities, not the person.
  * `email` is what the provider last said, for showing only: nothing is ever matched on it.
  */
@@ -70,10 +71,10 @@ export const userIdentities = pgTable(
   (t) => [
     unique("user_identities_provider_subject_key").on(t.provider, t.subject),
     index("user_identities_user_idx").on(t.userId),
-    // `gitlab` names no provider row; `sso:<id>` names exactly its own (a null id must not slip through a null check).
+    // `gitlab` and `github` name no provider row; `sso:<id>` names exactly its own (a null id must not slip through a null check).
     check(
       "user_identities_provider_check",
-      sql`(${t.provider} = 'gitlab' and ${t.ssoProviderId} is null)
+      sql`(${t.provider} in ('gitlab', 'github') and ${t.ssoProviderId} is null)
         or (${t.ssoProviderId} is not null and ${t.provider} = 'sso:' || ${t.ssoProviderId}::text)`,
     ),
   ],

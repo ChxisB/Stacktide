@@ -7,6 +7,8 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
+    /** The addresses a refused move would leave unresolved (the API's `breaks`), when it is that refusal. */
+    readonly breaks?: string[],
   ) {
     super(message);
     this.name = "ApiError";
@@ -42,10 +44,12 @@ export async function call<T>(
       throw new ApiError(UNREACHABLE, 0);
     }
     const problem = problemOf(res as { error: unknown });
+    const breaks = (problem as { breaks?: unknown } | undefined)?.breaks;
     throw new ApiError(
       problem?.detail ?? problem?.title ?? `The server answered ${res.status}.`,
       res.status,
       problem?.code,
+      Array.isArray(breaks) && breaks.every((b) => typeof b === "string") ? breaks : undefined,
     );
   }
   // a page that is not JSON (a proxy's login, another service) arrives as text; a 204 has no body

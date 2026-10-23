@@ -1,0 +1,39 @@
+{
+  "registrars": [
+    {
+      "name": "none",
+      "type": "-"
+    }
+  ],
+  "dns_providers": [
+    {
+      "name": "bind",
+      "type": "-"
+    }
+  ],
+  "domains": [
+    {
+      "name": "example.test",
+      "uniquename": "example.test",
+      "registrar": "none",
+      "dnsProviders": {
+        "bind": -1
+      },
+      "records": [
+        {
+          "typenum": 1,
+          "type": "A",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "192.0.2.1",
+          "filepos": "[line:4:3]",
+          "rdata": {
+            "Addr": "192.0.2.1"
+          }
+        }
+      ],
+      "keepunknown": true
+    }
+  ]
+}

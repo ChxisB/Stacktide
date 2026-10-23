@@ -1,0 +1,2 @@
+ALTER TABLE "run_stacks" ADD COLUMN "approval_url" text;--> statement-breakpoint
+ALTER TABLE "run_stacks" ADD CONSTRAINT "run_stacks_approval_url_check" CHECK (length("run_stacks"."approval_url") <= 2000);

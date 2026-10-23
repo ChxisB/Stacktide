@@ -1,0 +1,2 @@
+ALTER TABLE "variables" ADD COLUMN "tags" text[] DEFAULT '{}'::text[] NOT NULL;--> statement-breakpoint
+ALTER TABLE "variables" ADD CONSTRAINT "variables_tags_check" CHECK (array_to_string("variables"."tags", ',') ~ '^([a-z0-9-]{1,24}(,[a-z0-9-]{1,24}){0,7})?$' AND array_position("variables"."tags", '') IS NULL AND array_position("variables"."tags", NULL) IS NULL AND length(array_to_string("variables"."tags", ',')) - length(replace(array_to_string("variables"."tags", ','), ',', '')) = greatest(cardinality("variables"."tags") - 1, 0));

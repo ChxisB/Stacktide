@@ -16,6 +16,8 @@ import {
   type TargetType,
 } from "@orch/sync";
 
+import { splitConfig } from "./sync-folder";
+
 const TARGETS_PAGE = 100;
 
 const isKnown = (type: string): type is TargetType => Object.hasOwn(TARGET_TYPES, type);
@@ -45,7 +47,9 @@ async function guardrailViolations(
       if (!isKnown(target.type)) continue;
       let protectedTarget: boolean;
       try {
-        protectedTarget = isProtected(TARGET_TYPES[target.type].validate(target.config));
+        protectedTarget = isProtected(
+          TARGET_TYPES[target.type].validate(splitConfig(target.config).rest),
+        );
       } catch (e) {
         // a target whose config is refused cannot sync anything, so it breaks nothing
         if (e instanceof SyncError) continue;
@@ -108,6 +112,8 @@ export async function validatePipeline(
     chosen.length > 0
       ? chosen.map((e) => ({ environment: e.slug as string | null, environmentId: e.id }))
       : [{ environment: null, environmentId: undefined }];
+  // shortcut: required variables are looked for at the root only (`chainKeys`), so a pipeline whose
+  // variables live in a folder reads as missing them; give a template a folder when one needs it
   const variables = await Promise.all(
     levels.map(async ({ environment, environmentId }) => ({
       environment,

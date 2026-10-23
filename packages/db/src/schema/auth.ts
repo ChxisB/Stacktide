@@ -86,6 +86,8 @@ export const ciTokens = pgTable(
     scopes: text().array().notNull(),
     gitlabProjectId: bigint({ mode: "number" }).notNull(),
     gitlabJobId: bigint({ mode: "number" }),
+    // The run of a GitHub Actions job (its `run_id`): GitHub's token names no job, so the run stands for it (FRG-33).
+    gitlabPipelineId: bigint({ mode: "number" }),
     ref: text().notNull(),
     refProtected: boolean().notNull(),
     expiresAt: timestamp({ withTimezone: true }).notNull(),

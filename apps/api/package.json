@@ -7,6 +7,7 @@
     "./credentials": "./src/credentials.ts",
     "./jwt-testing": "./src/jwt-testing.ts",
     "./sync-apply": "./src/sync-apply.ts",
+    "./sync-drift": "./src/sync-drift.ts",
     "./tokens": "./src/tokens.ts",
     "./worker": "./src/worker.ts"
   },
@@ -15,6 +16,8 @@
     "@orch/core": "workspace:*",
     "@orch/crypto": "workspace:*",
     "@orch/db": "workspace:*",
+    "@orch/forge": "workspace:*",
+    "@orch/github": "workspace:*",
     "@orch/gitlab": "workspace:*",
     "@orch/iac": "workspace:*",
     "@orch/pipelines": "workspace:*",

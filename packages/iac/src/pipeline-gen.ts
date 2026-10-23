@@ -77,6 +77,8 @@ export type GenerateInput = PlanInput | ApplyInput;
 const IMAGES: Partial<Record<Tool, string>> = {
   terraform: "hashicorp/terraform",
   tofu: "ghcr.io/opentofu/opentofu",
+  // the stock image has no orch: a zone with an environment passes its own (see `images`)
+  dnscontrol: "dnscontrol/dnscontrol",
 };
 
 // Docker's reference grammar, a little stricter: lowercase, a registry port only before a path.
@@ -88,6 +90,8 @@ const image = new RegExp(
 );
 /** Whether `s` is an image reference the generator will write into a job (a pool's image is judged by this). */
 export const isImageReference = (s: string) => image.test(s);
+/** Whether `s` is an address the generator will write into a job: http(s)://host[:port][/path], no trailing slash. */
+export const isApiUrl = (s: string) => API_URL.test(s);
 // A runner tag as it is written into a job: the pool's own rule (`POOL_TAG` in core), so a space, comma or `$` is refused here too.
 const RUNNER_TAG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const API_URL = /^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?(?:\/[A-Za-z0-9._~-]+)*$/;
@@ -165,6 +169,20 @@ export const usesPlatformState = (s: Stack) =>
   s.state === "orch" && (s.backend === "http" || s.backend === "unchecked");
 
 /**
+ * Where a stack's Terraform state is kept, as its jobs are wired: the platform's (`orch`), GitLab's managed state
+ * (`gitlab`), a backend of its own or local state, left as the code has it (`own`), or none at all (a DNS zone).
+ */
+export type StateMode = "orch" | "gitlab" | "own" | "none";
+export const stateModeOf = (s: Stack): StateMode =>
+  s.tool === "dnscontrol"
+    ? "none"
+    : usesPlatformState(s)
+      ? "orch"
+      : s.backend === "http" || s.backend === "unchecked"
+        ? "gitlab"
+        : "own";
+
+/**
  * The lines that point a job's Terraform at the platform's state (ADR-0017, `docs/ci.md`): sign in for the
  * state token (`ORCH_STATE_TOKEN`, with the organization and project ids), then name the state as the `http`
  * backend reads it. The shell resolves the address and the password: no value is in the pipeline. Only an
@@ -217,6 +235,64 @@ const costScript = (dir: string) => [
   `{ [ -n "$INFRACOST_API_KEY" ] && infracost diff --path ${inDir(dir, "plan.json")} --format json > infracost.json && jq -e -c --arg tool infracost '${COST_FILTER}' infracost.json > cost.json; } || rm -f cost.json`,
 ];
 
+/**
+ * The summary of a DNS zone's plan, from `dnscontrol preview --report`: one entry per change line the tool
+ * reports (`+ CREATE` / `- DELETE` / `± MODIFY <fqdn> <TYPE> <what>`), kept as the zone, the name inside it
+ * (`@` for the apex) and the type, with the action. The rest of a line is the record's value and is dropped
+ * here, in the runner: the summary never has it. A zone that is new reports only "Ensuring zone" and is one
+ * create of the zone, and the note that NO_PURGE keeps the records it lists is no change; a line this does not
+ * understand is one update of the zone, quoted nowhere. The counts are the actions, in the shape of a
+ * Terraform plan's, so the platform takes both alike.
+ */
+export const DNS_SUMMARY_FILTER = [
+  "[.[] | select(.correction_details != null) | .domain as $zone | .correction_details[]",
+  // the note NO_PURGE adds: its header and the records it keeps, one `TYPE("name", value),` per line (seen in DNSControl 5.5.0)
+  String.raw`| select(test("^[0-9]+ records? not being deleted because of NO_PURGE:\\z") or test("^[A-Z][A-Z0-9_]*\\(.*\\),?\\z") | not)`,
+  String.raw`| (capture("^(?:\\+ CREATE|- DELETE|± MODIFY) (?<fqdn>[^ ]+) (?<type>[A-Z][A-Z0-9_]*)") // null) as $m`,
+  String.raw`| (if test("^\\+ CREATE ") or test("^Ensuring zone ") then "create" elif test("^- DELETE ") then "delete" else "update" end) as $action`,
+  String.raw`| {address: (if $m == null then $zone else "\($zone)/\(if $m.fqdn == $zone then "@" elif ($m.fqdn | endswith("." + $zone)) then $m.fqdn[:-($zone | length + 1)] else $m.fqdn end)/\($m.type)" end), actions: [$action]}] as $c`,
+  "| {stack: $stack,",
+  'add: ($c | map(select(.actions == ["create"])) | length),',
+  'change: ($c | map(select(.actions == ["update"])) | length),',
+  'destroy: ($c | map(select(.actions == ["delete"])) | length),',
+  `resources: ($c | .[:${MAX_LISTED}])}`,
+].join(" ");
+
+/**
+ * The job's check that every `$NAME` its `creds.json` names is a set, non-empty variable, which DNSControl does
+ * not do (an unset one is an empty credential, not an error). The names are read from the file, outside `orch
+ * run`, and tested inside it, where the environment's variables are; the message has the name, never a value.
+ */
+const CREDS_CHECK = String.raw`'for v in "$@"; do [ -n "$(printenv "$v")" ] || { echo "creds.json names \$$v, which is not set or is empty"; exit 1; }; done'`;
+const CREDS_NAMES = `$(grep -o '"[$][A-Za-z_][A-Za-z0-9_]*"' creds.json | tr -d '"$')`;
+
+/**
+ * The change set of a DNS preview, as one line of JSON: every `[zone, change]` pair of the report, sorted, so the
+ * order the tool happens to report them in does not matter and a different value, name, type or count does. An
+ * apply compares the plan's with the one it just made (`cmp`, both files stay in the runner). `input` fails on an
+ * empty file and the `error` on anything that is not a report, so a plan that cannot be read is never "the same
+ * as" an empty one.
+ */
+const DNS_CHANGE_SET = `input | (if type == "array" then . else error("not a report") end) | [.[] | .domain as $z | (.correction_details // [])[] | [$z, .]] | sort`;
+
+/**
+ * The `<credkey> <zone>` pairs of an evaluated `dnsconfig.js` (`dnscontrol print-ir`), one per line: each zone with the
+ * first provider it names. A name that is not a zone name, or a key that could be read as an option or break a shell
+ * line, is left out: `\z` and not `$`, which would let a trailing newline through. Names come from the repository's
+ * file, so they are checked here and not trusted because the file is the team's own.
+ */
+const DNS_IMPORT_PAIRS = String.raw`.domains[] | .name as $z | ((.dnsProviders // {}) | keys_unsorted | map(select(test("^[A-Za-z0-9_][A-Za-z0-9_.-]*\\z"))) | first) as $k | select($k != null and ($z | test("^[a-z0-9][a-z0-9.-]*\\z"))) | "\($k) \($z)"`;
+
+/**
+ * The draft `get-zones --format=js` writes is "a decent first draft": it declares its provider with an empty second
+ * argument, which the stack's own `creds.json` makes redundant, and has no `NO_PURGE`, so a plan of it would delete
+ * whatever the file does not list. The first sed drops the empty argument; the awk adds `NO_PURGE` after the `D(` line
+ * and fails a draft that has none to add it to.
+ */
+const DNS_DRAFT_FIX = String.raw`sed 's/\(NewDnsProvider("[^"]*"\), "")/\1)/' "$f" | awk '{ print } /^D\(.*,$/ { print "\tNO_PURGE,"; added = 1 } END { exit !added }'`;
+
+const isZone = (s: Stack) => s.tool === "dnscontrol";
+
 // names that come from a user are shown quoted and cut short
 const quoted = (s: string) => JSON.stringify(s.length > 64 ? `${s.slice(0, 64)}…` : s);
 const inDir = (dir: string, file: string) => (dir === "." ? file : `${dir}/${file}`);
@@ -239,6 +315,15 @@ const inDir = (dir: string, file: string) => (dir === "." ? file : `${dir}/${fil
  * name, path, version or option that could reach a shell or a job's configuration.
  */
 export function generatePipeline(input: GenerateInput): string {
+  const { action, select, stages, jobs } = buildPipeline(input);
+  return `# Generated by orch: a child pipeline for ${action} of ${select.length} stack${select.length === 1 ? "" : "s"}. Do not edit.\n${stringify({ stages, ...jobs }, { lineWidth: 0 })}`;
+}
+
+/**
+ * The jobs `generatePipeline` writes, before they are YAML, and the waves they run in. The plan of a run for a runner
+ * that is not GitLab (`runPlan`) is read off these same jobs, so a command is written once.
+ */
+export function buildPipeline(input: GenerateInput) {
   const problems: string[] = [];
   const byName = new Map(input.stacks.map((s) => [s.name, s]));
   const select = [...new Set(input.select)].sort();
@@ -276,9 +361,10 @@ export function generatePipeline(input: GenerateInput): string {
     }
   }
   // the stacks of a plan that are estimated: the ones selected (a name that is not selected has no job)
+  // (a DNS zone has no cost: its plan is no Terraform plan)
   const costed =
     input.action === "plan" && input.cost
-      ? select.filter((n) => input.cost?.stacks.includes(n))
+      ? select.filter((n) => input.cost?.stacks.includes(n) && byName.get(n)?.tool !== "dnscontrol")
       : [];
   if (input.action === "plan" && input.cost && costed.length > 0 && !image.test(input.cost.image)) {
     problems.push("cost.image is not an image reference (an image with infracost and jq)");
@@ -313,7 +399,12 @@ export function generatePipeline(input: GenerateInput): string {
           if (!problems.includes(message)) problems.push(message);
         }
       }
-      if (judged.length > 0) {
+      if (judged.length > 0 && isZone(s)) {
+        // fail closed: a zone left out of a set that reaches it would be applied unjudged
+        problems.push(
+          `${at} is a DNS zone, which policy sets cannot judge (they judge Terraform plans): take the tag of the set off it`,
+        );
+      } else if (judged.length > 0) {
         if (!(input.policy.image && image.test(input.policy.image))) {
           problems.push(
             `${at} is judged by policy, so its summary job runs conftest: pass policy.image (an image with conftest, orch, curl and jq)`,
@@ -360,6 +451,11 @@ export function generatePipeline(input: GenerateInput): string {
         problems.push(
           `${at} has an environment, so its plan job runs orch: pass images.${s.tool} (an image with ${s.tool} and orch)`,
         );
+      } else if (input.action === "apply" && isZone(s) && !input.images?.[s.tool]) {
+        // DNSControl has no saved plan: the apply reads the plan's report (jq, wget) and, in an environment, signs in (orch)
+        problems.push(
+          `${at} is a DNS zone, so its apply job reads the plan with jq and wget, and runs orch with an environment: pass images.${s.tool} (an image with ${s.tool}, jq, wget and orch)`,
+        );
       } else if (usesPlatformState(s) && !input.images?.[s.tool]) {
         problems.push(
           `${at} keeps its state on the platform, so its jobs run orch: pass images.${s.tool} (an image with ${s.tool} and orch)`,
@@ -369,6 +465,11 @@ export function generatePipeline(input: GenerateInput): string {
     if (usesPlatformState(s) && input.action === "apply" && !input.platform) {
       problems.push(
         `${at} keeps its state on the platform, so its jobs sign in: pass platform (apiUrl and audience)`,
+      );
+    }
+    if (input.action === "apply" && isZone(s) && s.environment !== undefined && !input.platform) {
+      problems.push(
+        `${at} has an environment, so its apply job signs in: pass platform (apiUrl and audience)`,
       );
     }
     if (input.action === "apply") {
@@ -419,19 +520,18 @@ export function generatePipeline(input: GenerateInput): string {
   const toolJob = (name: string, script: string[], extra: object) => {
     const s = byName.get(name) as Stack;
     // the plan of a stack with an environment signs in to the platform, and so does any job of a stack
-    // whose state is there (an apply otherwise never does); an apply is told where the platform is
-    const envPlan = input.action === "plan" && s.environment !== undefined;
+    // whose state is there (an apply otherwise never does), and the apply of a zone with an environment;
+    // an apply is told where the platform is
+    const inEnvironment = (input.action === "plan" || isZone(s)) && s.environment !== undefined;
     const onPlatform = usesPlatformState(s);
     const platform =
-      envPlan || onPlatform ? (input.action === "plan" ? input : input.platform) : undefined;
+      inEnvironment || onPlatform ? (input.action === "plan" ? input : input.platform) : undefined;
     // GitLab's state settings only where the stack uses them: `http`, or Terragrunt, whose backend is not
     // read here. A backend of its own is passed through (its code and the runner's credentials
     // reach it) and a stack with none has local state, which these would not change. A stack on the
     // platform's state sets its own in the script, after it has signed in.
     const variables = {
-      ...((s.backend === "http" || s.backend === "unchecked") && !onPlatform
-        ? stateVariables(name)
-        : {}),
+      ...(stateModeOf(s) === "gitlab" ? stateVariables(name) : {}),
       ...(platform ? { ORCH_API_URL: platform.apiUrl } : {}),
     };
     const idTokens = {
@@ -447,7 +547,7 @@ export function generatePipeline(input: GenerateInput): string {
       ...tagsOf(name),
       resource_group: `stack-${name}`,
       // `access`: the job reads the environment's variables; it deploys nothing to it
-      ...(envPlan ? { environment: { name: s.environment, action: "access" } } : {}),
+      ...(inEnvironment ? { environment: { name: s.environment, action: "access" } } : {}),
       ...(Object.keys(variables).length > 0 ? { variables } : {}),
       needs: needsOf(name).map((n) => ({ job: `${action}:${n}`, artifacts: false })),
       ...(Object.keys(idTokens).length > 0 ? { id_tokens: idTokens } : {}),
@@ -463,33 +563,93 @@ export function generatePipeline(input: GenerateInput): string {
     const stackOf = byName.get(name) as Stack;
     const { path: dir, tool, environment } = stackOf;
     const onPlatform = usesPlatformState(stackOf);
+    // A zone's lines, plan and apply alike. Everything the tool prints holds record values (its errors too), so it
+    // goes to a file the job keeps for developers and never to the log; what the log says is fixed.
+    const run = environment === undefined ? "" : "orch run -- ";
+    const credsLine = `${run}sh -c ${CREDS_CHECK} sh ${CREDS_NAMES}`;
+    const previewOf = (more: string) =>
+      `{ dnscontrol check && ${run}dnscontrol preview --report report.json${more}; } > preview.txt 2>&1 || { echo "dnscontrol failed; its output is the preview.txt artifact, which developers can read"; exit 1; }`;
+    const previewLine = previewOf("");
+    // The plan also keeps the evaluated config, for the lint (DNS-11): its stdout is the file, its errors are the preview's.
+    const planPreviewLine = previewOf(" && dnscontrol print-ir > ir.json");
     if (input.action === "plan") {
       // the tool commands that read the configuration get the environment's variables as TF_VAR_*
       const withVariables = (line: string) =>
         environment === undefined ? line : `orch run --prefix TF_VAR_ -- ${line}`;
-      jobs[`plan:${name}`] = toolJob(
-        name,
-        [
-          ...(environment === undefined ? [] : LOGIN),
-          ...(onPlatform ? platformState(name, false) : []),
-          withVariables(`${tool} init -input=false`),
-          // a plan on the platform's state does not lock (see `platformState`)
-          withVariables(
-            `${tool} plan -input=false ${onPlatform ? "-lock=false" : `-lock-timeout=${LOCK_TIMEOUT}`} -out=plan.tfplan`,
-          ),
-          withVariables(`${tool} show -json plan.tfplan > plan.json`),
-        ],
-        {
-          // a newer push may cancel a plan; an apply is never cut off
-          interruptible: true,
-          artifacts: {
-            paths: [inDir(dir, "plan.tfplan"), inDir(dir, "plan.json")],
-            expire_in: EXPIRE_IN,
-            // a plan holds the values of secrets: not for every member who can see the pipeline
-            access: "developer",
+      // A zone: check offline, then preview with a machine-readable report
+      const zonePlan = isZone(stackOf)
+        ? toolJob(name, [...(environment === undefined ? [] : LOGIN), credsLine, planPreviewLine], {
+            interruptible: true,
+            artifacts: {
+              paths: [
+                inDir(dir, "report.json"),
+                inDir(dir, "preview.txt"),
+                // record values too: for developers, like the preview
+                inDir(dir, "ir.json"),
+              ],
+              expire_in: EXPIRE_IN,
+              access: "developer",
+              // a failed preview is the one a developer must read
+              when: "always",
+            },
+          })
+        : undefined;
+      jobs[`plan:${name}`] =
+        zonePlan ??
+        toolJob(
+          name,
+          [
+            ...(environment === undefined ? [] : LOGIN),
+            ...(onPlatform ? platformState(name, false) : []),
+            withVariables(`${tool} init -input=false`),
+            // a plan on the platform's state does not lock (see `platformState`)
+            withVariables(
+              `${tool} plan -input=false ${onPlatform ? "-lock=false" : `-lock-timeout=${LOCK_TIMEOUT}`} -out=plan.tfplan`,
+            ),
+            withVariables(`${tool} show -json plan.tfplan > plan.json`),
+          ],
+          {
+            // a newer push may cancel a plan; an apply is never cut off
+            interruptible: true,
+            artifacts: {
+              paths: [inDir(dir, "plan.tfplan"), inDir(dir, "plan.json")],
+              expire_in: EXPIRE_IN,
+              // a plan holds the values of secrets: not for every member who can see the pipeline
+              access: "developer",
+            },
           },
-        },
-      );
+        );
+      // DNS-9: read the zones the config points at into a starting config. Manual, and an extra: it never blocks
+      // the pipeline, and nothing waits for it. Only with the custom image, which has jq (the stock one has not).
+      if (isZone(stackOf) && input.images?.[tool]) {
+        const failed = (what: string) => `{ echo "${what}"; exit 1; }`;
+        jobs[`import:${name}`] = toolJob(
+          name,
+          [
+            ...(environment === undefined ? [] : LOGIN),
+            credsLine,
+            `{ dnscontrol print-ir > ir.json && jq -r '${DNS_IMPORT_PAIRS}' ir.json > pairs.txt; } 2> import.log || ${failed("dnscontrol could not read dnsconfig.js; its output is the import.log artifact, which developers can read")}`,
+            `[ -s pairs.txt ] || ${failed("dnsconfig.js declares no zone with a provider to import from")}`,
+            "mkdir -p import",
+            `ok=1; while read -r key zone; do ${run}dnscontrol get-zones --format=js --out="import/$zone.raw" "$key" "$zone" < /dev/null && [ -s "import/$zone.raw" ] || ok=0; done < pairs.txt > import.log 2>&1; [ "$ok" = 1 ] || ${failed("dnscontrol get-zones failed; its output is the import.log artifact, which developers can read")}`,
+            `ok=1; for f in import/*.raw; do ${DNS_DRAFT_FIX} > "\${f%.raw}.js" || ok=0; done; [ "$ok" = 1 ] || ${failed("a draft has no D() line to add NO_PURGE to; the drafts are in the import artifact, which developers can read")}`,
+            "rm -f import/*.raw",
+          ],
+          {
+            when: "manual",
+            allow_failure: true,
+            needs: [],
+            interruptible: true,
+            artifacts: {
+              paths: [inDir(dir, "import/"), inDir(dir, "import.log")],
+              expire_in: EXPIRE_IN,
+              // the drafts hold the zone's record values, and so does a failed run's log
+              access: "developer",
+              when: "always",
+            },
+          },
+        );
+      }
       const estimated = costed.includes(name) && input.cost;
       if (estimated) {
         jobs[`estimate:${name}`] = {
@@ -520,7 +680,17 @@ export function generatePipeline(input: GenerateInput): string {
         variables: { ORCH_API_URL: input.apiUrl },
         script: [
           ...LOGIN,
-          `jq -c --arg stack ${name} '${SUMMARY_FILTER}' ${inDir(dir, "plan.json")} > summary.json`,
+          isZone(stackOf)
+            ? `jq -c --arg stack ${name} '${DNS_SUMMARY_FILTER}' ${inDir(dir, "report.json")} > summary.json`
+            : `jq -c --arg stack ${name} '${SUMMARY_FILTER}' ${inDir(dir, "plan.json")} > summary.json`,
+          // A zone's lint report rides on the summary when there is one; if the lint cannot run (no ir.json from an older
+          // plan job, an orch that does not know the command) the summary is as it was, and the merge request shows no lint.
+          ...(isZone(stackOf)
+            ? [
+                `orch dns lint${stackOf.dnsPrune === true ? " --prune" : ""} < ${inDir(dir, "ir.json")} > lint.json || rm -f lint.json`,
+                "if [ -s lint.json ] && jq -c --slurpfile lint lint.json '. + {lint: $lint[0]}' summary.json > summary.merged; then mv summary.merged summary.json; fi",
+              ]
+            : []),
           // the estimate rides on the summary when there is a readable one; without it the summary is as it was
           ...(estimated
             ? [
@@ -533,6 +703,30 @@ export function generatePipeline(input: GenerateInput): string {
             : []),
         ],
       };
+    } else if (isZone(stackOf)) {
+      // DNSControl has no saved plan: preview again, and push only if it is the change set the plan reported
+      jobs[`apply:${name}`] = toolJob(
+        name,
+        [
+          ...(environment === undefined ? [] : LOGIN),
+          credsLine,
+          `wget -q --header "JOB-TOKEN: $CI_JOB_TOKEN" -O plan-report.json "$CI_API_V4_URL/projects/$CI_PROJECT_ID/jobs/${input.planJobs[name]}/artifacts/${inDir(dir, "report.json")}"`,
+          `jq -n -c '${DNS_CHANGE_SET}' plan-report.json > planned.txt`,
+          previewLine,
+          `jq -n -c '${DNS_CHANGE_SET}' report.json > current.txt`,
+          `cmp -s planned.txt current.txt || { echo "the zone's changes are not the ones that were planned: nothing was pushed. Plan again."; exit 1; }`,
+          `${run}dnscontrol push > push.txt 2>&1 || { echo "dnscontrol push failed; its output is the push.txt artifact, which developers can read"; exit 1; }`,
+        ],
+        {
+          artifacts: {
+            paths: [inDir(dir, "preview.txt"), inDir(dir, "push.txt")],
+            expire_in: EXPIRE_IN,
+            access: "developer",
+            // a failed push is the one a developer must read
+            when: "always",
+          },
+        },
+      );
     } else {
       jobs[`apply:${name}`] = toolJob(
         name,
@@ -552,5 +746,5 @@ export function generatePipeline(input: GenerateInput): string {
     ...(costed.length > 0 ? ["estimate"] : []),
     ...(action === "plan" ? ["summary"] : []),
   ];
-  return `# Generated by orch: a child pipeline for ${action} of ${select.length} stack${select.length === 1 ? "" : "s"}. Do not edit.\n${stringify({ stages, ...jobs }, { lineWidth: 0 })}`;
+  return { action, select, stages, jobs, waves };
 }

@@ -1,18 +1,84 @@
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { AuthStoreError, checkHash } from "./auth";
+import { baseUrlOf, DOTCOM, ownedBy } from "./project-connection";
 import type { Executor } from "./repo";
-import { ciTokens, environments, projects } from "./schema";
+import { ciTokens, connections, environments, projects } from "./schema";
 
 export type CiToken = typeof ciTokens.$inferSelect;
 
 export const MAX_CI_TTL_MS = 3_600_000;
 
-/** The platform projects linked to a GitLab project: more than one is ambiguous, and callers refuse. */
-export function projectsByGitlabId(db: Executor, gitlabProjectId: number) {
+/**
+ * The platform projects linked to a GitLab project: more than one is ambiguous, and callers refuse.
+ * With a connection, only that connection's projects (see `ownedBy`): another instance's project
+ * 42 is not this one.
+ */
+export async function projectsByGitlabId(
+  db: Executor,
+  gitlabProjectId: number,
+  connectionId?: string,
+) {
   return db
     .select({ id: projects.id, organizationId: projects.organizationId })
     .from(projects)
-    .where(eq(projects.gitlabProjectId, gitlabProjectId))
+    .where(
+      and(
+        eq(projects.gitlabProjectId, gitlabProjectId),
+        connectionId ? await ownedBy(db, connectionId) : undefined,
+      ),
+    )
+    .orderBy(asc(projects.id))
+    .limit(2);
+}
+
+/**
+ * The projects a CI token's verified issuer speaks for: those bound to a GitLab connection at that
+ * address, and, when the issuer is the deployment's own (`GITLAB_URL`), those bound to none (they
+ * predate connections, and the deployment's GitLab is where they came from). So a project has one
+ * issuer and no other instance's project 42, nor a connection's address typed by someone else, reaches it.
+ * More than one is ambiguous, and callers refuse.
+ */
+export async function projectsOfIssuer(
+  db: Executor,
+  gitlabProjectId: number,
+  issuer: string,
+  deploymentIssuer?: string,
+) {
+  const bound = and(eq(connections.type, "gitlab"), sql`rtrim(${baseUrlOf}, '/') = ${issuer}`);
+  return db
+    .select({ id: projects.id, organizationId: projects.organizationId })
+    .from(projects)
+    .leftJoin(connections, eq(connections.id, projects.connectionId))
+    .where(
+      and(
+        eq(projects.gitlabProjectId, gitlabProjectId),
+        or(bound, issuer === deploymentIssuer ? isNull(projects.connectionId) : undefined),
+      ),
+    )
+    .orderBy(asc(projects.id))
+    .limit(2);
+}
+
+/**
+ * The projects a GitHub Actions token's repository id speaks for: those bound to a github.com connection (FRG-23).
+ * A repository id is one number across github.com and nowhere else, so a GitLab project, or a repository of a GitHub
+ * Enterprise Server that has the same number, is not it. More than one is ambiguous, and callers refuse.
+ */
+export async function projectsOfGithubRepository(db: Executor, repositoryId: number) {
+  return db
+    .select({ id: projects.id, organizationId: projects.organizationId })
+    .from(projects)
+    .innerJoin(connections, eq(connections.id, projects.connectionId))
+    .where(
+      and(
+        eq(projects.gitlabProjectId, repositoryId),
+        eq(connections.type, "github"),
+        sql`rtrim(${baseUrlOf}, '/') in (${sql.join(
+          DOTCOM.map((u) => sql`${u}`),
+          sql`, `,
+        )})`,
+      ),
+    )
     .orderBy(asc(projects.id))
     .limit(2);
 }
@@ -40,6 +106,7 @@ export async function createCiToken(
     scopes: readonly string[];
     gitlabProjectId: number;
     gitlabJobId?: number;
+    gitlabPipelineId?: number;
     ref: string;
     refProtected: boolean;
     ttlMs: number;

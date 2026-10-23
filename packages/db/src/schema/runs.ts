@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  boolean,
   check,
   doublePrecision,
   foreignKey,
@@ -76,8 +77,17 @@ export const runStacks = pgTable(
     // The stack's tags in the commit the run was made from: which cost limit (and so what the merge
     // request note and the run show) judges its plan. Names, never values.
     tags: text().array().notNull().default(sql`'{}'::text[]`),
+    // False for a stack with no price to estimate (a DNS zone): no cost limit judges its plan.
+    costed: boolean().notNull().default(true),
+    // A DNS zone's `dns.prune` in the commit the run was made from: whether its plan may delete records it
+    // does not list (DNS-7). Null for a stack that is not a zone.
+    dnsPrune: boolean(),
     status: text().notNull().default("queued"),
     error: text(),
+    // The page of the job a forge holds for a person to approve (GitHub's environment reviewers, FRG-22): set only while
+    // the stack is `applying` and the forge says it waits, dropped by every move and when the job goes on. The platform
+    // approves nothing; a person follows the link. An http(s) link, checked before it is kept.
+    approvalUrl: text(),
     // The GitLab jobs of the stack's plan and of the job that posts its summary, found from the
     // pipeline events: the summary route lets only that job post (IAC-6).
     planJobId: bigint({ mode: "number" }),
@@ -97,6 +107,10 @@ export const runStacks = pgTable(
     costMonthlyTotal: doublePrecision(),
     costCurrency: text(),
     costTool: text(),
+    // How many findings the platform's lint of a zone's config made, by severity (DNS-11): both set together, by the
+    // same summary, or neither; zero and zero says the lint ran. Counts only: the findings are in the plan job's artifact.
+    lintErrors: integer(),
+    lintWarnings: integer(),
     // What the policy sets that reach the stack said of its plan (POL-3): `pass`, `warn` or `deny`,
     // with the names of the rules that fired, never what they said (a message may quote the plan).
     // Null: not judged (yet). All set together, by the verdict the plan's summary job posts.
@@ -123,6 +137,7 @@ export const runStacks = pgTable(
       sql`${t.status} in ('queued', 'planning', 'planned', 'applying', 'applied', 'failed', 'discarded', 'canceled')`,
     ),
     check("run_stacks_error_check", sql`length(${t.error}) <= 500`),
+    check("run_stacks_approval_url_check", sql`length(${t.approvalUrl}) <= 2000`),
     check(
       "run_stacks_jobs_check",
       sql`coalesce(${t.planJobId}, 1) > 0 and coalesce(${t.summaryJobId}, 1) > 0`,
@@ -148,6 +163,14 @@ export const runStacks = pgTable(
           and ${t.costMonthlyTotal} between 0 and 1e12
           and ${t.costCurrency} ~ '^[A-Z]{3}$'
           and ${t.costTool} ~ '^[a-z0-9][a-z0-9._-]{0,39}$'))`,
+    ),
+    check(
+      "run_stacks_lint_check",
+      sql`(${t.lintErrors} is null) = (${t.lintWarnings} is null)
+        and (${t.lintErrors} is null or (
+          ${t.summarizedAt} is not null
+          and ${t.lintErrors} between 0 and 1000000
+          and ${t.lintWarnings} between 0 and 1000000))`,
     ),
     // The size bound is for the text of the stored value, which Bun.sql stores as a JSON string (every quote
     // escaped twice over): 500 addresses of 1024 quote marks come to about 2.3 million characters.

@@ -17,6 +17,8 @@
         "@orch/core": "workspace:*",
         "@orch/crypto": "workspace:*",
         "@orch/db": "workspace:*",
+        "@orch/forge": "workspace:*",
+        "@orch/github": "workspace:*",
         "@orch/gitlab": "workspace:*",
         "@orch/iac": "workspace:*",
         "@orch/pipelines": "workspace:*",
@@ -53,7 +55,10 @@
     "apps/web": {
       "name": "@orch/web",
       "dependencies": {
+        "@fontsource-variable/jetbrains-mono": "5.3.0",
+        "@fontsource-variable/plus-jakarta-sans": "5.3.0",
         "@orch/api-client": "workspace:*",
+        "@orch/core": "workspace:*",
         "@tanstack/react-query": "5.104.4",
         "react": "19.3.1",
         "react-dom": "19.3.1",
@@ -61,9 +66,10 @@
       "devDependencies": {
         "@happy-dom/global-registrator": "21.0.3",
         "@orch/api": "workspace:*",
-        "@orch/core": "workspace:*",
         "@orch/crypto": "workspace:*",
         "@orch/db": "workspace:*",
+        "@orch/forge": "workspace:*",
+        "@orch/github": "workspace:*",
         "@orch/gitlab": "workspace:*",
         "@playwright/test": "1.64.1",
         "@testing-library/dom": "10.4.2",
@@ -110,6 +116,25 @@
         "drizzle-kit": "0.31.11",
       },
     },
+    "packages/forge": {
+      "name": "@orch/forge",
+      "dependencies": {
+        "@orch/github": "workspace:*",
+        "@orch/gitlab": "workspace:*",
+      },
+    },
+    "packages/github": {
+      "name": "@orch/github",
+      "dependencies": {
+        "@orch/core": "workspace:*",
+        "@orch/gitlab": "workspace:*",
+        "libsodium-wrappers": "0.8.4",
+        "zod": "4.6.7",
+      },
+      "devDependencies": {
+        "yaml": "2.8.3",
+      },
+    },
     "packages/gitlab": {
       "name": "@orch/gitlab",
       "dependencies": {
@@ -143,6 +168,7 @@
     "packages/sync": {
       "name": "@orch/sync",
       "dependencies": {
+        "@orch/github": "workspace:*",
         "@orch/gitlab": "workspace:*",
         "zod": "4.6.7",
       },
@@ -237,6 +263,10 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
+    "@fontsource-variable/jetbrains-mono": ["@fontsource-variable/jetbrains-mono@5.3.0", "", {}, "sha512-F32xpS2NsGYoQi2ADSkKTgpJj7ozajsGgDJ8woTnqjmIB+dxDIqImjl4pXZVEExu8UFZ2ndhmX18EBS/hdz3Lw=="],
+
+    "@fontsource-variable/plus-jakarta-sans": ["@fontsource-variable/plus-jakarta-sans@5.3.0", "", {}, "sha512-/l/4r0yyWK9JzAlmA0LiYgGgmJe/Gswt4jTJEzr5QhJfwMbvJZDmYWyW0M4X7yCK69BajMVlV/Lx8g7WDc1+sw=="],
+
     "@happy-dom/global-registrator": ["@happy-dom/global-registrator@21.0.3", "", { "dependencies": { "@types/node": ">=20.0.0", "happy-dom": "^21.0.3" } }, "sha512-0LhVbq+Bjw8H0MuByKtXhuUr4JYKY29PBP6Czhkv/ij6C+zHDihZXSpP56HNKGImf5jur6uJDr46b0EiyZ2NvQ=="],
 
     "@orch/api": ["@orch/api@workspace:apps/api"],
@@ -250,6 +280,10 @@
     "@orch/crypto": ["@orch/crypto@workspace:packages/crypto"],
 
     "@orch/db": ["@orch/db@workspace:packages/db"],
+
+    "@orch/forge": ["@orch/forge@workspace:packages/forge"],
+
+    "@orch/github": ["@orch/github@workspace:packages/github"],
 
     "@orch/gitlab": ["@orch/gitlab@workspace:packages/gitlab"],
 
@@ -382,6 +416,10 @@
     "ieee754": ["ieee754@1.2.1", "", {}, "sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA=="],
 
     "js-tokens": ["js-tokens@4.0.0", "", {}, "sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ=="],
+
+    "libsodium": ["libsodium@0.8.4", "", {}, "sha512-lMcYaRi0zcs7tarATsQUYC7rstliIXZuoq0c6zXSgNtSNtdvBgkSegjWhpMJAXzKX3SUSwIp7+zEsob+j3LuRw=="],
+
+    "libsodium-wrappers": ["libsodium-wrappers@0.8.4", "", { "dependencies": { "libsodium": "^0.8.0" } }, "sha512-mu8aAWucZjTB5O/BtGXtW4e1agy7uHxNYG7zPthmmD1jU43LCDmSWZLN4JhflbdPXj3yDO4lxM1O9hLDgIOXDw=="],
 
     "lz-string": ["lz-string@1.5.0", "", { "bin": { "lz-string": "bin/bin.js" } }, "sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ=="],
 

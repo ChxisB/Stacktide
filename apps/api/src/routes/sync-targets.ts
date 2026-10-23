@@ -1,9 +1,10 @@
-import { DomainError } from "@orch/core";
+import { DomainError, ROOT } from "@orch/core";
 import {
   createSyncTarget,
   deleteSyncTarget,
   type Executor,
   getConnection,
+  getFolderByPath,
   getProject,
   getSyncDrift,
   getSyncTarget,
@@ -17,6 +18,7 @@ import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { guardPlugin } from "../guard";
+import { splitConfig } from "../sync-folder";
 import {
   atLeastOne,
   deleteResponses,
@@ -129,10 +131,19 @@ const invalid = (code: string, message: string) => new DomainError(code, 422, me
 const unknownConnection = () =>
   invalid("unknown_connection", "The connection does not exist in this organization");
 
-/** The type's own check; what it says names the shape, never the config that was sent. */
-function validConfig(type: TargetType, config: unknown) {
+/**
+ * The type's own check of the config, and that its `folder` (the root when it has none) is one the
+ * project has; what it says names the shape, never the config that was sent. The root is not
+ * stored: a target without a folder syncs the root, as every target did before folders.
+ */
+async function validConfig(db: Executor, projectId: string, type: TargetType, config: unknown) {
   try {
-    return TARGET_TYPES[type].validate(config);
+    const { folder, rest } = splitConfig(config as Record<string, unknown>);
+    const valid = TARGET_TYPES[type].validate(rest);
+    if (folder !== ROOT && !(await getFolderByPath(db, projectId, folder))) {
+      throw invalid("unknown_folder", "The project has no such folder");
+    }
+    return folder === ROOT ? valid : { ...valid, folder };
   } catch (e) {
     if (e instanceof SyncError) throw invalid(e.kind, e.message);
     throw e;
@@ -245,7 +256,7 @@ export const syncTargetRoutes = ({ db, principal }: RouteDeps) =>
         const target = await db
           .transaction(async (tx) => {
             if (!(await getProject(tx, orgId, projectId))) throw notFound("Project");
-            const config = validConfig(body.type, body.config);
+            const config = await validConfig(tx, projectId, body.type, body.config);
             await usableConnection(tx, orgId, body.type, body.connectionId);
             if (body.environmentMapping) {
               await knownEnvironments(tx, orgId, projectId, body.environmentMapping);
@@ -264,6 +275,8 @@ export const syncTargetRoutes = ({ db, principal }: RouteDeps) =>
                 unmanagedPolicy: target.unmanagedPolicy,
                 autoSync: target.autoSync,
                 autoRemediate: target.autoRemediate,
+                // what the target reads is part of who can see it elsewhere: the audit says which
+                ...(typeof target.config.folder === "string" && { folder: target.config.folder }),
               }),
             );
             return target;
@@ -291,7 +304,10 @@ export const syncTargetRoutes = ({ db, principal }: RouteDeps) =>
             const type = held.type as TargetType;
             // Only what is given is checked: an old mapping to a since-deleted environment must not
             // block an unrelated change.
-            const config = body.config === undefined ? undefined : validConfig(type, body.config);
+            const config =
+              body.config === undefined
+                ? undefined
+                : await validConfig(tx, projectId, type, body.config);
             if (body.connectionId !== undefined) {
               await usableConnection(tx, orgId, type, body.connectionId);
             }
@@ -307,6 +323,7 @@ export const syncTargetRoutes = ({ db, principal }: RouteDeps) =>
               tx,
               audited("sync_target.update", target, {
                 fields: Object.keys(body),
+                ...(body.config !== undefined && { folder: target.config.folder ?? ROOT }),
                 ...(body.connectionId && { connectionId: body.connectionId }),
                 ...(body.unmanagedPolicy && { unmanagedPolicy: body.unmanagedPolicy }),
                 ...(body.autoSync !== undefined && { autoSync: body.autoSync }),

@@ -25,6 +25,8 @@ export interface LastApplied {
   fingerprint(value: string): string;
   /** The fingerprint of the value last applied to this item, if one was. */
   get(ref: ItemRef): string | undefined;
+  /** The item's `changedAt` as the apply left it, for a target that stamps its changes. */
+  changedAt?(ref: ItemRef): string | undefined;
 }
 
 export interface PlanOptions {
@@ -87,7 +89,10 @@ function changes(want: ItemInput, have: RemoteItem, lastApplied?: LastApplied): 
 
 function sameValue(want: ItemInput, have: RemoteItem, lastApplied?: LastApplied) {
   if (have.value !== null) return have.value === want.value;
-  // shortcut: a hidden value edited by hand on the target is not seen, only what was last applied is
-  const known = lastApplied?.get({ key: want.key, scope: want.scope });
-  return known !== undefined && known === lastApplied?.fingerprint(want.value);
+  const ref = { key: want.key, scope: want.scope };
+  const known = lastApplied?.get(ref);
+  if (known === undefined || known !== lastApplied?.fingerprint(want.value)) return false;
+  // a target that stamps its changes shows a hand edit; without a stamp the edit is not seen
+  // shortcut: a hidden value edited by hand on a target that gives no stamp is not seen, only what was last applied is
+  return have.changedAt === undefined || lastApplied?.changedAt?.(ref) === have.changedAt;
 }

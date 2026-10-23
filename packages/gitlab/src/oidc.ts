@@ -26,46 +26,48 @@ const rsaKey = z.object({
 const keySet = z.object({ keys: z.array(z.unknown()) });
 
 /**
- * The keys that sign this GitLab's job `id_token`s (`/oauth/discovery/keys`, public). Only RSA keys
- * with an id are kept: anything else could not verify the RS256 tokens GitLab issues, and
- * ignoring it keeps one odd key from failing the lot.
+ * The RSA keys at a JWKS address. Only RSA keys with an id are kept: anything else could not verify the RS256 tokens
+ * an issuer signs, and ignoring it keeps one odd key from failing the lot. `what` names the request in an error
+ * (never the address, which is no one's to read). Shared with `@orch/github`, whose Actions tokens have a JWKS too.
  */
+export async function fetchJwks(url: string, what: string, timeoutMs = 15_000): Promise<Jwk[]> {
+  const fail = (why: string, kind: GitlabError["kind"], status?: number) =>
+    new GitlabError(kind, `${what} ${why}`, status);
+  let res: Response;
+  let text: string;
+  try {
+    res = await fetch(url, {
+      headers: { accept: "application/json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    text = await res.text();
+  } catch (e) {
+    const timedOut = e instanceof Error && e.name === "TimeoutError";
+    throw timedOut
+      ? fail(`timed out after ${timeoutMs}ms`, "timeout")
+      : fail("request failed", "network");
+  }
+  if (!res.ok) throw fail(`failed (${res.status})`, kindOfStatus(res.status), res.status);
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw fail("returned a non-JSON response", "unexpected", res.status);
+  }
+  const { keys } = decode(keySet, body, "key set");
+  return keys.flatMap((k) => {
+    const r = rsaKey.safeParse(k);
+    return r.success ? [{ kty: r.data.kty, kid: r.data.kid, n: r.data.n, e: r.data.e }] : [];
+  });
+}
+
+/** The keys that sign this GitLab's job `id_token`s (`/oauth/discovery/keys`, public). */
 export function gitlabKeys(app: KeysApp) {
   const base = parseBaseUrl(app.baseUrl, app.allowInsecureHttp);
   const url = `${base.origin}${base.pathname.replace(/\/+$/, "")}/oauth/discovery/keys`;
-  const timeoutMs = app.timeoutMs ?? 15_000;
   return {
-    async jwks(): Promise<Jwk[]> {
-      const fail = (what: string, kind: GitlabError["kind"], status?: number) =>
-        new GitlabError(kind, `GitLab GET /oauth/discovery/keys ${what}`, status);
-      let res: Response;
-      let text: string;
-      try {
-        res = await fetch(url, {
-          headers: { accept: "application/json" },
-          redirect: "manual",
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        text = await res.text();
-      } catch (e) {
-        const timedOut = e instanceof Error && e.name === "TimeoutError";
-        throw timedOut
-          ? fail(`timed out after ${timeoutMs}ms`, "timeout")
-          : fail("request failed", "network");
-      }
-      if (!res.ok) throw fail(`failed (${res.status})`, kindOfStatus(res.status), res.status);
-      let body: unknown;
-      try {
-        body = JSON.parse(text);
-      } catch {
-        throw fail("returned a non-JSON response", "unexpected", res.status);
-      }
-      const { keys } = decode(keySet, body, "key set");
-      return keys.flatMap((k) => {
-        const r = rsaKey.safeParse(k);
-        return r.success ? [{ kty: r.data.kty, kid: r.data.kid, n: r.data.n, e: r.data.e }] : [];
-      });
-    },
+    jwks: () => fetchJwks(url, "GitLab GET /oauth/discovery/keys", app.timeoutMs),
   };
 }
 

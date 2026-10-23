@@ -10,6 +10,13 @@ no token variable in GitLab, nothing written to disk by `orch`.
   the exchange answers 503 `ci_unavailable`.
 - The GitLab project is registered in the platform (its `gitlab_project_id` is how the job is found), and
   the job's `environment:` name is the **slug** of an environment of that project.
+- **More than one GitLab.** A token is checked against the GitLab that issued it, and reaches only that
+  instance's projects, so project 42 of two instances are two projects. The deployment's own GitLab is
+  `GITLAB_URL` (still required, as `ORCH_CI_AUDIENCE` is checked against it); a token of any other GitLab
+  is accepted only when a GitLab connection is registered at exactly that address (the token's `iss`, no
+  trailing slash), and its keys are fetched from that connection's address. A project imported through a
+  connection belongs to it; a project linked before connections existed belongs to `GITLAB_URL`'s GitLab.
+  An address nobody registered is refused without any request to it.
 
 ## `.gitlab-ci.yml`
 
@@ -37,6 +44,47 @@ error.
 Keep the two steps apart. `eval "$(orch ci login)"` in one line does not fail the job when `orch ci login`
 fails (`eval` of nothing succeeds), and the job would carry on without a token. A shell variable holds the
 token in memory only; nothing is written to disk.
+
+## GitHub Actions
+
+A job of a repository on **github.com** signs in the same way, with the identity token the runner gives it.
+
+- The repository is linked to a project through a github.com GitHub connection; the repository's id (`repository_id`
+  in the token) is how the job is found. A repository of a GitHub Enterprise Server, or of an Enterprise Cloud
+  organization with its own subdomain, is not supported. A repository nobody linked is refused; one linked twice
+  (two organizations linked the same public repository) is refused as ambiguous.
+- The workflow needs the permission `id-token: write`. `orch ci login` then asks the runner for the token itself, for the
+  audience you give it with `--audience` or `ORCH_AUDIENCE`: the API's `ORCH_CI_AUDIENCE`. The audience is not a secret on
+  GitHub, so the repository binding is what keeps another repository out.
+
+```yaml
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging             # the slug of an environment in the platform; optional
+    env:
+      ORCH_API_URL: https://orch.example.com
+      ORCH_AUDIENCE: orch.example.com
+    steps:
+      - run: |
+          login="$(orch ci login)"
+          eval "$login"
+          orch run -- ./deploy.sh
+```
+
+What differs from GitLab: GitHub's token has no job id and no word on whether an environment has protection rules. The
+token reads the project's environment (its variables, secrets included) only from a ref GitHub says is protected
+(`ref_protected`) **and** a run started by `push`, `workflow_dispatch`, `schedule` or `release`: a pull request, a fork's
+included, never counts. A token that does not say so gets the project scopes only. With no job id, the token's
+**workflow run** (`run_id`) stands for the job (FRG-33): a lease or a state lock is held by the run, so the jobs of one run
+share them (and their lease allowance), and a plan summary or policy verdict is accepted from a job whose run is one
+of the stack-run's `plan` runs, on its ref. A protected ref gets the lease scopes and `state.write` as on GitLab; an
+unprotected one (a pull request's branch) gets neither, and `--state` gives it a read-only state token. A token
+with no `run_id` gets the project scopes only. The workflow file itself (`job_workflow_ref`) is not checked: anyone who
+may push to a protected branch can run a workflow there.
 
 ## What the token can do
 
@@ -193,6 +241,8 @@ raises it; the repository itself stores up to 16 MiB.
 ## Options
 
 - `orch run --prefix <PREFIX>`: name every variable `<PREFIX><NAME>` for the command.
+- `orch run|pull|export|push --folder <path>`: the one folder of the project's variables to read or write (default `/`, the root). An environment variable is flat, so a command holds one folder at a time and never its subfolders; inside it `${KEY}` is that folder's key and `${/path/KEY}` reaches another folder's.
+- `orch folders list|create|rm [<path>]`: the project's folders (`--org`, `--project`). A folder is removed only when nothing is in it.
 - `orch ci login --api-url <url>`: instead of `ORCH_API_URL`.
 - `orch ci login --id-token-env NAME`: when the `id_tokens:` entry is not called `ORCH_ID_TOKEN`.
 - `orch ci login --state`: a token for Terraform state alone (below).

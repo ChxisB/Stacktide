@@ -3,7 +3,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { Card, StatusBadge, type Tone } from "./components";
 import { ProjectPicker } from "./projects";
+import { SyncFlow } from "./sync-flow";
 import { Loading, when } from "./ui";
 
 // What a sync screen shows of a plan or a run is keys, scopes, actions and the names of the fields
@@ -74,6 +76,21 @@ const SPENT = new Set(["plan_stale", "plan_expired", "plan_not_applicable"]);
 const targetAt = (client: Client, orgId: string, projectId: string, targetId: string) =>
   client.organizations({ orgId }).projects({ projectId })["sync-targets"]({ targetId });
 
+// A plus, a tilde and a minus for what a plan does; the words beside them stay the only text.
+const MARK: Partial<Record<Action, string>> = {
+  create: "M9 4.5v9M4.5 9h9",
+  update: "M3.5 9.6c1.5-3 3.5-3 5.5-.5s4 2.5 5.5-.5",
+  delete: "M4.5 9h9",
+};
+function Op({ action }: { action: Action }) {
+  const d = MARK[action];
+  return d ? (
+    <svg className={`op op-${action}`} viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+      <path d={d} />
+    </svg>
+  ) : null;
+}
+
 const scopeText = (scope: string) => (scope === "*" ? "All environments" : scope);
 const n = (counts: Partial<Record<string, number>>, action: string) => counts[action] ?? 0;
 const writes = (counts: Partial<Record<string, number>>) =>
@@ -104,11 +121,20 @@ function Lines({ items, label, results }: { items: Line[]; label: string; result
                   <code>{i.key}</code>
                 </th>
                 <td>{scopeText(i.scope)}</td>
-                <td>{ACTION[i.action]}</td>
+                <td>
+                  <Op action={i.action} />
+                  {ACTION[i.action]}
+                </td>
                 <td>{i.changed.map((c) => FIELD[c] ?? c).join(", ")}</td>
                 {results && (
                   <td>
-                    {i.result === "applied" ? "Done" : i.result === "failed" ? "Failed" : ""}
+                    {i.result === "applied" ? (
+                      <StatusBadge tone="ok">Done</StatusBadge>
+                    ) : i.result === "failed" ? (
+                      <StatusBadge tone="bad">Failed</StatusBadge>
+                    ) : (
+                      ""
+                    )}
                     {i.error ? `: ${i.error}` : ""}
                   </td>
                 )}
@@ -227,6 +253,11 @@ function Plan({
 }
 
 const DRIFT = { unchecked: "Not checked yet", in_sync: "In sync", drifted: "Drifted" } as const;
+const DRIFT_TONE: Record<Drift["status"], Tone> = {
+  unchecked: "quiet",
+  in_sync: "ok",
+  drifted: "warn",
+};
 
 function Health({ drift, last }: { drift: Drift; last: Run | null | undefined }) {
   const failed = last?.items.filter((i) => i.result === "failed").length ?? 0;
@@ -234,7 +265,7 @@ function Health({ drift, last }: { drift: Drift; last: Run | null | undefined })
     <dl className="facts">
       <dt>Drift</dt>
       <dd>
-        <span className="tag">{DRIFT[drift.status]}</span>
+        <StatusBadge tone={DRIFT_TONE[drift.status]}>{DRIFT[drift.status]}</StatusBadge>
         {drift.checkedAt && <> checked {when(drift.checkedAt)}</>}
         {drift.status === "drifted" && (
           <>
@@ -264,11 +295,13 @@ function Health({ drift, last }: { drift: Drift; last: Run | null | undefined })
 function TargetCard({
   orgId,
   projectId,
+  projectName,
   target,
   pollMs,
 }: {
   orgId: string;
   projectId: string;
+  projectName: string;
   target: Target;
   pollMs: number;
 }) {
@@ -313,19 +346,32 @@ function TargetCard({
 
   const applying = last.data?.status === "applying";
   const failure = drift.error ?? last.error;
-  const mapped = Object.entries(target.environmentMapping);
   return (
-    <section className="stack card" aria-label={`Sync target ${target.name}`}>
-      <h2>{target.name}</h2>
+    <Card
+      label={`Sync target ${target.name}`}
+      title={target.name}
+      actions={
+        !plan && (
+          <button
+            type="button"
+            onClick={() => void makePlan()}
+            disabled={busy !== undefined || applying}
+          >
+            {busy === "plan" ? "Planning…" : "Plan sync"}
+          </button>
+        )
+      }
+    >
       <p className="muted">
         {TYPE[target.type] ?? target.type}. {POLICY[target.unmanagedPolicy]}{" "}
         {target.autoSync ? "Syncs by itself when a variable changes." : "Syncs when you ask."}
       </p>
-      {mapped.length > 0 && (
-        <p className="muted">
-          Environments: {mapped.map(([slug, scope]) => `${slug} → ${scope}`).join(", ")}
-        </p>
-      )}
+      <SyncFlow
+        project={projectName}
+        target={{ name: target.name, type: TYPE[target.type] ?? target.type }}
+        mapping={target.environmentMapping}
+        lines={plan?.items}
+      />
       {failure ? (
         <ErrorPanel
           error={failure}
@@ -344,7 +390,7 @@ function TargetCard({
           {error}
         </p>
       )}
-      {plan ? (
+      {plan && (
         <Plan
           target={target}
           plan={plan}
@@ -353,16 +399,6 @@ function TargetCard({
           apply={() => void apply()}
           discard={() => setPlan(undefined)}
         />
-      ) : (
-        <div className="row">
-          <button
-            type="button"
-            onClick={() => void makePlan()}
-            disabled={busy !== undefined || applying}
-          >
-            {busy === "plan" ? "Planning…" : "Plan sync"}
-          </button>
-        </div>
       )}
       {last.data?.items.some((i) => i.action !== "noop") && (
         <details open={last.data.items.some((i) => i.result === "failed")}>
@@ -370,17 +406,19 @@ function TargetCard({
           <Lines items={last.data.items} label={`Last sync of ${target.name}`} results />
         </details>
       )}
-    </section>
+    </Card>
   );
 }
 
 function ProjectSync({
   orgId,
   projectId,
+  projectName,
   pollMs,
 }: {
   orgId: string;
   projectId: string;
+  projectName: string;
   pollMs: number;
 }) {
   const client = useClient();
@@ -398,12 +436,23 @@ function ProjectSync({
     return <ErrorPanel error={targets.error} retry={() => void targets.refetch()} />;
   if (!targets.data) return <Loading what="Loading sync targets" />;
   if (targets.data.length === 0) {
-    return <p>This project has no sync targets yet.</p>;
+    return (
+      <Card title="Sync targets">
+        <p>This project has no sync targets yet.</p>
+      </Card>
+    );
   }
   return (
     <>
       {targets.data.map((t) => (
-        <TargetCard key={t.id} orgId={orgId} projectId={projectId} target={t} pollMs={pollMs} />
+        <TargetCard
+          key={t.id}
+          orgId={orgId}
+          projectId={projectId}
+          projectName={projectName}
+          target={t}
+          pollMs={pollMs}
+        />
       ))}
     </>
   );
@@ -414,7 +463,13 @@ export function SyncPage({ orgId, pollMs = POLL_MS }: { orgId: string; pollMs?: 
   return (
     <ProjectPicker orgId={orgId}>
       {(project) => (
-        <ProjectSync key={project.id} orgId={orgId} projectId={project.id} pollMs={pollMs} />
+        <ProjectSync
+          key={project.id}
+          orgId={orgId}
+          projectId={project.id}
+          projectName={project.name}
+          pollMs={pollMs}
+        />
       )}
     </ProjectPicker>
   );

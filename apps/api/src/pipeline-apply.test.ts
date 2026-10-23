@@ -8,10 +8,14 @@ import {
   createProject,
   createSyncTarget,
   createVariable,
+  type NewStack,
+  syncStacks,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
+import { gitlabForge } from "@orch/forge";
 import { createGitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
+import { STACK_WORKFLOW_FILE } from "@orch/iac";
 import { loadTemplates, render, type Template } from "@orch/pipelines";
 import {
   applyPipeline,
@@ -60,9 +64,9 @@ async function world(
   const deps: PipelineDeps = {
     db: t.db,
     catalog,
-    gitlab: async () => {
+    forge: async () => {
       opened.push(1);
-      return api;
+      return gitlabForge(api);
     },
   };
   const run = (request: Parameters<typeof applyPipeline>[4], c: string = CONNECTION) =>
@@ -93,6 +97,32 @@ const failure = async (p: Promise<unknown>) => {
   }
   throw new Error("did not throw");
 };
+
+// FRG-31: the stack workflow is GitHub's. A GitLab project that has stacks runs them from the pipeline it already has.
+test("a GitLab project with stacks, on a platform that knows its address, gets no stack workflow", async () => {
+  const w = await world();
+  const stack: NewStack = {
+    name: "net",
+    path: "net",
+    tool: "tofu",
+    version: "1.9.8",
+    tags: [],
+    dependsOn: [],
+    watch: [],
+    applyOn: "command",
+    backend: "http",
+  };
+  await syncStacks(t.db, w.org.id, w.project.id, [stack], { prune: false });
+  w.deps.platform = { apiUrl: "https://orch.example.com", audience: "orch-platform" };
+  expect(await w.run(bun)).toMatchObject({ outcome: "opened", committed: true });
+  expect(
+    await w.api.repository
+      .getFile(w.remote.id, STACK_WORKFLOW_FILE, PIPELINE_BRANCH)
+      .catch(() => null),
+  ).toBeNull();
+  const [mr] = await w.mrs();
+  expect(mr?.description).not.toContain("orch-stacks");
+});
 
 describe("applyPipeline", () => {
   test("a first run commits to a branch and opens one merge request; the default branch is untouched", async () => {

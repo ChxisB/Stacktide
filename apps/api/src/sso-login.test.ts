@@ -597,6 +597,35 @@ describe("the role a sign-in gets", () => {
     expect((await b.call(`/organizations/${other.id}`)).status).toBe(404);
   });
 
+  test("a second GitLab instance as the provider: its id_token's groups_direct earns the role, and nothing of the deployment's GitLab (FRG-6)", async () => {
+    // GitLab puts the paths of the groups a person directly belongs to in `groups_direct` (the per-level claims are in
+    // userinfo only, which sign-in does not read), and `sub` is the id on that instance
+    const s = await setup({
+      roleMap: [
+        { claim: "groups_direct", value: "acme/platform", role: "admin" },
+        { claim: "groups_direct", value: "acme", role: "viewer" },
+      ],
+    });
+    const b = s.browser();
+    s.idp.claims = { ...s.idp.claims, sub: "100", groups_direct: ["acme", "acme/platform"] };
+    expect((await b.signIn()).status).toBe(302);
+    // a person with the same number on the deployment's GitLab is someone else, and holds nothing from it
+    const elsewhere = await upsertUser(t.db, {
+      gitlabId: 100,
+      username: "same-number",
+      name: "Other",
+    });
+    const subject = await subjectOf(b.jar);
+    expect(subject?.orgRoles).toEqual({ [s.org.id]: "admin" });
+    expect(subject?.projectRoles).toEqual({});
+    expect(await identities(s.provider.id)).toHaveLength(1);
+    expect((await identities(s.provider.id))[0]?.userId).not.toBe(elsewhere.id);
+    // a person of the same instance who is in no mapped group is refused, as for any provider
+    const c = s.browser();
+    s.idp.claims = { ...s.idp.claims, sub: "101", groups_direct: ["other"] };
+    expect((await c.signIn()).status).toBe(401);
+  });
+
   test("a changed role shows at the next sign-in, in either direction", async () => {
     const s = await setup();
     const b = s.browser();

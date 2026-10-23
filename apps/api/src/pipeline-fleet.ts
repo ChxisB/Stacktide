@@ -1,6 +1,6 @@
 import { DomainError, type Logger } from "@orch/core";
 import { type Db, listPinnedPipelines } from "@orch/db";
-import type { Gitlab } from "@orch/gitlab";
+import type { Forge } from "@orch/forge";
 import { byVersion, type Template } from "@orch/pipelines";
 import type { GuardrailConfig } from "@orch/sync";
 import {
@@ -23,8 +23,8 @@ export const FLEET_PAUSE_MS = 500;
 export interface FleetDeps {
   db: Db;
   catalog: readonly Template[];
-  /** The GitLab client of one of the organization's connections. */
-  gitlab: (connectionId: string) => Promise<Gitlab>;
+  /** The forge of one of the organization's connections: GitLab or GitHub, by its type. */
+  forge: (connectionId: string) => Promise<Forge>;
   /** Stores what an apply did to one project: its configuration and the audit row, in one transaction. */
   record: (projectId: string, applied: Applied) => Promise<void>;
   /** Waits between two projects (the rate limit); a test passes one that does not wait. */
@@ -221,7 +221,7 @@ export async function upgradeFleet(
       const pipelineDeps: PipelineDeps = {
         db: deps.db,
         catalog: deps.catalog,
-        gitlab: () => deps.gitlab(config.connectionId),
+        forge: () => deps.forge(config.connectionId),
         guardrails: deps.guardrails,
       };
       if (mode === "plan") {

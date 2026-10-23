@@ -1,0 +1,18 @@
+{
+  "name": "@orch/github",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./mock": "./src/mock/server.ts"
+  },
+  "dependencies": {
+    "@orch/core": "workspace:*",
+    "@orch/gitlab": "workspace:*",
+    "libsodium-wrappers": "0.8.4",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "yaml": "2.8.3"
+  }
+}

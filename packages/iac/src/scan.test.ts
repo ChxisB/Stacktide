@@ -350,6 +350,23 @@ describe("scanStacks", () => {
       }
     });
 
+    test("a DNS zone has no Terraform state: it is not judged, its files are not read, and prune is kept", async () => {
+      const source = repo({
+        "dns/stack.yml": "name: zone\ntool: dnscontrol\nversion: 5.5.0\ndns: { prune: true }\n",
+        "dns/dnsconfig.js": "",
+        "dns/main.tf": "",
+      });
+      const r = await scanStacks(source);
+      expect(r.problems).toEqual([]);
+      expect(r.stacks[0]).toMatchObject({
+        tool: "dnscontrol",
+        version: "5.5.0",
+        backend: "unchecked",
+        dnsPrune: true,
+      });
+      expect(source.reads).toEqual(["dns/stack.yml"]);
+    });
+
     test("Terragrunt generates its backend, so it is not judged and its files are not read", async () => {
       const source = repo({ "s/stack.yml": "name: s\ntool: terragrunt\n", "s/terragrunt.hcl": "" });
       const r = await scanStacks(source);

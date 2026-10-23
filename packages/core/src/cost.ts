@@ -48,6 +48,20 @@ export function limitFor<L extends CostLimit>(
   return byTag[0] ?? limits.find((l) => l.tag === null);
 }
 
+/** A DNS zone's plan is record changes, not resources with a price: nothing there to estimate. */
+export const isCosted = (tool: string) => tool !== "dnscontrol";
+
+/**
+ * The limit that judges a stack of `tool`: none for a stack with no price, else `limitFor`. A stack the
+ * scan does not know is judged as before, by the organization's own limit.
+ */
+export function limitOf<L extends CostLimit>(
+  limits: readonly L[],
+  stack: { tool: string; tags: readonly string[] } | undefined,
+): L | undefined {
+  return stack && !isCosted(stack.tool) ? undefined : limitFor(limits, stack?.tags ?? []);
+}
+
 /** The rules a cost verdict names; they travel like a policy rule's name, in the same lists. */
 export const COST_RULES = {
   over: "cost-over-limit",

@@ -9,7 +9,9 @@ import {
   savePipelineConfig,
   type Tx,
 } from "@orch/db";
+import type { Forge } from "@orch/forge";
 import { createGitlab } from "@orch/gitlab";
+import type { Platform } from "@orch/iac";
 import {
   limitedProperties,
   loadTemplates,
@@ -23,7 +25,7 @@ import type { GuardrailConfig } from "@orch/sync";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
-import { openGitlabConnection } from "../connections";
+import { forgeFor, openAnyConnection, openGitlabConnection } from "../connections";
 import { guardPlugin } from "../guard";
 import { type Applied, applyPipeline, type PipelineDeps, previewPipeline } from "../pipeline-apply";
 import { iso, notFound, type RouteDeps, readErrors, slug, stamps, writeErrors } from "./shared";
@@ -161,6 +163,17 @@ export async function gitlabFor(
   });
 }
 
+/** The forge of one of the organization's connections, by its type: GitLab or GitHub. The token is opened here and goes no further. */
+export async function forgeOf(
+  deps: { db: Db; keys?: KeyProvider; logger: Logger },
+  orgId: string,
+  connectionId: string,
+  requestId: unknown,
+): Promise<Forge> {
+  const { connection, token } = await openAnyConnection(deps, orgId, connectionId, requestId);
+  return forgeFor(connection, token, { timeoutMs: 15_000, maxRetries: 1, maxRetryDelayMs: 2_000 });
+}
+
 /** Stores what an apply did to a project and audits it, in the caller's transaction. `extra` joins the audit metadata. */
 export async function recordApplied(
   tx: Tx,
@@ -209,11 +222,13 @@ export const pipelineRoutes = ({
   logger,
   templates: given,
   guardrails,
+  platform,
 }: RouteDeps & {
   keys?: KeyProvider;
   logger: Logger;
   templates?: readonly Template[];
   guardrails?: GuardrailConfig | undefined;
+  platform?: Platform | undefined;
 }) => {
   const templates = catalogOf(given);
   const reach = async (
@@ -223,8 +238,9 @@ export const pipelineRoutes = ({
   ): Promise<PipelineDeps> => ({
     db,
     catalog: await templates(),
-    gitlab: () => gitlabFor({ db, keys, logger }, orgId, connectionId, requestId),
+    forge: () => forgeOf({ db, keys, logger }, orgId, connectionId, requestId),
     guardrails,
+    platform,
   });
   const wanted = (b: z.infer<typeof request>) => {
     const { connectionId, ...rest } = b;

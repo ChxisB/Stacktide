@@ -1,9 +1,16 @@
 /** What a repository looks like it is. A project can be several of these at once. */
-export const PROJECT_TAGS = ["bun", "node", "docker", "terraform", "terragrunt"] as const;
+export const PROJECT_TAGS = [
+  "bun",
+  "node",
+  "docker",
+  "terraform",
+  "terragrunt",
+  "dnscontrol",
+] as const;
 export type ProjectTag = (typeof PROJECT_TAGS)[number];
 
-/** The tags of the projects whose stacks are planned: merge requests (IAC-7) and drift runs (POL-1). */
-export const IAC_TAGS: readonly ProjectTag[] = ["terraform", "terragrunt"];
+/** The tags of the projects whose stacks are planned: merge requests (IAC-7) and drift runs (POL-1). A DNS zone is a stack too. */
+export const IAC_TAGS: readonly ProjectTag[] = ["terraform", "terragrunt", "dnscontrol"];
 
 export interface DetectedType {
   tag: ProjectTag;
@@ -21,6 +28,8 @@ const COMPOSE = /^(docker-)?compose\.ya?ml$/;
 const DOCKERFILE = /^(Dockerfile(\.(?!(md|txt|rst)$).+)?|.+\.Dockerfile|Containerfile)$/;
 const TERRAFORM = /\.tf(\.json)?$|^\.terraform\.lock\.hcl$/;
 const TERRAGRUNT = /^terragrunt\.hcl(\.json)?$/;
+// the file DNSControl reads, and `orch dns init` writes, for a zone (DNS-12)
+const DNSCONFIG = "dnsconfig.js";
 const EVIDENCE = 3;
 
 const split = (path: string) => {
@@ -63,6 +72,7 @@ export function detectProjectTypes(paths: readonly string[]): DetectedType[] {
     if (DOCKERFILE.test(file) || COMPOSE.test(file)) add("docker", path, atRoot);
     if (TERRAFORM.test(file)) add("terraform", path, atRoot);
     if (TERRAGRUNT.test(file)) add("terragrunt", path, atRoot);
+    if (file === DNSCONFIG) add("dnscontrol", path, atRoot);
   }
   return PROJECT_TAGS.flatMap((tag) => {
     const entry = found.get(tag);

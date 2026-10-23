@@ -554,6 +554,7 @@ describe("audit coverage", () => {
         "auth.ci_exchange",
         "auth.login",
         "auth.login", // the sign-in through an organization's identity provider
+        "auth.login", // and the sign-in with GitHub
         "sso.membership.end", // and a sign-in its role map gives no role to, ending the role an earlier one gave
         "identity.link", // and one that joins an identity to the person already signed in
         "identity.unlink", // a person giving one up
@@ -584,10 +585,16 @@ describe("audit coverage", () => {
         "run.create", // a run of IaC stacks
         "run.summary", // a plan job's counts for its stack
         "run.policy", // a plan job's policy verdict for its stack
+        "run.policy", // and the verdict a DNS zone's plan gets from the claims and its prune setting, on ingest of its summary
         "policy.set.create", // a policy set an organization judges plans by
         "policy.set.delete",
         "cost.limit.set", // what one plan may add to the monthly cost, for an organization or a stack tag
+        "deployment.refresh", // reading a project's deployments from GitLab (DEP-5)
+        "deployment.promote", // starting a pipeline that deploys a build to an environment (DEP-12)
+        "deployment.rollback", // the same, for the build that was there before (DEP-13)
         "cost.limit.delete",
+        "dns_zone.create", // a zone handed to a project's stack
+        "dns_zone.delete",
         "secret.gate.update", // what open secret findings do to an apply: nothing, a note, or a refusal
         "sso.create", // who may sign in to the organization through an identity provider, and with which role
         "sso.update",
@@ -625,6 +632,10 @@ describe("audit coverage", () => {
         // the environment's resolved set with its values: a row for each secret revealed, and one for the request
         "variable.reveal",
         "variable.export",
+        // a project's variable folders: the path is on record, and no value
+        "variable_folder.create",
+        "variable_folder.rename",
+        "variable_folder.delete",
         ...["organization", "project", "environment", "sync_target"].flatMap((r) =>
           ["create", "update", "delete"].map((v) => `${r}.${v}`),
         ),

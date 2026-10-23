@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import { APP_NAME, DomainError } from "@orch/core";
-import { type Db, getProject, type NewPipelineConfig } from "@orch/db";
-import { type Gitlab, GitlabError } from "@orch/gitlab";
+import { type Db, getProject, listStacks, type NewPipelineConfig } from "@orch/db";
+import type { Forge } from "@orch/forge";
+import { GitlabError } from "@orch/gitlab";
+import { GenerateError, type Platform, renderStackWorkflow, STACK_WORKFLOW_FILE } from "@orch/iac";
 import {
   byVersion,
+  checkLayers,
   componentPath,
   GENERATED,
   type IncludeTarget,
@@ -13,6 +16,7 @@ import {
   render,
   renderComponent,
   renderInclude,
+  renderWorkflow,
   type Template,
   type Validation,
 } from "@orch/pipelines";
@@ -22,6 +26,9 @@ import { WAY_OUT } from "./guardrails";
 import { validatePipeline } from "./pipeline-validate";
 
 export const PIPELINE_FILE = ".gitlab-ci.yml";
+/** Where a forge reads its pipeline from. */
+export const pipelineFileOf = (kind: Forge["kind"]) =>
+  kind === "github" ? ".github/workflows/orch.yml" : PIPELINE_FILE;
 /** The branch the merge request comes from: one per project, so a re-run finds it again. */
 export const PIPELINE_BRANCH = `${APP_NAME}/pipeline`;
 
@@ -70,20 +77,31 @@ export interface PipelineDeps {
   db: Db;
   catalog: readonly Template[];
   /** Opens the connection that reaches the project; called once the project is known to be there. */
-  gitlab: () => Promise<Gitlab>;
+  forge: () => Promise<Forge>;
   /** The built-in guardrails (POL-4); the defaults when left out. */
   guardrails?: GuardrailConfig | undefined;
+  /** Where the platform is (FRG-31): a GitHub project that has stacks gets the workflow that runs them, rendered for this. Left out, that file is not delivered. */
+  platform?: Platform | undefined;
 }
 
-/** GitLab refusing or failing, as the API reports it: about this project (422) or about GitLab (502). */
-export const gitlabProblem = (e: unknown) => {
+/** A file delivered beside the pipeline: its text, and what the default branch holds now. */
+interface Extra {
+  path: string;
+  text: string;
+  onDefault: string | null;
+}
+
+/** The forge refusing or failing, as the API reports it: about this project (422) or about the forge (502). The codes keep GitLab's name. */
+export const gitlabProblem = (e: unknown, kind: Forge["kind"] = "gitlab") => {
   if (!(e instanceof GitlabError)) return e;
   const aboutProject = e.kind === "not_found" || e.kind === "forbidden";
   return new DomainError(
     aboutProject ? "gitlab_project_unreachable" : "gitlab_failed",
     aboutProject ? 422 : 502,
     aboutProject
-      ? "GitLab has no such project, or the connection's token cannot use it."
+      ? kind === "github"
+        ? "GitHub has no such repository, or the connection's token cannot use it."
+        : "GitLab has no such project, or the connection's token cannot use it."
       : WHY[e.kind],
   );
 };
@@ -113,6 +131,15 @@ export const pick = (catalog: readonly Template[], name: string, version?: strin
 
 const sentence = (lines: string[]) => lines.join("; ");
 
+/** What stands in for a lint on a forge that has none: valid, with the lack said (`actionlint` is run by hand and in tests, not here). */
+const notLinted = async () => ({
+  valid: true,
+  errors: [],
+  warnings: [
+    "This workflow was not checked: GitHub does not check one before it is merged, and the platform does not run actionlint. GitHub reads it when the pull request is opened.",
+  ],
+});
+
 /**
  * Renders the pipeline, has GitLab lint it and checks the variables it needs (PIPE-3, PIPE-5), and
  * looks at what the default branch holds. Writes nothing anywhere.
@@ -141,24 +168,46 @@ async function prepare(
         : `The ${mode} mode needs the templates project`,
     );
   }
-  let text: string;
-  try {
-    text = !include
-      ? render(template, [layer])
+  // what the template refuses is refused before the connection is opened: its token is not read for a request that cannot succeed
+  const refused = <T>(make: () => T): T => {
+    try {
+      return make();
+    } catch (e) {
+      if (e instanceof RenderError || e instanceof GenerateError) {
+        throw new DomainError("invalid_pipeline", 422, sentence(e.problems.slice(0, 10)));
+      }
+      throw e;
+    }
+  };
+  refused(() => checkLayers(template, [layer]));
+  const ref = project.gitlabProjectId;
+  const api = await deps.forge();
+  const file = pipelineFileOf(api.kind);
+  // GitHub reads a workflow, not an `include:` of a template, so only the whole file can be delivered to it (FRG-16)
+  if (api.kind === "github" && mode !== "inline") {
+    throw new DomainError(
+      "invalid_pipeline",
+      422,
+      `GitHub has no ${mode} mode: a workflow is committed whole`,
+    );
+  }
+  const text = refused(() =>
+    !include
+      ? api.kind === "github"
+        ? renderWorkflow(template, [layer])
+        : render(template, [layer])
       : mode === "component"
         ? renderComponent(template, [layer], {
             project: include.project,
             version: include.ref ?? "",
           })
-        : renderInclude(template, [layer], include);
-  } catch (e) {
-    if (e instanceof RenderError) {
-      throw new DomainError("invalid_pipeline", 422, sentence(e.problems.slice(0, 10)));
-    }
-    throw e;
-  }
-  const ref = project.gitlabProjectId;
-  const api = await deps.gitlab();
+        : renderInclude(template, [layer], include),
+  );
+  // FRG-31: GitHub runs a project's stacks from a workflow of its own, so the project that has stacks gets it too
+  const hasStacks =
+    api.kind === "github" && (await listStacks(deps.db, orgId, projectId)).length > 0;
+  const { platform } = deps;
+  const stackText = hasStacks && platform ? refused(() => renderStackWorkflow(platform)) : null;
   try {
     const base = (await api.projects.get(ref)).defaultBranch;
     if (!base)
@@ -168,12 +217,11 @@ async function prepare(
       projectId,
       template,
       text,
-      lint: (content) => api.ci.lint(ref, content),
+      lint: api.capabilities.ciLint ? (content) => api.ci.lint(ref, content) : notLinted,
       environments: request.environments,
       guardrails: deps.guardrails,
     });
-    const onDefault =
-      (await notFound(api.repository.getFile(ref, PIPELINE_FILE, base)))?.content ?? null;
+    const onDefault = (await notFound(api.repository.getFile(ref, file, base)))?.content ?? null;
     const existing: Existing =
       onDefault === null
         ? "none"
@@ -182,6 +230,16 @@ async function prepare(
           : onDefault.startsWith(GENERATED)
             ? "generated"
             : "hand-written";
+    const stack: Extra | null =
+      stackText === null
+        ? null
+        : {
+            path: STACK_WORKFLOW_FILE,
+            text: stackText,
+            onDefault:
+              (await notFound(api.repository.getFile(ref, STACK_WORKFLOW_FILE, base)))?.content ??
+              null,
+          };
     const prepared: Prepared = {
       text,
       current: onDefault,
@@ -191,9 +249,19 @@ async function prepare(
       template: template.manifest,
       mode,
     };
-    return { api, ref, base, onDefault, prepared, template };
+    return {
+      api,
+      ref,
+      base,
+      file,
+      onDefault,
+      prepared,
+      template,
+      stack,
+      noPlatform: hasStacks && !platform,
+    };
   } catch (e) {
-    throw gitlabProblem(e);
+    throw gitlabProblem(e, api.kind);
   }
 }
 
@@ -227,15 +295,25 @@ const SHOWN = 10;
 const clip = (s: string) => s.replaceAll("`", "'").slice(0, 300);
 
 /** The merge request's text. The same inputs give the same text, so a re-run changes nothing. */
-function describeMr(p: Prepared, request: PipelineRequest, version: string) {
+function describeMr(
+  p: Prepared,
+  request: PipelineRequest,
+  version: string,
+  file: string,
+  kind: Forge["kind"],
+  stack: Extra | null,
+  noPlatform: boolean,
+) {
   const given = Object.entries(request.params ?? {});
   const overrides = Object.keys(request.overrides ?? {}).length;
   const lines = [
     `Generated by ${APP_NAME} from the template **${p.template.name}** ${version}. Change the pipeline there, not in this file: it is rewritten on the next run.`,
     "",
     p.existing === "hand-written"
-      ? `**This replaces the \`${PIPELINE_FILE}\` that is on the default branch, which was written by hand. Read the diff before merging.**`
-      : `This ${p.existing === "none" ? "adds" : "updates"} \`${PIPELINE_FILE}\`.`,
+      ? `**This replaces the \`${file}\` that is on the default branch, which was written by hand. Read the diff before merging.**`
+      : p.existing === "identical"
+        ? `\`${file}\` is already as it should be on the default branch.`
+        : `This ${p.existing === "none" ? "adds" : "updates"} \`${file}\`.`,
     "",
     `Parameters: ${given.length === 0 ? "the template's defaults" : given.map(([k, v]) => `\`${k}\` = \`${clip(JSON.stringify(v))}\``).join(", ")}.`,
   ];
@@ -254,6 +332,18 @@ function describeMr(p: Prepared, request: PipelineRequest, version: string) {
       `The pipeline itself is not in this file: it includes \`${includePath(p.template)}\` of \`${project}\`${ref === undefined ? "" : ` at \`${clip(ref)}\``}, and passes it these parameters. That file must be published there before this is merged. Whoever can change \`${project}\` changes this project's pipeline.`,
     );
   }
+  if (stack && stack.onDefault !== stack.text) {
+    lines.push(
+      "",
+      `This also ${stack.onDefault === null ? "adds" : "updates"} \`${stack.path}\`: it runs this project's IaC stacks (plan and apply) for the platform.`,
+    );
+  }
+  if (noPlatform) {
+    lines.push(
+      "",
+      `**\`${STACK_WORKFLOW_FILE}\` was not added:** this project has stacks, but the platform does not know its own address (\`ORCH_API_URL\` and \`ORCH_CI_AUDIENCE\` are not set), so it cannot write the workflow.`,
+    );
+  }
   if (overrides > 0)
     lines.push(
       `Overrides: ${overrides} entr${overrides === 1 ? "y" : "ies"} merged over the template.`,
@@ -269,7 +359,7 @@ function describeMr(p: Prepared, request: PipelineRequest, version: string) {
   }
   const warnings = p.validation.lint.warnings;
   if (warnings.length > 0) {
-    lines.push("", "**GitLab's lint warns**");
+    lines.push("", kind === "github" ? "**Not checked**" : "**GitLab's lint warns**");
     for (const w of warnings.slice(0, SHOWN)) lines.push(`- ${clip(w)}`);
     if (warnings.length > SHOWN) lines.push(`- and ${warnings.length - SHOWN} more`);
   }
@@ -293,7 +383,7 @@ export async function applyPipeline(
   connectionId: string,
   request: PipelineRequest,
 ): Promise<Applied> {
-  const { api, ref, base, onDefault, prepared, template } = await prepare(
+  const { api, ref, base, file, onDefault, prepared, template, stack, noPlatform } = await prepare(
     deps,
     orgId,
     projectId,
@@ -327,19 +417,25 @@ export async function applyPipeline(
     mode: prepared.mode,
     config: config(mr),
   });
-  if (onDefault === text) return done("in_place", false, null);
-  // a file already in place commits nothing, so a guardrail has nothing to refuse
-  if (validation.violations.length > 0) throw violationRefusal(validation);
+  const files: Extra[] = [{ path: file, text, onDefault }, ...(stack ? [stack] : [])];
+  if (files.every((f) => f.onDefault === f.text)) return done("in_place", false, null);
+  // a pipeline already in place commits nothing, so a guardrail has nothing to refuse
+  if (onDefault !== text && validation.violations.length > 0) throw violationRefusal(validation);
 
   try {
     const onBranch = await notFound(api.repository.getBranch(ref, PIPELINE_BRANCH));
-    const there = onBranch
-      ? ((await notFound(api.repository.getFile(ref, PIPELINE_FILE, PIPELINE_BRANCH)))?.content ??
-        null)
-      : null;
-    let committed = false;
-    if (there !== text) {
-      const action = (onBranch ? there : onDefault) === null ? "create" : "update";
+    // what each file holds where the commit will land: the branch if it is there, else the default branch it starts from
+    const changes: { action: "create" | "update"; path: string; content: string }[] = [];
+    for (const f of files) {
+      const now = onBranch
+        ? ((await notFound(api.repository.getFile(ref, f.path, PIPELINE_BRANCH)))?.content ?? null)
+        : f.onDefault;
+      if (now !== f.text) {
+        changes.push({ action: now === null ? "create" : "update", path: f.path, content: f.text });
+      }
+    }
+    const committed = changes.length > 0;
+    if (committed) {
       await api.repository.commitFiles(
         ref,
         {
@@ -347,14 +443,13 @@ export async function applyPipeline(
           message: `Set up CI from the ${template.manifest.name} template ${version}`,
           ...(onBranch ? {} : { startBranch: base }),
         },
-        [{ action, path: PIPELINE_FILE, content: text }],
+        changes,
       );
-      committed = true;
     }
 
     const title = `Set up CI from the ${template.manifest.name} template`;
-    const description = describeMr(prepared, request, version);
-    let open: Awaited<ReturnType<Gitlab["mergeRequests"]["get"]>> | undefined;
+    const description = describeMr(prepared, request, version, file, api.kind, stack, noPlatform);
+    let open: Awaited<ReturnType<Forge["mergeRequests"]["get"]>> | undefined;
     for await (const mr of api.mergeRequests.list(ref, {
       sourceBranch: PIPELINE_BRANCH,
       targetBranch: base,
@@ -384,6 +479,6 @@ export async function applyPipeline(
       url: mr.webUrl,
     });
   } catch (e) {
-    throw gitlabProblem(e);
+    throw gitlabProblem(e, api.kind);
   }
 }

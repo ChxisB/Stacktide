@@ -83,7 +83,14 @@ afterAll(async () => {
 });
 
 const ciToken = async (
-  over: { project?: string; org?: string; scopes?: string[]; ttlMs?: number; job?: number } = {},
+  over: {
+    project?: string;
+    org?: string;
+    scopes?: string[];
+    ttlMs?: number;
+    job?: number | null; // null: a GitHub job, which has a workflow run (`pipeline`) and no job id
+    pipeline?: number;
+  } = {},
 ) => {
   const fresh = newCiToken();
   await createCiToken(t.db, {
@@ -92,7 +99,8 @@ const ciToken = async (
     tokenHash: fresh.tokenHash,
     scopes: over.scopes ?? ["project.read", "state.read", "state.write"],
     gitlabProjectId: 1,
-    gitlabJobId: over.job ?? 4242,
+    ...(over.job !== null && { gitlabJobId: over.job ?? 4242 }),
+    ...(over.pipeline && { gitlabPipelineId: over.pipeline }),
     ref: "main",
     refProtected: true,
     ttlMs: over.ttlMs ?? HOUR,
@@ -675,6 +683,19 @@ describe("locks (STATE-4)", () => {
       (await send("LOCK", at("net", ids.o1, ids.p2), { ...writer, body: lockInfo("L1") })).status,
     ).toBe(404);
     expect(await locksOf()).toHaveLength(0);
+  });
+
+  test("a GitHub job, which has no job id, holds the lock as its workflow run (FRG-33)", async () => {
+    await clearLocks();
+    const run = { authorization: basic(await ciToken({ job: null, pipeline: 8801 })) };
+    expect((await send("LOCK", at(), { ...run, body: lockInfo("L1") })).status).toBe(200);
+    expect((await locksOf()).map((r) => r.owner)).toEqual([`ci:${ids.p1}:run-8801`]);
+    // another job of the run holds it too; another run's is turned away
+    const mate = { authorization: basic(await ciToken({ job: null, pipeline: 8801 })) };
+    expect((await send("LOCK", at(), { ...mate, body: lockInfo("L1") })).status).toBe(200);
+    const other = { authorization: basic(await ciToken({ job: null, pipeline: 8802 })) };
+    expect((await send("LOCK", at(), { ...other, body: lockInfo("L2") })).status).toBe(423);
+    await send("UNLOCK", at(), { ...run, body: lockInfo("L1") });
   });
 
   test("a lock on a stack since taken out of the repository can still be released, by its holder or an admin", async () => {

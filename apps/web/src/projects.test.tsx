@@ -75,10 +75,10 @@ describe("connecting GitLab", () => {
     const list = await screen.findByRole("region", { name: "Getting started" });
     const steps = await within(list).findAllByRole("listitem");
     expect(steps.map((li) => li.textContent)).toEqual([
-      expect.stringContaining("Connect GitLab (to do)"),
+      expect.stringContaining("Connect a forge (to do)"),
       expect.stringContaining("Import your projects (to do)"),
     ]);
-    expect(within(list).getByRole("link", { name: "Connect GitLab" }).getAttribute("href")).toBe(
+    expect(within(list).getByRole("link", { name: "Connect a forge" }).getAttribute("href")).toBe(
       "#/projects",
     );
     expect(screen.getByText("Acme")).toBeTruthy();
@@ -151,6 +151,8 @@ describe("connecting GitLab", () => {
     mount(s.client);
     await screen.findAllByRole("checkbox");
     expect(screen.getAllByRole("checkbox")).toHaveLength(50);
+    // in a row, so it keeps its own width instead of stretching across the grid like a primary action
+    expect(screen.getByRole("button", { name: "Show more" }).parentElement?.className).toBe("row");
     await userEvent.setup().click(screen.getByRole("button", { name: "Show more" }));
     await waitFor(() => expect(screen.getAllByRole("checkbox")).toHaveLength(51));
     expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
@@ -510,7 +512,7 @@ describe("the first run, finished", () => {
         .getAllByRole("listitem")
         .map((li) => li.textContent),
     ).toEqual([
-      expect.stringContaining("Connect GitLab (done)"),
+      expect.stringContaining("Connect a forge (done)"),
       expect.stringContaining("Import your projects (done)"),
     ]);
   });
@@ -530,7 +532,7 @@ describe("roles and organizations", () => {
     await screen.findByRole("heading", { name: "Welcome" });
     await settled();
     const list = screen.getByRole("region", { name: "Getting started" });
-    expect(within(list).queryByRole("link", { name: "Connect GitLab" })).toBeNull();
+    expect(within(list).queryByRole("link", { name: "Connect a forge" })).toBeNull();
     expect(within(list).getByRole("link", { name: "Import your projects" })).toBeTruthy();
   });
 
@@ -611,5 +613,44 @@ describe("the remembered organization", () => {
     } finally {
       if (kept) Object.defineProperty(globalThis, "localStorage", kept);
     }
+  });
+});
+
+describe("how the screen is laid out", () => {
+  test("the imported projects and the import flow are each a named card", async () => {
+    const s = await scene();
+    await s.connect();
+    await createProject(backend.t.db, { organizationId: s.org.id, name: "acme/kept" });
+    mount(s.client);
+    const projects = await screen.findByRole("region", { name: "Imported projects" });
+    expect(await within(projects).findByRole("rowheader", { name: "acme/kept" })).toBeTruthy();
+    const flow = await screen.findByRole("region", { name: "Import from GitLab" });
+    expect(within(flow).getByRole("button", { name: "Import 0 selected" })).toBeTruthy();
+  });
+
+  test("with no connection, the form to add one sits in a card", async () => {
+    const s = await scene();
+    mount(s.client);
+    const form = await screen.findByRole("form", { name: "Connect GitLab" });
+    expect(form.closest(".card")).not.toBeNull();
+  });
+
+  test("imported and archived are badges, each with words and a shape that is not read out", async () => {
+    const s = await scene();
+    await s.connect();
+    s.mock.addProject({ path: "acme/old", archived: true, files: {} });
+    s.mock.addProject({ path: "acme/api", files: { "bun.lock": "" } });
+    mount(s.client);
+    const user = userEvent.setup();
+    await user.click(await box("acme/api"));
+    await user.click(screen.getByRole("button", { name: "Import 1 selected" }));
+    const imported = await screen.findByRole("checkbox", { name: /^acme\/api imported/ });
+    const badge = (label: HTMLElement | null, words: string) =>
+      Array.from(label?.querySelectorAll(".st") ?? []).find((b) => b.textContent === words);
+    const done = badge(imported.closest("label"), "imported");
+    expect(done?.className).toBe("st st-ok");
+    expect(done?.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    const old = badge((await box("acme/old")).closest("label"), "archived");
+    expect(old?.className).toBe("st st-quiet");
   });
 });

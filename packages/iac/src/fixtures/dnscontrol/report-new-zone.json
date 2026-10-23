@@ -1,0 +1,20 @@
+[
+  {
+    "domain": "example.test",
+    "corrections": 1,
+    "correction_details": [
+      "Ensuring zone \"example.test\" exists in \"bind\""
+    ],
+    "provider": "bind"
+  },
+  {
+    "domain": "example.test",
+    "corrections": 0,
+    "provider": "bind"
+  },
+  {
+    "domain": "example.test",
+    "corrections": 0,
+    "registrar": "none"
+  }
+]

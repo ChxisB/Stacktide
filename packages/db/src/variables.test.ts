@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BulkOp } from "@orch/core";
 import { aad, CryptoError, encrypt, envKeyProvider, generateDek, wrapDek } from "@orch/crypto";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
+import { createFolder, FolderNotFoundError } from "./folders";
 import { pgCode, pgConstraint } from "./pg-error";
 import {
   createEnvironment,
@@ -11,7 +12,7 @@ import {
   deleteOrganization,
   deleteProject,
 } from "./repo";
-import { variableKeys, variables, variableVersions } from "./schema";
+import { variableFolders, variableKeys, variables, variableVersions } from "./schema";
 import { createTestDb, type TestDb } from "./testing";
 import {
   bulkLevel,
@@ -19,8 +20,10 @@ import {
   createVariable,
   deleteVariable,
   getVariable,
+  listVariableChanges,
   listVariables,
   listVersions,
+  moveVariable,
   openChain,
   revealVariable,
   type Scope,
@@ -120,11 +123,13 @@ describe("values at rest", () => {
         "currentVersion",
         "description",
         "environmentId",
+        "folder",
         "id",
         "key",
         "kind",
         "organizationId",
         "projectId",
+        "tags",
         "updatedAt",
         "value",
       ].sort(),
@@ -475,6 +480,72 @@ describe("versions", () => {
   });
 });
 
+describe("tags", () => {
+  const tagged = (scope: Scope, tags: string[]) =>
+    createVariable(t.db, keys, {
+      ...scope,
+      key: `K${++n}`,
+      kind: "plain",
+      value: "same",
+      tags,
+      actor,
+    });
+
+  test("a variable made without tags has none, and one made with tags keeps them", async () => {
+    const w = await world();
+    expect((await make(w.at.project)).tags).toEqual([]);
+    const v = await tagged(w.at.project, ["api", "eu"]);
+    expect(v.tags).toEqual(["api", "eu"]);
+    expect((await getVariable(t.db, keys, w.at.project, v.id))?.tags).toEqual(["api", "eu"]);
+    const listed = await listVariables(t.db, keys, w.at.project, { limit: 10 });
+    expect(listed.find((x) => x.id === v.id)?.tags).toEqual(["api", "eu"]);
+  });
+
+  test("a patch replaces the tags and makes no new version; no tags in the patch leaves them", async () => {
+    const w = await world();
+    const v = await tagged(w.at.project, ["api"]);
+    const changed = await setVariable(t.db, keys, w.at.project, v.id, { tags: ["b", "a"], actor });
+    expect(changed).toMatchObject({ tags: ["b", "a"], currentVersion: 1, value: "same" });
+    expect(await listVersions(t.db, w.at.project, v.id, { limit: 10 })).toHaveLength(1);
+    const kept = await setVariable(t.db, keys, w.at.project, v.id, { description: "d", actor });
+    expect(kept?.tags).toEqual(["b", "a"]);
+    const cleared = await setVariable(t.db, keys, w.at.project, v.id, { tags: [], actor });
+    expect(cleared?.tags).toEqual([]);
+  });
+
+  test("a patch of tags alone is a change; under another level it finds nothing", async () => {
+    const w = await world();
+    const v = await tagged(w.at.project, []);
+    expect(await setVariable(t.db, keys, w.at.org, v.id, { tags: ["x"], actor })).toBeUndefined();
+    expect((await getVariable(t.db, keys, w.at.project, v.id))?.tags).toEqual([]);
+  });
+
+  test("the chain an environment resolves from carries them", async () => {
+    const w = await world();
+    const v = await tagged(w.at.env, ["env-tag"]);
+    const entry = (await openChain(t.db, keys, w.at.env)).find((c) => c.id === v.id);
+    expect(entry?.tags).toEqual(["env-tag"]);
+  });
+
+  test("a ninth tag, a long tag, an upper-case tag and an empty tag are refused", async () => {
+    const w = await world();
+    const nine = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+    for (const bad of [nine, ["x".repeat(25)], ["Api"], [""], ["a b"], ["a,b"]]) {
+      const made = await tagged(w.at.project, bad).catch((e) => e);
+      expect([bad, pgConstraint(made)]).toEqual([bad, "variables_tags_check"]);
+    }
+    const v = await tagged(w.at.project, ["ok"]);
+    const patched = await setVariable(t.db, keys, w.at.project, v.id, {
+      tags: ["BAD"],
+      actor,
+    }).catch((e) => e);
+    expect(pgConstraint(patched)).toBe("variables_tags_check");
+    expect((await getVariable(t.db, keys, w.at.project, v.id))?.tags).toEqual(["ok"]);
+    await tagged(w.at.project, nine.slice(0, 8));
+    await tagged(w.at.project, ["x".repeat(24), "0-9"]);
+  });
+});
+
 describe("soft delete", () => {
   test("a deleted variable disappears, keeps its history and frees its key", async () => {
     const w = await world();
@@ -572,7 +643,15 @@ describe("the chain an environment resolves from", () => {
     const chain = await openChain(t.db, keys, w.at.env);
     const by = (level: string) => chain.filter((r) => r.level === level);
     expect(by("organization")).toEqual([
-      { id: org.id, level: "organization", key: "ORG", kind: "plain", value: "org-v", version: 1 },
+      {
+        id: org.id,
+        level: "organization",
+        key: "ORG",
+        kind: "plain",
+        value: "org-v",
+        version: 1,
+        tags: [],
+      },
     ]);
     // the version is what a later check uses to see that a variable has changed
     expect(by("project").map((r) => [r.id, r.key, r.value, r.version])).toEqual(
@@ -582,7 +661,15 @@ describe("the chain an environment resolves from", () => {
       ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
     );
     expect(by("environment")).toEqual([
-      { id: env.id, level: "environment", key: "ENV", kind: "file", value: "env-v", version: 1 },
+      {
+        id: env.id,
+        level: "environment",
+        key: "ENV",
+        kind: "file",
+        value: "env-v",
+        version: 1,
+        tags: [],
+      },
     ]);
     expect(chain).toHaveLength(4);
 
@@ -837,5 +924,336 @@ describe("search", () => {
     await make(w.at.project, { key: "B1", kind: "plain", value: "hit" });
     const found = await find(w, { value: "hit", scan: 1 });
     expect([keysOf(found), found.more]).toEqual([["B1"], false]);
+  });
+});
+
+describe("the changes of a project", () => {
+  const edit = (scope: Scope, id: string, value: string, reason?: string) =>
+    setVariable(t.db, keys, scope, id, { value, actor, ...(reason ? { reason } : {}) });
+  const seed = async () => {
+    const w = await world();
+    const a = await make(w.at.project, { key: "A", kind: "plain", value: "PLAIN-VALUE-one" });
+    const b = await make(w.at.env, { key: "B", kind: "secret", value: CANARY });
+    const c = await make(w.at.project, { key: "C", kind: "plain", value: "c1" });
+    await edit(w.at.project, a.id, "PLAIN-VALUE-two", "tidy");
+    await edit(w.at.env, b.id, `${CANARY}-2`);
+    const sibling = await make(
+      { ...w.at.env, environmentId: w.other.id },
+      { key: "D", kind: "plain", value: "d1" },
+    );
+    const orgLevel = await make(w.at.org, { key: "ORG", kind: "plain", value: "o1" });
+    return { w, a, b, c, sibling, orgLevel };
+  };
+  const rows = (
+    w: Awaited<ReturnType<typeof world>>,
+    f: { environmentId?: string } = {},
+    page: { limit: number; after?: string } = { limit: 50 },
+  ) => listVariableChanges(t.db, w.at.project, f, page);
+  const label = (r: { key: string; version: number }) => `${r.key}@${r.version}`;
+
+  test("one row for each version written, newest first, with who, when and why", async () => {
+    const { w } = await seed();
+    const all = await rows(w);
+    expect(all.map(label)).toEqual(["D@1", "B@2", "A@2", "C@1", "B@1", "A@1"]);
+    expect(all.find((r) => label(r) === "A@2")).toMatchObject({
+      kind: "plain",
+      projectId: w.project.id,
+      environmentId: null,
+      actorKind: "user",
+      actorId: "u1",
+      reason: "tidy",
+    });
+    expect(all.find((r) => label(r) === "B@1")?.environmentId).toBe(w.env.id);
+    expect(all[0]?.createdAt).toBeInstanceOf(Date);
+  });
+
+  test("a page continues after the id of the last row, and an exact page ends the list", async () => {
+    const { w } = await seed();
+    const first = await rows(w, {}, { limit: 4 });
+    expect(first.map(label)).toEqual(["D@1", "B@2", "A@2", "C@1"]);
+    const next = await rows(w, {}, { limit: 4, after: first.at(-1)?.id as string });
+    expect(next.map(label)).toEqual(["B@1", "A@1"]);
+    const none = await rows(w, {}, { limit: 4, after: next.at(-1)?.id as string });
+    expect(none).toEqual([]);
+  });
+
+  test("an environment sees its own and the project's, not a sibling's and not the organization's", async () => {
+    const { w } = await seed();
+    expect((await rows(w, { environmentId: w.env.id })).map(label)).toEqual([
+      "B@2",
+      "A@2",
+      "C@1",
+      "B@1",
+      "A@1",
+    ]);
+    expect((await rows(w, { environmentId: w.other.id })).map(label)).toEqual([
+      "D@1",
+      "A@2",
+      "C@1",
+      "A@1",
+    ]);
+    // without an environment: the whole project, and still nothing of the organization's level
+    expect((await rows(w)).map((r) => r.key)).not.toContain("ORG");
+  });
+
+  test("another project or organization never appears, and nor does a deleted variable", async () => {
+    const { w, c } = await seed();
+    const w2 = await world();
+    await make(w2.at.project, { key: "FOREIGN", kind: "plain", value: "x" });
+    await make(w2.at.env, { key: "FOREIGN_ENV", kind: "plain", value: "x" });
+    const second = await createProject(t.db, { organizationId: w.org.id, name: "second" });
+    await make(
+      { organizationId: w.org.id, projectId: second.id },
+      { key: "SIBLING", kind: "plain", value: "x" },
+    );
+    expect((await rows(w)).map((r) => r.key)).not.toContain("FOREIGN");
+    expect((await rows(w)).map((r) => r.key)).not.toContain("FOREIGN_ENV");
+    expect((await rows(w)).map((r) => r.key)).not.toContain("SIBLING");
+    // an environment of another project is no filter that finds this project's rows
+    expect(await rows(w, { environmentId: w2.env.id })).toHaveLength(3);
+    expect(
+      (await listVariableChanges(t.db, w2.at.project, {}, { limit: 50 })).map((r) => r.key),
+    ).toEqual(["FOREIGN_ENV", "FOREIGN"]);
+    // a project id under the wrong organization finds nothing
+    expect(
+      await listVariableChanges(
+        t.db,
+        { organizationId: w2.org.id, projectId: w.project.id },
+        {},
+        { limit: 50 },
+      ),
+    ).toEqual([]);
+    await deleteVariable(t.db, w.at.project, c.id);
+    expect((await rows(w)).map((r) => r.key)).not.toContain("C");
+  });
+
+  test("no row carries a value, a ciphertext or a data key", async () => {
+    const { w } = await seed();
+    const all = await rows(w);
+    expect(Object.keys(all[0] ?? {}).sort()).toEqual(
+      [
+        "actorId",
+        "actorKind",
+        "createdAt",
+        "environmentId",
+        "folder",
+        "id",
+        "key",
+        "kind",
+        "projectId",
+        "reason",
+        "variableId",
+        "version",
+      ].sort(),
+    );
+    expect(JSON.stringify(all)).not.toContain(CANARY);
+    expect(JSON.stringify(all)).not.toContain("PLAIN-VALUE");
+  });
+});
+
+describe("variables in folders", () => {
+  const mkdir = async (w: Awaited<ReturnType<typeof world>>, path: string) => {
+    const at = path.lastIndexOf("/");
+    const made = await createFolder(t.db, {
+      organizationId: w.org.id,
+      projectId: w.project.id,
+      parent: at === 0 ? "/" : path.slice(0, at),
+      name: path.slice(at + 1),
+    });
+    if (!("row" in made)) throw new Error(`no folder: ${made.error}`);
+    return made.row;
+  };
+  const inFolder = (scope: Scope, folder: string, k: string, value = "v") =>
+    createVariable(t.db, keys, { ...scope, key: k, kind: "plain", value, folder, actor });
+  const constraint = async (p: Promise<unknown>) => pgConstraint(await p.catch((e) => e));
+
+  test("a move keeps the variable and its versions, and only its own level can make it", async () => {
+    const w = await world();
+    await mkdir(w, "/db");
+    const v = await make(w.at.project, { key: "M", kind: "plain", value: "one" });
+    // another level's scope does not reach it, and a variable that is not there is not moved
+    const folderNow = async () => (await getVariable(t.db, keys, w.at.project, v.id))?.folder;
+    expect(await moveVariable(t.db, keys, w.at.env, v.id, "/db")).toBeUndefined();
+    expect(await folderNow()).toBe("/");
+    await moveVariable(t.db, keys, w.at.project, v.id, "/db");
+    expect(await moveVariable(t.db, keys, w.at.org, v.id, "/")).toBeUndefined();
+    expect(await folderNow()).toBe("/db");
+    expect(
+      await moveVariable(t.db, keys, w.at.project, "00000000-0000-4000-8000-000000000000", "/db"),
+    ).toBeUndefined();
+    await moveVariable(t.db, keys, w.at.project, v.id, "/");
+    // a folder that is not there is an error, and nothing moves
+    await expect(moveVariable(t.db, keys, w.at.project, v.id, "/nope")).rejects.toBeInstanceOf(
+      FolderNotFoundError,
+    );
+    const moved = await moveVariable(t.db, keys, w.at.project, v.id, "/db");
+    expect(moved).toMatchObject({ id: v.id, folder: "/db", currentVersion: v.currentVersion });
+    expect(await listVersions(t.db, w.at.project, v.id, { limit: 5 })).toHaveLength(1);
+  });
+
+  test("a variable says which folder it is in: / for the root", async () => {
+    const w = await world();
+    await mkdir(w, "/db");
+    const root = await make(w.at.project, { key: "A", kind: "plain" });
+    const deep = await inFolder(w.at.project, "/db", "A");
+    expect(root.folder).toBe("/");
+    expect(deep.folder).toBe("/db");
+    expect((await getVariable(t.db, keys, w.at.project, deep.id))?.folder).toBe("/db");
+    expect((await revealVariable(t.db, keys, w.at.project, deep.id))?.variable.folder).toBe("/db");
+  });
+
+  test("a key is held once per folder at each level, and the root counts as one folder", async () => {
+    const w = await world();
+    await mkdir(w, "/a");
+    await mkdir(w, "/b");
+    for (const scope of [w.at.project, w.at.env]) {
+      await make(scope, { key: "K", kind: "plain" });
+      await inFolder(scope, "/a", "K");
+      await inFolder(scope, "/b", "K");
+      const index = scope === w.at.env ? "variables_environment_key" : "variables_project_key";
+      expect(await constraint(make(scope, { key: "K", kind: "plain" }))).toBe(index);
+      expect(await constraint(inFolder(scope, "/a", "K"))).toBe(index);
+    }
+    await make(w.at.org, { key: "K", kind: "plain" });
+    expect(await constraint(make(w.at.org, { key: "K", kind: "plain" }))).toBe("variables_org_key");
+  });
+
+  test("a root key is unique for whoever writes it: a null folder is a value, not a gap", async () => {
+    const w = await world();
+    const row = {
+      organizationId: w.org.id,
+      projectId: w.project.id,
+      key: "RAW",
+      kind: "plain" as const,
+      folderId: null,
+    };
+    await t.db.insert(variables).values(row);
+    expect(await constraint(t.db.insert(variables).values(row))).toBe("variables_project_key");
+  });
+
+  test("an organization variable has no folder, however it is written", async () => {
+    const w = await world();
+    const a = await mkdir(w, "/a");
+    expect(
+      await constraint(
+        t.db.insert(variables).values({
+          organizationId: w.org.id,
+          key: "ORG",
+          kind: "plain",
+          folderId: a.id,
+        }),
+      ),
+    ).toBe("variables_folder_check");
+    // through the function it is a folder that is not there: an organization has none
+    const refused = await inFolder(w.at.org, "/a", "ORG").catch((e: Error) => e.name);
+    expect(refused).toBe("FolderNotFoundError");
+  });
+
+  test("a variable cannot be in another project's folder, a deleted folder or one that is not there", async () => {
+    const w = await world();
+    const theirs = await world();
+    const folder = await mkdir(theirs, "/theirs");
+    await mkdir(w, "/gone");
+    await t.db
+      .update(variableFolders)
+      .set({ deletedAt: new Date() })
+      .where(eq(variableFolders.path, "/gone"));
+    expect(
+      await constraint(
+        t.db.insert(variables).values({
+          organizationId: w.org.id,
+          projectId: w.project.id,
+          key: "X",
+          kind: "plain",
+          folderId: folder.id,
+        }),
+      ),
+    ).toBe("variables_folder_fk");
+    for (const path of ["/theirs", "/gone", "/nope"]) {
+      expect(await inFolder(w.at.project, path, "X").catch((e: Error) => e.name)).toBe(
+        "FolderNotFoundError",
+      );
+    }
+    expect(await listVariables(t.db, keys, w.at.project, { limit: 10 })).toEqual([]);
+  });
+
+  test("a deleted variable keeps its folder and frees its key there", async () => {
+    const w = await world();
+    const folder = await mkdir(w, "/a");
+    const v = await inFolder(w.at.project, "/a", "K");
+    await deleteVariable(t.db, w.at.project, v.id);
+    const [row] = await t.db.select().from(variables).where(eq(variables.id, v.id));
+    expect(row?.folderId).toBe(folder.id);
+    expect((await inFolder(w.at.project, "/a", "K")).id).not.toBe(v.id);
+  });
+
+  test("a list shows one folder, the root unless told otherwise; a search shows where each one is", async () => {
+    const w = await world();
+    await mkdir(w, "/a");
+    await mkdir(w, "/a/b");
+    const root = await make(w.at.project, { key: "R", kind: "plain" });
+    const a = await inFolder(w.at.project, "/a", "A");
+    const ab = await inFolder(w.at.project, "/a/b", "AB");
+    const envA = await inFolder(w.at.env, "/a", "E");
+    const ids = async (scope: Scope, folder?: string) =>
+      (await listVariables(t.db, keys, scope, { limit: 10 }, folder)).map((v) => v.id);
+    expect(await ids(w.at.project)).toEqual([root.id]);
+    expect(await ids(w.at.project, "/")).toEqual([root.id]);
+    expect(await ids(w.at.project, "/a")).toEqual([a.id]);
+    expect(await ids(w.at.project, "/a/b")).toEqual([ab.id]);
+    expect(await ids(w.at.env)).toEqual([]);
+    expect(await ids(w.at.env, "/a")).toEqual([envA.id]);
+    const found = await searchVariables(t.db, keys, {
+      organizationId: w.org.id,
+      projects: true,
+      limit: 10,
+    });
+    expect(found.items.map((v) => [v.key, v.folder])).toEqual([
+      ["A", "/a"],
+      ["AB", "/a/b"],
+      ["E", "/a"],
+      ["R", "/"],
+    ]);
+  });
+
+  test("the chain carries a variable's folder, and none for one at the root", async () => {
+    const w = await world();
+    await mkdir(w, "/db");
+    await make(w.at.project, { key: "R", kind: "plain" });
+    await inFolder(w.at.project, "/db", "URL");
+    await inFolder(w.at.env, "/db", "PASS");
+    const chain = await openChain(t.db, keys, w.at.env);
+    expect(chain.map((e) => [e.key, e.folder]).sort()).toEqual([
+      ["PASS", "/db"],
+      ["R", undefined],
+      ["URL", "/db"],
+    ]);
+    expect("folder" in (chain.find((e) => e.key === "R") ?? {})).toBe(false);
+  });
+
+  test("chainKeys names what is set at the root, not what is only in a folder", async () => {
+    const w = await world();
+    await mkdir(w, "/db");
+    await make(w.at.project, { key: "R", kind: "plain" });
+    await inFolder(w.at.project, "/db", "URL");
+    expect(await chainKeys(t.db, w.at.env)).toEqual(["R"]);
+  });
+
+  test("a bulk edit of the root leaves a folder's variable of the same key alone", async () => {
+    const w = await world();
+    await mkdir(w, "/a");
+    const inA = await inFolder(w.at.project, "/a", "K", "in-a");
+    const done = await bulkLevel(
+      t.db,
+      keys,
+      w.at.project,
+      [{ op: "set", key: "K", value: "root" }],
+      {
+        actor,
+      },
+    );
+    expect(done.map((d) => [d.change, d.applied])).toEqual([["create", true]]);
+    await bulkLevel(t.db, keys, w.at.project, [{ op: "delete", key: "K" }], { actor });
+    expect((await getVariable(t.db, keys, w.at.project, inA.id))?.value).toBe("in-a");
   });
 });

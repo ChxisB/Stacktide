@@ -15,6 +15,7 @@ import {
   setSsoMembership,
   ssoRolesOf,
   updateSsoProvider,
+  userIdentities,
 } from "@orch/db";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -73,6 +74,20 @@ describe("the sign-in methods on the settings page", () => {
     expect(rows[1]?.textContent).toContain("ada@acme.example");
     expect(within(rows[1] as HTMLElement).getByRole("button", { name: "Unlink…" })).toBeTruthy();
     expect(here.textContent).not.toContain(SUB);
+  });
+
+  test("a GitHub way in is listed as GitHub, with no way to give it up and never the GitHub id", async () => {
+    const w = await world();
+    await backend.t.db
+      .insert(userIdentities)
+      .values({ userId: w.me.user.id, provider: "github", subject: "90210424" });
+    mount(w.me.client);
+    const here = await section();
+    await within(here).findByText(/Acme Corp/, {}, { timeout: 5000 });
+    const github = rowsOf(here).find((r) => r.textContent?.startsWith("GitHub"));
+    expect(github).toBeTruthy();
+    expect(within(github as HTMLElement).queryByRole("button")).toBeNull();
+    expect(here.textContent).not.toContain("90210424");
   });
 
   test("giving one up asks first; keeping changes nothing; confirming ends it and the role it gave", async () => {

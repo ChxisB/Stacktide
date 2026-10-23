@@ -123,8 +123,8 @@ export function Delivery({
   const catalog = value.mode === "component";
   return (
     <>
-      <fieldset className="list">
-        <legend>How the pipeline is delivered</legend>
+      <fieldset className="list cards">
+        <legend className="visually-hidden">How the pipeline is delivered</legend>
         {MODES.map(([mode, label, hint]) => (
           <label key={mode} className="item">
             <input

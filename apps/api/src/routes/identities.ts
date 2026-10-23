@@ -10,7 +10,7 @@ import { deleteResponses, iso, notFound, type RouteDeps, readErrors } from "./sh
 
 const identitySchema = z.object({
   id: z.uuid(),
-  kind: z.enum(["gitlab", "sso"]),
+  kind: z.enum(["gitlab", "github", "sso"]),
   organizationSlug: z.string().nullable(), // the organization an SSO identity belongs to
   organizationName: z.string().nullable(),
   email: z.string().nullable(), // what the provider last said, for showing only; never the `sub`
@@ -62,6 +62,13 @@ export const identityRoutes = ({ db, principal }: RouteDeps) => {
               "identity_not_removable",
               409,
               "The GitLab identity is the account's own and cannot be removed",
+            );
+          }
+          if (done.status === "github") {
+            throw new DomainError(
+              "identity_not_removable",
+              409,
+              "The GitHub identity is the account's own and cannot be removed",
             );
           }
           if (done.status === "last") {

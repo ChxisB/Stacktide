@@ -549,6 +549,15 @@ describe("an apply pipeline's events", () => {
     });
   });
 
+  test("a job held for a person leaves its stack applying, and GitLab's job page is no approval link (FRG-22)", async () => {
+    const w = await world(["a"], "apply");
+    await setApplying(w, "a");
+    w.set("a", "manual");
+    await w.deliver();
+    const [a] = (await w.read()).stacks;
+    expect([a?.status, a?.approvalUrl]).toEqual(["applying", null]);
+  });
+
   test("never take the mutex: a stack that is not applying is not moved by an apply job", async () => {
     const w = await world(["a", "b"], "apply");
     await setApplying(w, "a");
@@ -734,6 +743,9 @@ describe("jobsByStack", () => {
     allowFailure: false,
     failureReason: null,
     webUrl: "",
+    startedAt: null,
+    finishedAt: null,
+    duration: null,
   });
 
   test("keeps the newest job of each kind for a stack: a retry is a new job", () => {

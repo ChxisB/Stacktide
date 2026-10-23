@@ -68,6 +68,10 @@ For a stack a limit reaches, at apply (the limits in force **then**, not when th
 | a currency that is not the limit's | deny: never converted | `cost-currency-mismatch` |
 | no estimate (no image, no key, Infracost failed, or it priced nothing) | deny | `cost-unavailable` |
 
+A DNS zone (`tool: dnscontrol`) is never judged by a limit: its plan is record changes with no price, so it has no
+estimate and is not `cost-unavailable`. Its stack is left out of the estimate jobs, the *Cost (estimate)* section and the
+"cannot be applied" note.
+
 A deny refuses the apply with 409 `cost_denied`, naming the stack and the rules, after the policy checks
 (`policy_denied` comes first). A stack with several tags that each have a limit takes the **strictest** (the lowest
 maximum, ties by tag name); the organization's own limit applies only when none of its tags has one.

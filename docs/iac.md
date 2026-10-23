@@ -8,7 +8,7 @@ the job.
 
 ## What the platform needs
 
-- The GitLab project is registered in the platform, and the import saw Terraform (or Terragrunt) in it. A
+- The GitLab project is registered in the platform, and the import saw Terraform, Terragrunt or a DNSControl `dnsconfig.js` in it (a project imported before DNS zones were supported needs importing again to be seen as one). A
   project the import did not tag is not planned.
 - A connection for the project's organization whose token may read the repository, start pipelines and
   write merge request notes (scope `api`), and a webhook on the project that sends **merge request** and
@@ -25,6 +25,10 @@ the job.
     `version` is the tag. Terraform and OpenTofu have defaults.
   - `ORCH_TERRAFORM_IMAGE`, `ORCH_TOFU_IMAGE` (only for stacks with an `environment`, see Variables): the
     same, for an image that holds the tool **and `orch`**. It replaces the default for every stack of that tool.
+  - `ORCH_DNSCONTROL_IMAGE` (a DNS zone, `tool: dnscontrol`): the same for DNSControl. The stock image `dnscontrol/dnscontrol`
+    is the default for a plan with no `environment`; it has no `orch`, `jq` or `wget`. **Every zone's apply job needs an image with
+    `dnscontrol`, `jq` and `wget`** (and `orch` when the zone has an `environment`), so an apply is refused until this is set.
+    Its tag is the stack's `version` without a `v` (`5.5.0`). See DNS zones below.
 
   Without the first three the worker logs which are missing and plans nothing. The API needs
   the same image settings to start the apply of a stack with an overridden image, and
@@ -316,6 +320,16 @@ with `{"events": ["stack.drift"]}`). Both need the master keys (`ORCH_MASTER_KEY
   A variable of the organization (not of a project) has no project to tell: its `variable.rotate_failing` audit
   event is the signal, and audit forwarding carries it.
 
+  A third event, `deployment.failed`, is sent once when a deployment of the project turns `failed` (see
+  [deployments](deployments.md)). It names the environment, eight characters of the build and GitLab's address of
+  the pipeline (`null` when GitLab gave none), and nothing about who deployed or what the commit said:
+
+  ```json
+  {"id":"<delivery id>","event":"deployment.failed","at":"2026-01-02T03:04:05.000Z","organizationId":"…",
+   "project":{"id":"…","name":"web"},"deployment":{"environment":"production","sha":"0123abcd",
+   "pipelineUrl":"https://gitlab.example/acme/web/-/pipelines/8"}}
+  ```
+
   The headers are `x-orch-event`, `x-orch-delivery` (the same for every try of one delivery),
   `x-orch-timestamp` (seconds, fresh on each try) and `x-orch-signature: v1=<hex>`, the HMAC-SHA256 of
   `"<timestamp>.<body>"` with the signing secret. A receiver verifies it and refuses old timestamps:
@@ -376,6 +390,43 @@ A stack can name one of the organization's worker pools (`pool: prod-runners` in
 default. Its plan, estimate, summary and apply jobs then carry the pool's runner `tags:` (and the pool's `image`, when it has
 one, replaces the tool image). A name that is not a pool, or a pool that is switched off, stops the pipeline instead of
 running on shared runners. See [worker-pools.md](worker-pools.md).
+
+## DNS zones
+
+Set-up, zone claims, the delete rule, the lint and token scoping are in [dns.md](dns.md); this is how the jobs work.
+
+A DNS zone is a stack with `tool: dnscontrol` (ADR-0018, `docs/dns-spike.md`). Its `stack.yml` needs a `version` (the DNSControl
+release, such as `5.5.0`), takes no `state`, and may say `dns: { prune: true }` (the default keeps records DNSControl does not
+know; see the delete rule in the ADR). `dnsconfig.js` and `creds.json` sit next to it; `creds.json` names variables
+(`"apitoken": "$CF_API_TOKEN"`), never values.
+
+- **Plan:** the job runs `dnscontrol check`, then `dnscontrol preview --report report.json`, in the stack's directory. With an
+  `environment` the tool runs through `orch run`, so the environment's variables reach it under their own names. A variable
+  `creds.json` names that is unset or empty stops the job first (DNSControl would run with an empty credential).
+- **What is kept where:** the preview holds record values, and so do the tool's errors. They go to `report.json` and `preview.txt`,
+  artifacts only developers can open, and never to the job log; a failed job says so in fixed words. The summary the platform gets
+  is the zone, the name inside it (`@` is the apex), the type and the action (`example.test/www/A`, `create`), and the counts: the
+  same shape as a Terraform plan's, so runs, the merge request note and drift treat both alike. A zone that does not exist yet is one
+  create of the zone.
+- **Apply:** DNSControl has no saved plan, so the apply job fetches the plan job's `report.json`, runs `preview` again, and compares
+  the two change sets (every change of the report, values included, sorted; both stay in the runner and only the verdict is
+  said). If they differ, a record changed since the plan, and the job stops with a fixed message and pushes nothing; otherwise it
+  runs `dnscontrol push`. An unreadable plan report stops the job too. The job's image needs `dnscontrol`, `jq`, `wget` and, for a
+  zone with an environment, `orch` (it signs in for the provider's token as the plan does); the apply needs the platform's
+  address (`ORCH_API_URL`, `ORCH_CI_AUDIENCE`) for that. The tool's own output goes to `preview.txt` and `push.txt`, artifacts only
+  developers can open. The compare closes the window between plan and apply, not the one between its `preview` and the `push`
+  (milliseconds, inside one job).
+- **Import:** with `ORCH_DNSCONTROL_IMAGE` set, a zone's pipeline also has a manual `import:<stack>` job, for a zone that already
+  exists at its provider. It reads each zone `dnsconfig.js` names (the first provider of each) with `dnscontrol get-zones
+  --format=js` and keeps a starting config per zone in the `import/` artifact. The draft is DNSControl's own, with the empty
+  provider argument dropped and `NO_PURGE` added, so planning it against the zone it came from is no change. It never runs by itself,
+  never blocks the pipeline, and writes nothing to the provider or the repository: a developer reads the artifact and commits it.
+  The drafts hold the zone's record values, so the artifact is for developers only; a failed job says so in fixed words and the
+  tool's output is in `import.log`. A zone name or provider key that is not a plain name is skipped.
+- **Gates:** the platform refuses the apply of a plan that names a zone no one claimed, deletes a record while the stack does not say
+  `dns.prune: true`, or has a lint error. See [dns.md](dns.md).
+- A policy set cannot judge a zone (it judges Terraform plans), so a zone that carries a set's tag is refused rather than left
+  unjudged; and a zone is not costed.
 
 ## What to know
 

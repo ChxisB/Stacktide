@@ -8,6 +8,7 @@ import { createLogger, type Subject } from "@orch/core";
 import { envKeyProvider } from "@orch/crypto";
 import { createOrganization, createSession, upsertUser } from "@orch/db";
 import { createTestDb } from "@orch/db/testing";
+import { createMockGithub } from "@orch/github/mock";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import { render, waitFor } from "@testing-library/react";
 import { App, newQueryClient } from "./app";
@@ -46,7 +47,7 @@ export async function startBackend(
 
   let gitlabId = 1000;
   let orgs = 0;
-  const mocks: ReturnType<typeof createMockGitlab>[] = [];
+  const mocks: { stop: () => void }[] = [];
   let worker: Worker | undefined;
   return {
     api,
@@ -79,18 +80,28 @@ export async function startBackend(
       mocks.push(mock);
       return mock;
     },
+    /** A mock GitHub, likewise (the repositories are added to it by the test). */
+    github(token?: string) {
+      const mock = createMockGithub(token ? { token } : {});
+      mocks.push(mock);
+      return mock;
+    },
     /** Roles of a user already signed in (the API reads them at each request). */
     setRoles: (gitlabUserId: number, held: Roles) => roles.set(gitlabUserId, held),
     /** Lets a user already signed in create organizations. */
     makePlatformAdmin: (gitlabUserId: number) => platformAdmins.push(gitlabUserId),
-    /** Runs the job queue, so that an apply a screen starts is carried out; `gate` holds each apply back until it settles. */
-    startWorker(gate: () => Promise<void> = async () => {}) {
+    /** Runs the job queue, so that an apply a screen starts is carried out; `gate` holds each apply back until it settles, `more` adds handlers (the demo's drift check). */
+    startWorker(
+      gate: () => Promise<void> = async () => {},
+      more: Parameters<typeof createWorker>[0]["handlers"] = {},
+    ) {
       const logger = createLogger({ level: "error", write: () => {} });
       const applying = syncApplyHandler({ db: t.db, keys, logger });
       worker = createWorker({
         db: t.db,
         logger,
         handlers: {
+          ...more,
           [SYNC_APPLY]: async (ctx) => {
             await gate();
             await applying(ctx);
@@ -145,3 +156,11 @@ export const down = (detail: string) =>
   );
 
 export const pathOf = (request: Request) => new URL(request.url).pathname;
+
+/** What a person sees on an element: its text without the parts only assistive technology reads. */
+export const visibleText = (el: Element) =>
+  [...el.childNodes]
+    .filter((n) => !(n instanceof Element && n.classList.contains("visually-hidden")))
+    .map((n) => n.textContent)
+    .join("")
+    .trim();

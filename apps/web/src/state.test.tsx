@@ -339,3 +339,25 @@ describe("when the API does not answer", () => {
     expect(screen.queryByText(/Loading state/)).toBeNull();
   });
 });
+
+describe("how the screen looks", () => {
+  test("the lookup, the versions and the resources are each in a card", async () => {
+    const s = await sceneOn(backend);
+    await seed(s, "net", [1], [res("aws_vpc", "main")]);
+    mountPage(s.client);
+    expect((await screen.findByLabelText("Stack")).closest(".card")).not.toBeNull();
+    await show("net");
+    const v = await versions();
+    // the resource addresses are long, so the cards take the whole page, not the narrow form column
+    expect(v.closest(".stack")?.classList.contains("wide")).toBe(true);
+    const r = await resources();
+    expect(within(screen.getByRole("region", { name: "State versions" })).getByRole("table")).toBe(
+      v,
+    );
+    expect(
+      within(screen.getByRole("region", { name: "Resources in the newest version" })).getByRole(
+        "table",
+      ),
+    ).toBe(r);
+  });
+});

@@ -1,4 +1,4 @@
-import { costVerdict, DomainError, type Logger, limitFor } from "@orch/core";
+import { costVerdict, DomainError, type Logger, limitOf } from "@orch/core";
 import {
   type AuditEvent,
   allCostLimits,
@@ -6,9 +6,11 @@ import {
   attachRunPipeline,
   audit,
   auditedStacks,
+  claimedZones,
   consumeApproval,
   type Db,
   describeError,
+  getPlanResources,
   latestRunOfMergeRequest,
   listPolicySets,
   MAX_POLICY_SETS,
@@ -22,20 +24,32 @@ import {
   type Tx,
   withMergeRequest,
 } from "@orch/db";
-import { type Gitlab, GitlabError } from "@orch/gitlab";
+import { GitlabError } from "@orch/gitlab";
 import {
   GenerateError,
   generatePipeline,
   gitlabSource,
+  type Judged,
   PLAN_RETENTION_MS,
   type Platform,
   scanStacks,
   setsFor,
   type Tool,
+  ZONE,
 } from "@orch/iac";
 import { approvalRequired } from "./apply-approval";
+import { DNS_RULES, zonesOf } from "./dns-gate";
+import { startForgeRun } from "./forge-run";
 import { inline, refreshNote, writeNote } from "./mr-note";
-import { CHILD_PIPELINE, mrEvent, plannedProject } from "./mr-plan";
+import {
+  CHILD_PIPELINE,
+  isGithub,
+  type MrPlanConfig,
+  mrEvent,
+  type PlanClient,
+  plannedProject,
+  planRequest,
+} from "./mr-plan";
 import { hopeless, type RunDeps } from "./pipeline-runs";
 import { secretGateOf } from "./secret-gate";
 import type { JobHandler } from "./worker";
@@ -47,6 +61,8 @@ export interface ApplyDeps {
   images?: Partial<Record<Tool, string>> | undefined;
   /** Where the platform is: a stack whose state lives there needs it in its apply job (STATE-5). */
   platform?: Platform | undefined;
+  /** The plan workflow's settings, which a pull request's apply on GitHub is built from (FRG-32); left out, it is refused. */
+  config?: MrPlanConfig | undefined;
   now?: () => Date;
 }
 
@@ -96,10 +112,14 @@ const quoted = (names: readonly string[]) =>
  */
 export async function applyRun(
   deps: ApplyDeps,
-  gitlab: Gitlab,
+  gitlab: PlanClient,
   req: ApplyRequest,
 ): Promise<string[]> {
   const { at, run } = req;
+  // On GitHub the apply is a dispatch of a fixed workflow behind the environment's reviewers, from a stored plan (FRG-32)
+  const github = isGithub(gitlab) ? gitlab : undefined;
+  const forge = github ? "GitHub" : "GitLab";
+  const noun = github ? "pull request" : "merge request";
   const now = (deps.now ?? (() => new Date()))();
   const byName = new Map(run.stacks.map((s) => [s.stack, s]));
   const unknown = (req.stacks ?? []).filter((n) => !byName.has(n));
@@ -146,10 +166,7 @@ export async function applyRun(
   const mr = await gitlab.mergeRequests.get(at.gitlabProjectId, iid);
   // checked first: whatever else is true, the plans are not of this code
   if (mr.sha !== run.sha) {
-    throw refuse(
-      "stale_plan",
-      "The merge request has changed since this run planned it; plan it again",
-    );
+    throw refuse("stale_plan", `The ${noun} has changed since this run planned it; plan it again`);
   }
   let ref: string;
   if (mr.state === "merged") {
@@ -158,21 +175,21 @@ export async function applyRun(
     if (defaultBranch === null || mr.targetBranch !== defaultBranch) {
       throw refuse(
         "not_default_branch",
-        "The merge request was not merged into the project's default branch",
+        `The ${noun} was not merged into the project's default branch`,
       );
     }
     ref = mr.targetBranch;
   } else if (mr.state === "opened") {
-    if (req.when === "merge") throw refuse("not_merged", "The merge request is not merged");
+    if (req.when === "merge") throw refuse("not_merged", `The ${noun} is not merged`);
     if (!(await gitlab.mergeRequests.approvals(at.gitlabProjectId, iid)).approved) {
-      throw refuse("not_approved", "The merge request is not approved");
+      throw refuse("not_approved", `The ${noun} is not approved`);
     }
     if (mr.mergeStatus !== "mergeable") {
-      throw refuse("not_mergeable", "GitLab does not say the merge request can be merged");
+      throw refuse("not_mergeable", `${forge} does not say the ${noun} can be merged`);
     }
     ref = run.ref;
   } else {
-    throw refuse("not_open", "The merge request is closed");
+    throw refuse("not_open", `The ${noun} is closed`);
   }
 
   scan ??= await read();
@@ -240,9 +257,34 @@ export async function applyRun(
         `The policy has not judged the plan of stack ${quoted([name])}; plan it again`,
       );
     }
+    // A zone is judged by the claims as they stand now (DNS-7): one released since its plan was judged stops
+    // that plan, and a zone whose summary never came was never judged at all.
+    if (s.dnsPrune !== null || scanned.get(name)?.tool === "dnscontrol") {
+      if (s.policyVerdict === null) {
+        throw refuse(
+          "policy_pending",
+          `The policy has not judged the plan of stack ${quoted([name])}; plan it again`,
+        );
+      }
+      const zones = zonesOf(
+        await getPlanResources(deps.db, at.organizationId, at.projectId, run.id, name),
+      ).filter((z) => ZONE.test(z));
+      const claimed = await claimedZones(
+        deps.db,
+        { organizationId: at.organizationId, projectId: at.projectId, stack: name },
+        zones,
+      );
+      const loose = zones.filter((z) => !claimed.has(z));
+      if (loose.length > 0) {
+        throw refuse(
+          "policy_denied",
+          `The policy denies the plan of stack ${quoted([name])}: ${quoted(loose.slice(0, 5).map((z) => `${DNS_RULES.unclaimed}:${z}`))}`,
+        );
+      }
+    }
     // No limit: the estimate is information. A limit and no estimate denies (the estimator never ran or crashed).
     // shortcut: the stack's tags are the repository's, so a branch can drop a tag to fall back to the organization's own limit (or none); see docs/cost-gates.md
-    const cost = costVerdict(limitFor(limits, scanned.get(name)?.tags ?? []), planCostOf(s));
+    const cost = costVerdict(limitOf(limits, scanned.get(name)), planCostOf(s));
     if (cost.denied.length > 0) {
       throw refuse(
         "cost_denied",
@@ -265,18 +307,51 @@ export async function applyRun(
     }
   }
 
-  let yaml: string;
+  // as the pools are now: a pool changed since the plan moves the apply with it (docs/worker-pools.md)
+  const pools = await allPools(deps.db, at.organizationId);
+  let yaml = "";
+  let input: Parameters<typeof startForgeRun>[1]["input"] | undefined;
   try {
-    yaml = generatePipeline({
-      action: "apply",
-      stacks: scan.stacks,
-      select: selected,
-      planJobs,
-      // as the pools are now: a pool changed since the plan moves the apply with it (docs/worker-pools.md)
-      pools: await allPools(deps.db, at.organizationId),
-      ...(deps.images ? { images: deps.images } : {}),
-      ...(deps.platform ? { platform: deps.platform } : {}),
-    });
+    if (github) {
+      if (!deps.config) {
+        throw refuse(
+          "not_set_up",
+          "Pull requests are not applied on this installation: it is not set up for it",
+          422,
+        );
+      }
+      // what the platform judged of each stack's plan, which the apply compares its own plan with (FRG-29)
+      const judged: Record<string, Judged> = {};
+      for (const name of selected) {
+        const s = byName.get(name);
+        // a stack with no summary has no entry, and the run plan refuses it by name
+        if (s?.planAdd == null || s.planChange == null || s.planDestroy == null) continue;
+        judged[name] = {
+          add: s.planAdd,
+          change: s.planChange,
+          destroy: s.planDestroy,
+          resources: (
+            await getPlanResources(deps.db, at.organizationId, at.projectId, run.id, name)
+          ).map((r) => ({ address: r.address, actions: [...r.actions] })),
+        };
+      }
+      input = {
+        ...planRequest(deps.config, at, scan.stacks, selected, run.id, [], [], pools),
+        action: "apply",
+        sha: run.sha,
+        judged,
+      };
+    } else {
+      yaml = generatePipeline({
+        action: "apply",
+        stacks: scan.stacks,
+        select: selected,
+        planJobs,
+        pools,
+        ...(deps.images ? { images: deps.images } : {}),
+        ...(deps.platform ? { platform: deps.platform } : {}),
+      });
+    }
   } catch (error) {
     if (!(error instanceof GenerateError)) throw error;
     throw refuse(
@@ -325,17 +400,38 @@ export async function applyRun(
         );
       }
     }
-    const pipeline = await gitlab.pipelines
-      .trigger(at.gitlabProjectId, ref, [{ key: CHILD_PIPELINE, value: yaml, type: "file" }])
-      .catch((error) => {
-        if (
-          error instanceof GitlabError &&
-          (error.kind === "invalid" || error.kind === "forbidden")
-        ) {
-          throw refuse("gitlab_refused", "GitLab would not start the apply pipeline", 422);
-        }
-        throw error;
-      });
+    // On GitHub the gate and the stored plan are part of the start; a refusal rolls the claim back with them
+    const starting =
+      github && input
+        ? startForgeRun(
+            { db: tx, forge: github },
+            {
+              organizationId: at.organizationId,
+              projectId: at.projectId,
+              project: at.gitlabProjectId,
+              runId: run.id,
+              ref,
+              input,
+            },
+          )
+        : gitlab.pipelines.trigger(at.gitlabProjectId, ref, [
+            { key: CHILD_PIPELINE, value: yaml, type: "file" },
+          ]);
+    const pipeline = await starting.catch((error) => {
+      if (
+        error instanceof GitlabError &&
+        (error.kind === "invalid" ||
+          error.kind === "forbidden" ||
+          (github !== undefined && error.kind === "not_found"))
+      ) {
+        throw refuse(
+          github ? "github_refused" : "gitlab_refused",
+          `${forge} would not start the apply ${github ? "workflow" : "pipeline"}`,
+          422,
+        );
+      }
+      throw error;
+    });
     // A push that landed since the read above: the pipeline would run the code of the new commit
     // beside the old plans. (A merged request runs on the target branch, which moves on its own.)
     if (mr.state === "opened" && pipeline.sha !== run.sha) {
@@ -345,10 +441,7 @@ export async function applyRun(
           error: describeError(error),
         });
       });
-      throw refuse(
-        "stale_plan",
-        "The merge request changed while the pipeline started; plan it again",
-      );
+      throw refuse("stale_plan", `The ${noun} changed while the pipeline started; plan it again`);
     }
     await attachRunPipeline(tx, {
       organizationId: at.organizationId,

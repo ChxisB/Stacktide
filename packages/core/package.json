@@ -3,7 +3,11 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./dotenv": "./src/dotenv.ts",
+    "./deployment-stats": "./src/deployment-stats.ts",
+    "./folders": "./src/folders.ts",
+    "./tags": "./src/tags.ts"
   },
   "dependencies": {
     "zod": "4.6.7"

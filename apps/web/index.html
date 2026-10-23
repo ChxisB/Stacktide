@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <title>Orchastrature</title>
+    <script>
+      // the stored colour theme, applied before the first paint; theme.ts keeps the same rule (dark or light only)
+      try {
+        const t = localStorage.getItem("orch.theme");
+        if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
+      } catch {
+        // storage blocked: the page follows the system
+      }
+    </script>
     <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body>

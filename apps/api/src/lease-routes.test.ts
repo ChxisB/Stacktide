@@ -166,7 +166,8 @@ const ciToken = async (
   over: {
     project?: string;
     scopes?: string[];
-    job?: number;
+    job?: number | null; // null: a GitHub job, which has a workflow run (`pipeline`) and no job id
+    pipeline?: number;
     environment?: string;
     ttlMs?: number;
   } = {},
@@ -179,7 +180,8 @@ const ciToken = async (
     tokenHash: fresh.tokenHash,
     scopes: over.scopes ?? ["project.read", "run.summary", "lease.issue", "lease.revoke"],
     gitlabProjectId: 1,
-    gitlabJobId: over.job ?? 4242,
+    ...(over.job !== null && { gitlabJobId: over.job ?? 4242 }),
+    ...(over.pipeline && { gitlabPipelineId: over.pipeline }),
     ref: "main",
     refProtected: true,
     ttlMs: over.ttlMs ?? HOUR,
@@ -515,6 +517,19 @@ describe("a CI job", () => {
     const again = await ciToken({ job: 9001 });
     expect((await call(again, "DELETE", `${leases()}/${made.json.id}`)).status).toBe(204);
     expect(mock.accessTokenValid(made.json.value)).toBe(false);
+  });
+
+  test("a GitHub job, which has no job id, holds its leases as its workflow run (FRG-33)", async () => {
+    const run = await ciToken({ job: null, pipeline: 8801 });
+    const made = await take(run);
+    expect(made.status).toBe(201);
+    expect(made.json.principal).toBe(`ci:${ids.p1}:run-8801`);
+    // another job of the same workflow run is the same holder; one of another run, or a token with neither, is not
+    const other = await ciToken({ job: null, pipeline: 8802 });
+    expect((await call(other, "DELETE", `${leases()}/${made.json.id}`)).status).toBe(404);
+    const same = await ciToken({ job: null, pipeline: 8801 });
+    expect((await call(same, "DELETE", `${leases()}/${made.json.id}`)).status).toBe(204);
+    expect((await take(await ciToken({ job: null }))).json.principal).not.toContain("run-");
   });
 
   test("a second token for the same job does not get a second allowance", async () => {

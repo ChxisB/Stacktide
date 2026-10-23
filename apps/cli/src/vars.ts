@@ -1,18 +1,38 @@
 import { open, rename, rm } from "node:fs/promises";
 import { resolve } from "node:path";
+import { address, isFolderPath, ROOT, splitAddress } from "@orch/core";
 import { call, session } from "./api";
 import { CliError, type Command, type Context, noExtra, parse, say } from "./cli";
 import { FORMATS, type Format, formatVariables } from "./format";
-import { resolveEnvironment, type TargetFlags } from "./target";
+import { resolveEnvironment, resolveProject, type TargetFlags } from "./target";
 
 const targetOptions = {
   "api-url": { type: "string" },
   org: { type: "string" },
   project: { type: "string" },
   env: { type: "string" },
+  folder: { type: "string" },
 } as const;
 
 const SHOWN = 10;
+
+/**
+ * The folder `--folder` names, the root when it is left out. An environment variable is flat, so a
+ * command reads one folder at a time and never its subfolders.
+ */
+function folderOf(given: string | undefined): string {
+  if (given === undefined) return ROOT;
+  if (!isFolderPath(given)) {
+    throw new CliError(
+      `--folder '${given}' is not a folder path: / or one such as /payments/db (lower-case letters, digits, - and _)`,
+      2,
+    );
+  }
+  return given;
+}
+
+/** `acme/web/prod`, or `acme/web/prod:/payments` for a folder: how a message names what it read or wrote. */
+const whereIs = (label: string, folder: string) => (folder === ROOT ? label : `${label}:${folder}`);
 
 const oneOf = <T extends string>(what: string, given: string, allowed: readonly T[]): T => {
   const hit = allowed.find((a) => a === given);
@@ -22,16 +42,18 @@ const oneOf = <T extends string>(what: string, given: string, allowed: readonly 
 
 type EnvironmentFlags = TargetFlags & {
   "api-url"?: string | undefined;
+  folder?: string | undefined;
   "ignore-issues"?: boolean | undefined;
 };
 
 /**
- * The environment's resolved variables with their values (secrets included), as `key`/`value`
- * pairs. A set that does not resolve (a missing reference, a cycle) is an error naming the keys, since
+ * The environment's resolved variables, of one folder (`--folder`, the root without it), with their
+ * values (secrets included), as `key`/`value` pairs. A set that does not resolve (a missing reference, a cycle) is an error naming the keys, since
  * a half-resolved environment run against production is worse than none; `ignoreIssues` takes what
  * resolved and says on stderr what was left out. Shared by `pull`, `export` and `run`.
  */
 export async function loadEnvironment(ctx: Context, flags: EnvironmentFlags) {
+  const folder = folderOf(flags.folder);
   const { apiUrl, client } = await session(ctx, flags["api-url"]);
   const target = await resolveEnvironment(ctx, apiUrl, client, flags);
   const { variables, issues } = await call(apiUrl, () =>
@@ -39,14 +61,14 @@ export async function loadEnvironment(ctx: Context, flags: EnvironmentFlags) {
       .organizations({ orgId: target.orgId })
       .projects({ projectId: target.projectId })
       .environments({ envId: target.envId })
-      ["resolved-variables"].values.get(),
+      ["resolved-variables"].values.get({ query: { folder } }),
   );
   if (issues.length > 0) {
     const list = issues.map((i) => `${i.code} ${i.key}`);
     const shown = `${list.slice(0, SHOWN).join(", ")}${list.length > SHOWN ? ", ..." : ""}`;
     if (!flags["ignore-issues"]) {
       throw new CliError(
-        `${target.label} does not resolve (${shown}); fix them, or pass --ignore-issues to take the rest`,
+        `${whereIs(target.label, folder)} does not resolve (${shown}); fix them, or pass --ignore-issues to take the rest`,
       );
     }
     ctx.io.err(`warning: left out ${issues.length} that do not resolve (${shown})`);
@@ -113,7 +135,7 @@ async function emit(
 
 const pull: Command = {
   summary:
-    "write an environment's resolved variables to stdout or --out <file> (dotenv, json, shell)",
+    "write an environment's resolved variables to stdout or --out <file> (dotenv, json, shell); one folder at a time: --folder <path>, default /",
   async run(ctx, args) {
     const { values, positionals } = parse(args, {
       ...exportOptions,
@@ -133,7 +155,7 @@ const pull: Command = {
 
 const exportCommand: Command = {
   summary:
-    "print an environment's resolved variables as shell 'export' lines: eval \"$(orch export)\"",
+    "print an environment's resolved variables as shell 'export' lines: eval \"$(orch export)\"; one folder at a time: --folder <path>, default /",
   async run(ctx, args) {
     const { values, positionals } = parse(args, exportOptions);
     noExtra(positionals);
@@ -157,11 +179,13 @@ interface ImportScope {
         kind: "plain" | "secret";
         overwrite: boolean;
         dryRun: boolean;
+        folder: string;
       }) => Promise<{
         data: {
           changes: {
             change: "create" | "update" | "unchanged" | "conflict" | "kind_mismatch";
             key: string;
+            folder?: string;
             kind: string;
             applied: boolean;
           }[];
@@ -176,7 +200,7 @@ interface ImportScope {
 
 const push: Command = {
   summary:
-    "import variables from a .env or JSON file (or - for stdin) into an environment, after a preview",
+    "import variables from a .env or JSON file (or - for stdin) into an environment, after a preview; into one folder: --folder <path>, default /",
   async run(ctx, args) {
     const { values, positionals } = parse(args, {
       ...targetOptions,
@@ -193,6 +217,7 @@ const push: Command = {
       "json",
     ] as const);
     const kind = oneOf("kind", values.kind ?? "secret", ["plain", "secret"] as const);
+    const folder = folderOf(values.folder);
 
     let content: string;
     try {
@@ -206,6 +231,7 @@ const push: Command = {
 
     const { apiUrl, client } = await session(ctx, values["api-url"]);
     const target = await resolveEnvironment(ctx, apiUrl, client, values);
+    const where = whereIs(target.label, folder);
     const scope = client
       .organizations({ orgId: target.orgId })
       .projects({ projectId: target.projectId })
@@ -218,6 +244,7 @@ const push: Command = {
           kind,
           overwrite: !!values.overwrite,
           dryRun,
+          folder,
         }),
       );
 
@@ -239,7 +266,7 @@ const push: Command = {
       for (const c of plan.changes) {
         if (c.change === "unchanged") continue;
         ctx.io.out(
-          `${c.change.padEnd(14)}${c.key} (${c.kind})${why[c.change] ? ` ${why[c.change]}` : ""}`,
+          `${c.change.padEnd(14)}${c.folder ? address(c.folder, c.key) : c.key} (${c.kind})${why[c.change] ? ` ${why[c.change]}` : ""}`,
         );
       }
       for (const s of plan.skipped) {
@@ -247,10 +274,11 @@ const push: Command = {
           `skipped       ${s.reason}${s.key ? ` ${s.key}` : ""}${s.line ? ` (line ${s.line})` : ""}`,
         );
       }
-      ctx.io.out(`${target.label}: ${summary}`);
+      ctx.io.out(`${where}: ${summary}`);
     }
     const doc = (applied: boolean, done = plan) => ({
       environment: target.label,
+      ...(folder !== ROOT && { folder }),
       applied,
       changes: done.changes.map(({ change, key, kind }) => ({ change, key, kind })),
       skipped: done.skipped,
@@ -272,14 +300,14 @@ const push: Command = {
       else ctx.io.out("nothing to push");
       return;
     }
-    if (!values.yes && !(await ctx.confirm(`Apply ${writes.length} changes to ${target.label}?`))) {
+    if (!values.yes && !(await ctx.confirm(`Apply ${writes.length} changes to ${where}?`))) {
       throw new CliError("cancelled; nothing was changed");
     }
 
     const done = await send(false);
     const created = done.changes.filter((c) => c.change === "create" && c.applied).length;
     const updated = done.changes.filter((c) => c.change === "update" && c.applied).length;
-    say(ctx, `${target.label}: ${created} created, ${updated} updated`, doc(true, done));
+    say(ctx, `${where}: ${created} created, ${updated} updated`, doc(true, done));
   },
 };
 
@@ -291,7 +319,7 @@ const PREFIX = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 
 const runCommand: Command = {
   summary:
-    "run a command with an environment's variables, kept off disk, exiting as it does (126/127 if it cannot start); --prefix TF_VAR_ names each TF_VAR_<name>: orch run [options] -- <command> [args]",
+    "run a command with an environment's variables, kept off disk, exiting as it does (126/127 if it cannot start); --prefix TF_VAR_ names each TF_VAR_<name>; one folder at a time: --folder <path>, default /: orch run [options] -- <command> [args]",
   async run(ctx, args) {
     const usage = () => new CliError("usage: orch run [options] -- <command> [args...]", 2);
     // the command and its words are everything after the first `--`, so none of them is ours
@@ -356,9 +384,79 @@ const runCommand: Command = {
   },
 };
 
+const FOLDERS_USAGE =
+  "usage: orch folders list [options] | orch folders create <path> [options] | orch folders rm <path> [options]";
+
+const folders: Command = {
+  summary:
+    "a project's variable folders: orch folders list|create|rm (an environment variable is flat, so pull, export, run and push read or write one folder at a time: --folder)",
+  async run(ctx, args) {
+    const { values, positionals } = parse(args, {
+      "api-url": { type: "string" },
+      org: { type: "string" },
+      project: { type: "string" },
+    });
+    const [step, path, ...extra] = positionals;
+    if (
+      (step !== "list" && step !== "create" && step !== "rm") ||
+      extra.length > 0 ||
+      (step === "list") !== (path === undefined)
+    ) {
+      throw new CliError(FOLDERS_USAGE, 2);
+    }
+    // the root is no folder: it is not made and cannot be removed
+    if (path !== undefined && (path === ROOT || !isFolderPath(path))) {
+      throw new CliError(`'${path}' is not a folder path such as /payments or /payments/db`, 2);
+    }
+
+    const { apiUrl, client } = await session(ctx, values["api-url"]);
+    const target = await resolveProject(ctx, apiUrl, client, values);
+    const scope = client
+      .organizations({ orgId: target.orgId })
+      .projects({ projectId: target.projectId }).folders;
+    const all = () => call(apiUrl, () => scope.get()).then((page) => page.items);
+
+    if (step === "list") {
+      const found = (await all()).map(({ id, path }) => ({ id, path }));
+      const lines = found.map((f) => f.path);
+      say(ctx, lines.length > 0 ? lines.join("\n") : `no folders in ${target.label}`, {
+        project: target.label,
+        folders: found,
+      });
+    } else if (step === "create" && path) {
+      const { folder: parent, key: name } = splitAddress(path);
+      const made = await call(apiUrl, () => scope.post({ parent, name }));
+      say(ctx, `created folder ${made.path} in ${target.label}`, {
+        project: target.label,
+        folder: { id: made.id, path: made.path },
+      });
+    } else if (path) {
+      const known = await all();
+      const hit = known.find((f) => f.path === path);
+      if (!hit) {
+        const paths = known.map((f) => f.path);
+        throw new CliError(
+          `no folder '${path}'${
+            paths.length === 0
+              ? ""
+              : `; known: ${paths.slice(0, SHOWN).join(", ")}${paths.length > SHOWN ? ", ..." : ""}`
+          }`,
+          2,
+        );
+      }
+      await call(apiUrl, () => scope({ folderId: hit.id }).delete());
+      say(ctx, `removed folder ${path} from ${target.label}`, {
+        project: target.label,
+        removed: path,
+      });
+    }
+  },
+};
+
 export const varsCommands = (): Record<string, Command> => ({
   pull,
   export: exportCommand,
   push,
   run: runCommand,
+  folders,
 });

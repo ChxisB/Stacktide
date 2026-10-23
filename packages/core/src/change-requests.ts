@@ -1,3 +1,4 @@
+import { ROOT } from "./folders";
 import type { BulkOp } from "./variables";
 
 /** open -> approved -> applied, or rejected, or expired; a variable change is approved and applied in one step. */
@@ -11,10 +12,11 @@ export const CHANGE_REQUEST_STATUSES = [
 export type ChangeRequestStatus = (typeof CHANGE_REQUEST_STATUSES)[number];
 
 /**
- * What a change request carries: edits to the variables of an environment (GOV-2), or leave to
- * apply a plan to a target or stacks that a protected environment guards (GOV-3).
+ * What a change request carries: edits to the variables of an environment (GOV-2), leave to
+ * apply a plan to a target or stacks that a protected environment guards (GOV-3), or leave to
+ * deploy a commit to a protected environment (DEP-16).
  */
-export const CHANGE_REQUEST_KINDS = ["variables", "sync_apply", "iac_apply"] as const;
+export const CHANGE_REQUEST_KINDS = ["variables", "sync_apply", "iac_apply", "deploy"] as const;
 export type ChangeRequestKind = (typeof CHANGE_REQUEST_KINDS)[number];
 
 /** The kinds that approve an apply: nothing is sealed or applied by approving, the apply uses the approval up. */
@@ -29,6 +31,8 @@ export interface ApplySubject {
   runId: string;
   targetId?: string;
   stacks?: Record<string, number>;
+  /** A `deploy` request has no run (the environment is the one it is made in): it names the commit it lets through. */
+  sha?: string;
 }
 
 /** How long a request waits for a decision before the expiry job closes it. */
@@ -42,6 +46,8 @@ export interface DiffEntry {
   /** `apply`: the key is the sync target or the stack that would be applied. */
   action: "set" | "rename" | "delete" | "apply";
   key: string;
+  /** The folder of a variable step; absent for the root, and for an `apply`. */
+  folder?: string;
   /** The kind a `set` was asked to make (it may be left to the existing variable). */
   kind?: string;
   /** The new key of a `rename`. */
@@ -50,13 +56,14 @@ export interface DiffEntry {
 
 /** What approvers and the audit trail see of `ops`: the same steps with the values left out. */
 export const diffOf = (ops: readonly BulkOp[]): DiffEntry[] =>
-  ops.map((o) =>
-    o.op === "set"
-      ? { action: "set", key: o.key, ...(o.kind && { kind: o.kind }) }
+  ops.map((o) => {
+    const folder = o.folder && o.folder !== ROOT ? { folder: o.folder } : {};
+    return o.op === "set"
+      ? { action: "set", key: o.key, ...(o.kind && { kind: o.kind }), ...folder }
       : o.op === "rename"
-        ? { action: "rename", key: o.key, to: o.to }
-        : { action: "delete", key: o.key },
-  );
+        ? { action: "rename", key: o.key, to: o.to, ...folder }
+        : { action: "delete", key: o.key, ...folder };
+  });
 
 /** Who is who: `user:<id>` for a person however they signed in, else `<kind>:<id>`. Two refs that are equal are one decider. */
 export const personRef = (p: { kind: string; id: string; userId?: string | undefined }) =>

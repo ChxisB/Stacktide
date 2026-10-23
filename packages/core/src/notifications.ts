@@ -21,5 +21,9 @@ export const takesAudit = (k: SinkKind): k is (typeof FORWARDING_SINK_KINDS)[num
   (FORWARDING_SINK_KINDS as readonly string[]).includes(k);
 
 /** What a project can ask to hear of. Each one's payload is names and counts, never a value. */
-export const NOTIFICATION_EVENTS = ["stack.drift", "rotation.failing"] as const;
+export const NOTIFICATION_EVENTS = [
+  "stack.drift",
+  "rotation.failing",
+  "deployment.failed",
+] as const;
 export type NotificationEvent = (typeof NOTIFICATION_EVENTS)[number];

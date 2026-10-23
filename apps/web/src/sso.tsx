@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { ApiError, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { Card } from "./components";
 import { Loading, stamp, when } from "./ui";
 
 type Role = "viewer" | "member" | "admin" | "owner";
@@ -319,8 +320,7 @@ export function SingleSignOn({ orgId, actions }: { orgId: string; actions: reado
   const owner = actions.includes("sso.manage");
   const found = provider.data;
   return (
-    <section className="stack" aria-labelledby="sso-title">
-      <h2 id="sso-title">Single sign-on</h2>
+    <Card title="Single sign-on">
       <p className="muted">
         Lets people of this organization sign in with its OpenID Connect provider instead of GitLab.
         What they may do here comes from the role rules below, and is decided again at each sign-in.
@@ -364,7 +364,7 @@ export function SingleSignOn({ orgId, actions }: { orgId: string; actions: reado
             </dd>
           </dl>
           <table>
-            <caption>Role rules</caption>
+            <caption className="visually-hidden">Role rules</caption>
             <thead>
               <tr>
                 <th scope="col">Claim</th>
@@ -385,6 +385,6 @@ export function SingleSignOn({ orgId, actions }: { orgId: string; actions: reado
           {owner && <Controls orgId={orgId} provider={found} />}
         </>
       )}
-    </section>
+    </Card>
   );
 }

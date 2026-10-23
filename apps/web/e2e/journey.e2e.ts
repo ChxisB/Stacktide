@@ -6,6 +6,7 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 // built page works in Chromium. (Sign-in itself is covered by the API's tests: the session is made in the database.)
 
 const SECRET = "s3cr3t-value-9f2c41";
+const FOLDER_SECRET = "f0lder-s3cret-71ab3d";
 const PIPELINE = "stages:\n  - test\ntest:\n  stage: test\n  script:\n    - bun test\n";
 type State = {
   session: string;
@@ -26,13 +27,16 @@ async function gitlab(path: string) {
   return { status: res.status, body: res.ok ? await res.json() : undefined };
 }
 
-/** The cell of the variables grid for one variable in one environment. */
+/** A variable's line for one environment in the variables grid: its row opens when it is closed. */
 async function cellOf(page: Page, key: string, env: string): Promise<Locator> {
-  const grid = page.getByRole("table", { name: "Variables by environment" });
-  const column = (await grid.getByRole("columnheader").allTextContents()).indexOf(env);
-  expect(column, `a column ${env}`).toBeGreaterThan(0);
-  const row = grid.getByRole("row").filter({ has: page.getByRole("rowheader", { name: key }) });
-  return row.getByRole("cell").nth(column - 1);
+  const toggle = page
+    .getByRole("table", { name: "Variables by environment" })
+    .getByRole("button", { name: key, exact: true });
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  return page
+    .getByRole("list", { name: `${key} by environment` })
+    .getByRole("listitem")
+    .filter({ has: page.locator(".env-name", { hasText: new RegExp(`^${env}$`) }) });
 }
 
 test("connect GitLab, import a project, set up its pipeline, give it variables and sync them", async ({
@@ -77,22 +81,40 @@ test("connect GitLab, import a project, set up its pipeline, give it variables a
 
   // 3. two environments, a secret for all of them and a plain value for one
   await nav("Variables");
-  for (const name of ["dev", "staging"]) {
-    await page.getByLabel("New environment").fill(name);
+  // a dialog both times: the first from the page's own button, the next from the Environment menu
+  const menu = page.getByRole("button", { name: /^Environment/ });
+  for (const [i, name] of ["dev", "staging"].entries()) {
+    if (i > 0) await menu.click();
     await page.getByRole("button", { name: "Add environment" }).click();
-    await expect(page.getByLabel("New environment")).toHaveValue("");
+    const form = page.getByRole("form", { name: "Add an environment" });
+    await form.getByLabel("New environment").fill(name);
+    await form.getByRole("button", { name: "Add environment" }).click();
+    await expect(form).toBeHidden();
   }
-  await page.getByRole("button", { name: "Add a variable" }).click();
-  await page.getByLabel("Name").fill("API_KEY");
-  await page.getByLabel("Value").fill(SECRET);
-  await page.getByRole("button", { name: "Add variable" }).click();
+  // the toolbar's Add New menu opens the Create drawer (VUI-18), on the list and on the grid alike
+  const addVariable = async () => {
+    await page.getByRole("button", { name: "Add New" }).click();
+    await page.getByRole("menuitem", { name: "Add a variable" }).click();
+    // the drawer, so the grid's own quick-add fields (named like these) are not in the way
+    return page.getByRole("dialog", { name: "New variable" });
+  };
+  // the page opens on one environment's list; every environment ticked is the grid
+  await menu.click();
+  await page.getByRole("checkbox", { name: "All environments" }).check();
+  await page.keyboard.press("Escape");
+  const first = await addVariable();
+  await first.getByLabel("Name").fill("API_KEY");
+  await first.getByLabel("Value").fill(SECRET);
+  await first.getByRole("button", { name: "Add variable" }).click();
   await expect(page.getByRole("rowheader", { name: "API_KEY" })).toBeVisible();
-  await page.getByRole("button", { name: "Add a variable" }).click();
-  await page.getByLabel("Kind").selectOption("plain");
-  await page.getByLabel("Name").fill("LOG_LEVEL");
-  await page.getByLabel("Value").fill("debug");
-  await page.getByLabel("Applies to").selectOption({ label: "Only dev" });
-  await page.getByRole("button", { name: "Add variable" }).click();
+  const second = await addVariable();
+  // the kind is among the Advanced options of the drawer, which start closed
+  await second.getByText("Advanced options").click();
+  await second.getByLabel("Kind").selectOption("plain");
+  await second.getByLabel("Name").fill("LOG_LEVEL");
+  await second.getByLabel("Value").fill("debug");
+  await second.getByLabel("Applies to").selectOption({ label: "Only dev" });
+  await second.getByRole("button", { name: "Add variable" }).click();
   await expect(page.getByRole("rowheader", { name: "LOG_LEVEL" })).toBeVisible();
   await expect((await cellOf(page, "API_KEY", "staging")).locator(".tag")).toHaveText([
     "From project",
@@ -101,6 +123,44 @@ test("connect GitLab, import a project, set up its pipeline, give it variables a
   await expect(await cellOf(page, "LOG_LEVEL", "dev")).toContainText("debug");
   await expect(await cellOf(page, "LOG_LEVEL", "staging")).toContainText("Not set");
   expect(await page.content()).not.toContain(SECRET);
+
+  // Secrets can write dev's values to a real file (the happy-dom tests stub the browser's download)
+  await menu.click();
+  await page.getByRole("checkbox", { name: "staging" }).uncheck();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("table", { name: "Variables in dev" })).toBeVisible();
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Download .env" }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe("acme-web-dev.env");
+  expect(readFileSync(await download.path(), "utf8")).toBe(`API_KEY=${SECRET}\nLOG_LEVEL=debug\n`);
+  await expect(page.getByRole("status")).toContainText("Downloaded acme-web-dev.env: 2 variables");
+  expect(await page.content()).not.toContain(SECRET);
+
+  // a folder, made on the page, with a variable in it; the target below reads the root, so GitLab never gets this one
+  await page.getByRole("button", { name: "Add folder" }).click();
+  const folderForm = page.getByRole("form", { name: "Add a folder" });
+  await folderForm.getByLabel("Folder name").fill("payments");
+  await folderForm.getByRole("button", { name: "Add folder" }).click();
+  await expect(folderForm).toBeHidden();
+  await page.getByRole("button", { name: "Open payments" }).click();
+  await expect(page.getByRole("navigation", { name: "Folder path" })).toContainText("payments");
+  const inFolder = await addVariable();
+  await inFolder.getByLabel("Name").fill("DATABASE_URL");
+  await inFolder.getByLabel("Value").fill(FOLDER_SECRET);
+  await inFolder.getByRole("button", { name: "Add variable" }).click();
+  await expect(page.getByRole("rowheader", { name: "DATABASE_URL" })).toBeVisible();
+  // the folder's list holds its own variable and not the root's
+  await expect(page.getByRole("rowheader", { name: "API_KEY" })).toHaveCount(0);
+  expect(await page.content()).not.toContain(FOLDER_SECRET);
+  // and the root's holds the folder, as a row, and not the variable
+  await page
+    .getByRole("navigation", { name: "Folder path" })
+    .getByRole("button", { name: "dev" })
+    .click();
+  await expect(page.getByRole("button", { name: "Open payments" })).toBeVisible();
+  await expect(page.getByRole("rowheader", { name: "DATABASE_URL" })).toHaveCount(0);
 
   // 4. a sync target (made through the API: no screen creates one yet), then plan and apply it
   const api = async (path: string) => {
@@ -147,6 +207,7 @@ test("connect GitLab, import a project, set up its pipeline, give it variables a
     ).map((v) => [`${v.key} ${v.environment_scope}`, v.value]),
   );
   expect(held).toEqual({ "API_KEY *": SECRET, "LOG_LEVEL development": "debug" });
+  expect(JSON.stringify(held)).not.toContain(FOLDER_SECRET);
   expect(await page.content()).not.toContain(SECRET);
   expect(await page.content()).not.toContain(state.gitlab.token);
 });

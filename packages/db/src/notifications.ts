@@ -253,7 +253,7 @@ export function listSubscriptions(
 async function fanOut(
   tx: Executor,
   at: { organizationId: string; projectId: string; event: NotificationEvent; when: Date },
-  facts: Record<string, string | number>,
+  facts: Record<string, string | number | null>,
 ): Promise<number> {
   const [project] = await tx
     .select({ name: projects.name })
@@ -321,4 +321,24 @@ export function notifyRotationFailing(
 ): Promise<number> {
   const { at, organizationId, projectId, ...facts } = n;
   return fanOut(tx, { organizationId, projectId, event: "rotation.failing", when: at }, facts);
+}
+
+/** `deployment.failed`: a deployment to an environment failed. The environment's slug, eight characters of the commit and GitLab's pipeline address: no message, no author. */
+export function notifyDeploymentFailed(
+  tx: Executor,
+  n: {
+    organizationId: string;
+    projectId: string;
+    environment: string;
+    sha: string;
+    pipelineUrl: string | null;
+    at: Date;
+  },
+): Promise<number> {
+  const { at, organizationId, projectId, sha, ...facts } = n;
+  return fanOut(
+    tx,
+    { organizationId, projectId, event: "deployment.failed", when: at },
+    { ...facts, sha: sha.slice(0, 8) },
+  );
 }

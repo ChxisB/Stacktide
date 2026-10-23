@@ -1,0 +1,3 @@
+ALTER TABLE "user_identities" DROP CONSTRAINT "user_identities_provider_check";--> statement-breakpoint
+ALTER TABLE "user_identities" ADD CONSTRAINT "user_identities_provider_check" CHECK (("user_identities"."provider" in ('gitlab', 'github') and "user_identities"."sso_provider_id" is null)
+        or ("user_identities"."sso_provider_id" is not null and "user_identities"."provider" = 'sso:' || "user_identities"."sso_provider_id"::text));

@@ -24,8 +24,12 @@ import { type CiDeps, ciRoutes } from "./routes/ci";
 import { cliRoutes } from "./routes/cli";
 import { connectionRoutes } from "./routes/connections";
 import { costLimitRoutes } from "./routes/cost-limits";
+import { deploymentRoutes } from "./routes/deployments";
+import { dnsZoneRoutes } from "./routes/dns-zones";
 import { environmentRoutes } from "./routes/environments";
 import { findingRoutes } from "./routes/findings";
+import { folderRoutes } from "./routes/folders";
+import { githubLoginRoutes } from "./routes/github-login";
 import { identityRoutes } from "./routes/identities";
 import { importRoutes } from "./routes/imports";
 import { leaseRoutes } from "./routes/leases";
@@ -43,6 +47,7 @@ import { poolStatusRoutes } from "./routes/pool-status";
 import { poolRoutes } from "./routes/pools";
 import { projectRoutes } from "./routes/projects";
 import { rotationRoutes } from "./routes/rotations";
+import { runPlanRoutes } from "./routes/run-plan";
 import { runRoutes } from "./routes/runs";
 import { secretGateRoutes } from "./routes/secret-gate";
 import { ssoRoutes } from "./routes/sso";
@@ -162,6 +167,7 @@ export function createApp(deps: AppDeps) {
   const judges = new Elysia({ name: "orch.judges" })
     .use(policySetRoutes(deps))
     .use(costLimitRoutes(deps))
+    .use(dnsZoneRoutes(deps))
     .use(secretGateRoutes(deps))
     .use(poolRoutes(deps))
     .use(poolStatusRoutes(deps))
@@ -171,6 +177,7 @@ export function createApp(deps: AppDeps) {
   const signIn = new Elysia({ name: "orch.sign-in" })
     .use(authRoutes(deps))
     .use(ssoLoginRoutes(deps))
+    .use(githubLoginRoutes(deps))
     .use(identityRoutes(deps));
 
   // The project side: what people create and run in an organization.
@@ -181,6 +188,7 @@ export function createApp(deps: AppDeps) {
     .use(importRoutes(deps))
     .use(webhookRoutes(deps))
     .use(environmentRoutes(deps))
+    .use(folderRoutes(deps))
     .use(changeRequestRoutes(deps))
     .use(syncTargetRoutes(deps))
     .use(stateRoutes(deps));
@@ -243,7 +251,9 @@ export function createApp(deps: AppDeps) {
     .use(pipelineFleetRoutes(deps))
     .use(templateRegistryRoutes(deps))
     .use(pipelineRunRoutes(deps))
+    .use(deploymentRoutes(deps))
     .use(runRoutes(deps))
+    .use(runPlanRoutes(deps))
     .use(tokenRoutes(deps))
     .use(variableRoutes(deps))
     .use(rotationRoutes({ ...deps, rotators: deps.rotators ?? builtInRotators(deps) }))

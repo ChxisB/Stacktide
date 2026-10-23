@@ -2,7 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { allPages, call, useClient } from "./api";
 import { ErrorPanel, useMe } from "./auth";
+import { Card, Named } from "./components";
 import { type Org, RequireOrg } from "./org";
+import { type Project, useProjects } from "./projects";
+import { href } from "./router";
 import { useAccess } from "./settings";
 import { Loading, stamp, when } from "./ui";
 
@@ -41,8 +44,7 @@ function CreateOrganization() {
     create.mutate();
   };
   return (
-    <section className="stack" aria-labelledby="create-org-title">
-      <h2 id="create-org-title">Create an organization</h2>
+    <Card title="Create an organization">
       <p className="muted">
         An organization is linked to a GitLab group: its members get their roles from that group,
         and an owner can then add an identity provider for more. The slug and the group cannot be
@@ -91,7 +93,7 @@ function CreateOrganization() {
           </button>
         </div>
       </form>
-    </section>
+    </Card>
   );
 }
 
@@ -204,8 +206,7 @@ function Members({ orgId }: { orgId: string }) {
       ),
   });
   return (
-    <section className="stack" aria-labelledby="members-title">
-      <h2 id="members-title">Members</h2>
+    <Card title="Members">
       <p className="muted">
         People who signed in through the organization's identity provider, with the role that
         sign-in gave them until it ends. People who hold a role through the organization's GitLab
@@ -243,7 +244,248 @@ function Members({ orgId }: { orgId: string }) {
             </tbody>
           </table>
         ))}
-    </section>
+    </Card>
+  );
+}
+
+// the shapes the API and the table hold a zone and a stack name to
+const ZONE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const STACK = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+interface Zone {
+  id: string;
+  projectId: string;
+  zone: string;
+  stack: string;
+  createdAt: string | Date;
+}
+
+/** One claim. Releasing asks first, and says what it does and what it leaves alone. */
+function ZoneRow({
+  orgId,
+  zone,
+  project,
+  canRelease,
+}: {
+  orgId: string;
+  zone: Zone;
+  project: string;
+  canRelease: boolean;
+}) {
+  const client = useClient();
+  const queries = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const release = useMutation({
+    mutationFn: () =>
+      call(() => client.organizations({ orgId }).dns.zones({ zoneId: zone.id }).delete()),
+    onSuccess: () => queries.invalidateQueries({ queryKey: ["dns-zones", orgId] }),
+  });
+  return (
+    <tr>
+      <th scope="row">{zone.zone}</th>
+      <td>{project}</td>
+      <td>
+        <code>{zone.stack}</code>
+      </td>
+      <td>
+        <time dateTime={stamp(zone.createdAt)}>{when(zone.createdAt)}</time>
+      </td>
+      {canRelease && (
+        <td>
+          {confirming ? (
+            <div className="stack">
+              <p className="muted">
+                The zone stops being managed by this stack: a plan that changes it is refused until
+                it is claimed again. Its records at the provider are not touched.
+              </p>
+              {release.error && (
+                <p role="alert" className="error">
+                  {release.error.message}
+                </p>
+              )}
+              <div className="row">
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={release.isPending}
+                  onClick={() => release.mutate()}
+                >
+                  {release.isPending ? "Releasing…" : `Release ${zone.zone}`}
+                </button>
+                <button
+                  type="button"
+                  disabled={release.isPending}
+                  onClick={() => {
+                    release.reset();
+                    setConfirming(false);
+                  }}
+                >
+                  Keep
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button type="button" onClick={() => setConfirming(true)}>
+              <Named word="Release…" name={zone.zone} />
+            </button>
+          )}
+        </td>
+      )}
+    </tr>
+  );
+}
+
+/** An admin's form: which project's stack manages a zone. Without a project there is nothing to claim it for. */
+function ClaimZone({ orgId, projects }: { orgId: string; projects: Project[] }) {
+  const client = useClient();
+  const queries = useQueryClient();
+  const [zone, setZone] = useState("");
+  const [stack, setStack] = useState("");
+  const [projectId, setProjectId] = useState<string>();
+  const project = projects.find((p) => p.id === projectId) ?? projects[0];
+  const claim = useMutation({
+    mutationFn: () =>
+      call(() =>
+        client
+          .organizations({ orgId })
+          .dns.zones.post({ zone, projectId: project?.id ?? "", stack }),
+      ),
+    onSuccess: async () => {
+      setZone("");
+      setStack("");
+      await queries.invalidateQueries({ queryKey: ["dns-zones", orgId] });
+    },
+  });
+  if (!project) {
+    return (
+      <p>
+        A zone is claimed for a project's stack. <a href={href("projects")}>Import a project</a>{" "}
+        first.
+      </p>
+    );
+  }
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    claim.mutate();
+  };
+  return (
+    <form onSubmit={submit} className="stack" aria-label="Claim a zone">
+      <div className="row">
+        <label>
+          Zone
+          <input
+            value={zone}
+            onChange={(e) => setZone(e.target.value)}
+            maxLength={253}
+            placeholder="example.com"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+        <label>
+          Project
+          <select value={project.id} onChange={(e) => setProjectId(e.target.value)}>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Stack
+          <input
+            value={stack}
+            onChange={(e) => setStack(e.target.value)}
+            maxLength={63}
+            placeholder="example-com"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </label>
+      </div>
+      {claim.error && (
+        <p role="alert" className="error">
+          {claim.error.message}
+        </p>
+      )}
+      <div className="row">
+        <button
+          type="submit"
+          className="primary"
+          disabled={claim.isPending || !ZONE.test(zone) || !STACK.test(stack)}
+        >
+          {claim.isPending ? "Claiming…" : "Claim zone"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * The DNS zones the organization has claimed (DNS-15), for anyone in it to read; an admin claims and releases. A claim
+ * is a guard against a project managing a zone by mistake: what a zone's token may change is the real boundary.
+ */
+function Zones({ orgId, actions }: { orgId: string; actions: string[] }) {
+  const client = useClient();
+  const projects = useProjects(orgId);
+  const zones = useQuery({
+    queryKey: ["dns-zones", orgId],
+    queryFn: () =>
+      allPages<Zone>((cursor) =>
+        client.organizations({ orgId }).dns.zones.get({ query: { limit: 100, cursor } }),
+      ),
+  });
+  const nameOf = (id: string) => projects.data?.find((p) => p.id === id)?.name ?? id;
+  const canRelease = actions.includes("dns.zone.delete");
+  return (
+    <Card title="DNS zones">
+      <p className="muted">
+        A claim says which project's stack may manage a DNS zone with DNSControl. It is a guard, not
+        a wall: the token the stack applies with decides what can really change, so scope it to the
+        zone.
+      </p>
+      {zones.isPending && <Loading what="Loading zones" />}
+      {zones.error && !zones.data && (
+        <ErrorPanel error={zones.error} retry={() => void zones.refetch()} />
+      )}
+      {zones.data &&
+        (zones.data.length === 0 ? (
+          <p>No zone is claimed yet.</p>
+        ) : (
+          <table>
+            <caption className="visually-hidden">DNS zones</caption>
+            <thead>
+              <tr>
+                <th scope="col">Zone</th>
+                <th scope="col">Project</th>
+                <th scope="col">Stack</th>
+                <th scope="col">Claimed</th>
+                {canRelease && <th scope="col">Release</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {zones.data.map((z) => (
+                <ZoneRow
+                  key={z.id}
+                  orgId={orgId}
+                  zone={z}
+                  project={nameOf(z.projectId)}
+                  canRelease={canRelease}
+                />
+              ))}
+            </tbody>
+          </table>
+        ))}
+      {actions.includes("dns.zone.create") &&
+        (projects.error ? (
+          <ErrorPanel error={projects.error} retry={() => void projects.refetch()} />
+        ) : projects.data ? (
+          <ClaimZone orgId={orgId} projects={projects.data} />
+        ) : (
+          <Loading what="Loading projects" />
+        ))}
+    </Card>
   );
 }
 
@@ -255,8 +497,7 @@ function ThisOrganization({ org }: { org: Org }) {
   const { role, actions } = access.data;
   return (
     <>
-      <section className="stack" aria-labelledby="this-org-title">
-        <h2 id="this-org-title">This organization</h2>
+      <Card title="This organization">
         <dl>
           <dt>Name</dt>
           <dd>{org.name}</dd>
@@ -269,8 +510,9 @@ function ThisOrganization({ org }: { org: Org }) {
         </dl>
         {actions.includes("organization.update") && <Rename org={org} />}
         {actions.includes("organization.delete") && <Delete org={org} />}
-      </section>
+      </Card>
       {actions.includes("member.read") && <Members orgId={org.id} />}
+      {actions.includes("dns.zone.read") && <Zones orgId={org.id} actions={actions} />}
     </>
   );
 }
@@ -279,7 +521,7 @@ function ThisOrganization({ org }: { org: Org }) {
 export function OrganizationsPage() {
   const me = useMe();
   return (
-    <div className="stack">
+    <div className="stack wide">
       {me.platformAdmin && <CreateOrganization />}
       <RequireOrg>{(org) => <ThisOrganization key={org.id} org={org} />}</RequireOrg>
     </div>

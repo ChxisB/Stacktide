@@ -1,9 +1,11 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import {
+  createDnsZone,
   createProject,
   createSsoProvider,
   deleteProject,
   getOrganization,
+  listDnsZones,
   setSsoMembership,
   signInSso,
   updateSsoProvider,
@@ -235,5 +237,130 @@ describe("the members an organization has through its identity provider", () => 
     mount(w.member.client);
     await section("This organization");
     expect(screen.queryByRole("region", { name: "Members" })).toBeNull();
+  });
+});
+
+// DNS-15: the zone claims
+describe("the DNS zones an organization has claimed", () => {
+  const claims = (orgId: string) => listDnsZones(backend.t.db, orgId, { limit: 100 });
+  const claim = (orgId: string, projectId: string, zone: string, stack = "example-com") =>
+    createDnsZone(backend.t.db, { organizationId: orgId, projectId, zone, stack });
+  const select = async (label: string, option: string) =>
+    userEvent
+      .setup()
+      .selectOptions(await screen.findByLabelText(label, {}, { timeout: 5000 }), option);
+
+  test("anyone in the organization reads the claims; only an admin is offered to make or release one", async () => {
+    const w = await world();
+    const project = await createProject(backend.t.db, { organizationId: w.org.id, name: "web" });
+    await claim(w.org.id, project.id, "example.com");
+    for (const who of [w.member, w.viewer]) {
+      mount(who.client);
+      const here = await section("DNS zones");
+      const row = await within(here).findByRole("row", { name: /example\.com/ }, { timeout: 5000 });
+      expect(row.textContent).toContain("web");
+      expect(row.textContent).toContain("example-com");
+      expect(screen.queryByRole("button", { name: /claim|release/i })).toBeNull();
+      expect(within(here).queryByLabelText("Zone")).toBeNull();
+      cleanup();
+    }
+    mount(w.admin.client);
+    await screen.findByRole("button", { name: "Release… example.com" }, { timeout: 5000 });
+    await screen.findByRole("button", { name: "Claim zone" }, { timeout: 5000 });
+  });
+
+  test("with no claim it says so, and says a claim is a guard and the token is the boundary", async () => {
+    const w = await world();
+    await createProject(backend.t.db, { organizationId: w.org.id, name: "web" });
+    mount(w.viewer.client);
+    const here = await section("DNS zones");
+    await within(here).findByText(/No zone is claimed/, {}, { timeout: 5000 });
+    expect(here.textContent).toContain("guard");
+    expect(here.textContent).toContain("token");
+  });
+
+  test("an admin claims a zone for the project they choose, and it is there for everyone", async () => {
+    const w = await world();
+    await createProject(backend.t.db, { organizationId: w.org.id, name: "alpha" });
+    const beta = await createProject(backend.t.db, { organizationId: w.org.id, name: "beta" });
+    mount(w.admin.client);
+    await fill("Zone", "example.com");
+    await select("Project", "beta");
+    await fill("Stack", "example-com");
+    await press("Claim zone");
+    const row = await within(await section("DNS zones")).findByRole(
+      "row",
+      { name: /example\.com/ },
+      { timeout: 5000 },
+    );
+    expect(row.textContent).toContain("beta");
+    expect((await claims(w.org.id)).map((c) => [c.zone, c.projectId, c.stack])).toEqual([
+      ["example.com", beta.id, "example-com"],
+    ]);
+    // the form is empty again, for the next one
+    expect(((await screen.findByLabelText("Zone")) as HTMLInputElement).value).toBe("");
+  });
+
+  test("a zone that is claimed already is said so, and the first claim stays", async () => {
+    const w = await world();
+    const project = await createProject(backend.t.db, { organizationId: w.org.id, name: "web" });
+    await claim(w.org.id, project.id, "example.com", "first");
+    mount(w.admin.client);
+    await fill("Zone", "example.com");
+    await fill("Stack", "second");
+    await press("Claim zone");
+    expect((await screen.findByRole("alert", {}, { timeout: 5000 })).textContent).toContain(
+      "claimed already",
+    );
+    expect((await claims(w.org.id)).map((c) => c.stack)).toEqual(["first"]);
+  });
+
+  test("a name that is not a zone, or a stack, is not sent", async () => {
+    const w = await world();
+    await createProject(backend.t.db, { organizationId: w.org.id, name: "web" });
+    mount(w.admin.client);
+    const button = (await screen.findByRole(
+      "button",
+      { name: "Claim zone" },
+      { timeout: 5000 },
+    )) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await fill("Zone", "Not A Zone");
+    await fill("Stack", "example-com");
+    expect(button.disabled).toBe(true);
+    await fill("Zone", "example.com");
+    await fill("Stack", "Not A Stack");
+    expect(button.disabled).toBe(true);
+    await fill("Stack", "example-com");
+    expect(button.disabled).toBe(false);
+  });
+
+  test("releasing asks first; keeping changes nothing, and confirming removes the claim", async () => {
+    const w = await world();
+    const project = await createProject(backend.t.db, { organizationId: w.org.id, name: "web" });
+    await claim(w.org.id, project.id, "example.com");
+    mount(w.admin.client);
+    await press("Release… example.com");
+    expect((await section("DNS zones")).textContent).toContain("stops being managed");
+    await press("Keep");
+    await screen.findByRole("button", { name: "Release… example.com" }, { timeout: 5000 });
+    expect(await claims(w.org.id)).toHaveLength(1);
+
+    await press("Release… example.com");
+    await press("Release example.com");
+    await within(await section("DNS zones")).findByText(
+      /No zone is claimed/,
+      {},
+      { timeout: 5000 },
+    );
+    expect(await claims(w.org.id)).toEqual([]);
+  });
+
+  test("an admin with no project is sent to import one, and is not offered a form that cannot work", async () => {
+    const w = await world();
+    mount(w.admin.client);
+    const here = await section("DNS zones");
+    await within(here).findByRole("link", { name: /import/i }, { timeout: 5000 });
+    expect(screen.queryByRole("button", { name: "Claim zone" })).toBeNull();
   });
 });

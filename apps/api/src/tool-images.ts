@@ -3,13 +3,15 @@ import { z } from "zod";
 
 /**
  * An image repository (no tag; the stack's version is the tag) per tool, for the generated pipelines.
- * Terraform and OpenTofu have defaults; Terragrunt has none. A stack with an `environment` needs its
- * tool's here too: its plan job runs `orch`, which the stock images do not hold.
+ * Terraform, OpenTofu and DNSControl have defaults; Terragrunt has none. A stack with an `environment` needs its
+ * tool's here too: its plan job runs `orch`, which the stock images do not hold. A DNS zone's apply job also reads
+ * the plan with `jq` and `wget`, so applying a zone needs the DNSControl image set, whatever its environment.
  */
 export const toolImageEnv = {
   ORCH_TERRAFORM_IMAGE: z.string().min(1).optional(),
   ORCH_TOFU_IMAGE: z.string().min(1).optional(),
   ORCH_TERRAGRUNT_IMAGE: z.string().min(1).optional(),
+  ORCH_DNSCONTROL_IMAGE: z.string().min(1).optional(),
 };
 
 export const toolImages = (
@@ -21,6 +23,7 @@ export const toolImages = (
         ["terraform", config.ORCH_TERRAFORM_IMAGE],
         ["tofu", config.ORCH_TOFU_IMAGE],
         ["terragrunt", config.ORCH_TERRAGRUNT_IMAGE],
+        ["dnscontrol", config.ORCH_DNSCONTROL_IMAGE],
       ] as const
     ).filter(([, repository]) => repository !== undefined),
   );

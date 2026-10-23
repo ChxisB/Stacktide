@@ -1,15 +1,17 @@
 import { createHash } from "node:crypto";
-import { DomainError, type Logger, resolveVariables } from "@orch/core";
+import { DomainError, type Logger, ROOT, resolveVariables } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import {
   type ChainEntry,
   createSyncRun,
   type Db,
   type Executor,
+  getFolderByPath,
   listEnvironments,
   openChain,
   type SyncTarget,
 } from "@orch/db";
+import { actionsApi, createGithubClient } from "@orch/github";
 import { createGitlab } from "@orch/gitlab";
 import {
   ALL_SCOPES,
@@ -18,8 +20,10 @@ import {
   awsSmAdapter,
   awsSsmAdapter,
   checkItems,
+  GITHUB_ACTIONS,
   GITLAB_VARIABLES,
   type GuardrailConfig,
+  githubActionsAdapter,
   gitlabVariablesAdapter,
   type ItemInput,
   isProtected,
@@ -37,12 +41,14 @@ import {
 import {
   type CloudDeps,
   openAwsSession,
+  openGithubConnection,
   openGitlabConnection,
   openKubernetesConnection,
   openVaultConnection,
 } from "./connections";
 import { guardrailRefusal } from "./guardrails";
 import { type ReferenceDeps, resolveReferences, substitute } from "./references";
+import { splitConfig } from "./sync-folder";
 
 /** A key that could not be resolved at a scope, and why. Names only, never a value. */
 export interface Unresolved {
@@ -67,8 +73,13 @@ export interface Desired {
 const sorted = <T>(rows: T[], by: (row: T) => string) =>
   rows.sort((a, b) => (by(a) < by(b) ? -1 : by(a) > by(b) ? 1 : 0));
 
-/** What a desired state is made of, read in one snapshot: the opened variables of the project and of each mapped environment. */
+/**
+ * What a desired state is made of, read in one snapshot: the opened variables of the project and of
+ * each mapped environment, in every folder (a reference may read another one), and the folder the
+ * target syncs.
+ */
 interface Gathered {
+  folder: string;
   base: ChainEntry[];
   environments: {
     slug: string;
@@ -82,6 +93,15 @@ interface Gathered {
 /** Everything `desiredState` reads from the database. Opens every secret of the project: the caller must have checked that it may. */
 async function gather(db: Executor, keys: KeyProvider, target: SyncTarget): Promise<Gathered> {
   const { organizationId, projectId } = target;
+  const { folder } = splitConfig(target.config);
+  // before any secret is opened, and for every reader of the snapshot: a plan, an apply and a digest check
+  if (folder !== ROOT && !(await getFolderByPath(db, projectId, folder))) {
+    throw new DomainError(
+      "target_folder_missing",
+      409,
+      `The folder ${folder} that this target syncs is not there (renamed or deleted): point the target at another one`,
+    );
+  }
   const known = new Map(
     (await listEnvironments(db, organizationId, projectId)).map((e) => [e.slug, e.id]),
   );
@@ -95,7 +115,7 @@ async function gather(db: Executor, keys: KeyProvider, target: SyncTarget): Prom
       : [];
     environments.push({ slug, scope, environmentId, chain });
   }
-  return { base, environments };
+  return { folder, base, environments };
 }
 
 /**
@@ -104,6 +124,8 @@ async function gather(db: Executor, keys: KeyProvider, target: SyncTarget): Prom
  * again at the apply and written as it is then.
  */
 function digestOf(target: SyncTarget, g: Gathered) {
+  // shortcut: every folder is in the facts, so a change in any of them makes a plan stale, which is
+  // safe (a folder may read another); narrow it to what the target's folder reads if that bites
   const facts: unknown[] = [chainFacts(g.base)];
   for (const { slug, scope, environmentId, chain } of g.environments) {
     if (environmentId) facts.push([slug, scope, environmentId, chainFacts(chain)]);
@@ -132,7 +154,11 @@ function digestOf(target: SyncTarget, g: Gathered) {
  * variables came to (EXT-6).
  */
 function assemble(target: SyncTarget, g: Gathered, resolved: ReadonlyMap<string, string>): Desired {
-  const { variables, issues } = resolveVariables(substitute(g.base, resolved));
+  const here = <T extends { folder?: string }>(rows: readonly T[]) =>
+    rows.filter((r) => (r.folder ?? ROOT) === g.folder);
+  const resolvedBase = resolveVariables(substitute(g.base, resolved));
+  const variables = here(resolvedBase.variables);
+  const issues = here(resolvedBase.issues);
   const baseOf = new Map(variables.map((v) => [v.key, v]));
   const items: ItemInput[] = variables.map((v) => ({
     key: v.key,
@@ -154,7 +180,7 @@ function assemble(target: SyncTarget, g: Gathered, resolved: ReadonlyMap<string,
       continue;
     }
     const there = resolveVariables(substitute(chain, resolved));
-    for (const v of there.variables) {
+    for (const v of here(there.variables)) {
       resolvedInAnEnvironment.add(v.key);
       const own = baseOf.get(v.key);
       if (own && own.value === v.value && own.kind === v.kind) continue;
@@ -166,7 +192,8 @@ function assemble(target: SyncTarget, g: Gathered, resolved: ReadonlyMap<string,
         file: v.kind === "file",
       });
     }
-    for (const issue of there.issues) unresolved.push({ key: issue.key, scope, code: issue.code });
+    for (const issue of here(there.issues))
+      unresolved.push({ key: issue.key, scope, code: issue.code });
   }
   // A key that reads something only the environments define has no value at `*`, and that is fine
   // when an environment resolves it; when none does, it is broken.
@@ -186,9 +213,14 @@ function assemble(target: SyncTarget, g: Gathered, resolved: ReadonlyMap<string,
 }
 
 /** Which variables (by id) a chain is made of and the version of each: enough to see that one changed, no value. */
-const chainFacts = (chain: { id: string; key: string; kind: string; version: number }[]) =>
+const chainFacts = (
+  chain: { id: string; key: string; kind: string; version: number; folder?: string }[],
+) =>
   sorted(
-    chain.map(({ id, key, kind, version }) => [id, key, kind, version] as const),
+    chain.map(
+      ({ id, key, kind, version, folder }) =>
+        [id, key, kind, version, ...(folder === undefined ? [] : [folder])] as const,
+    ),
     (row) => row[0],
   );
 
@@ -226,6 +258,9 @@ export async function desiredSnapshot(
   requestId: unknown,
 ): Promise<Desired> {
   const gathered = await snapshot(deps.db, deps.keys, target);
+  // shortcut: the references of every folder are read, not only the target's, because a reference may
+  // read another folder's variable (`${/a/B}`) and one that cannot be read fails the plan; narrow it
+  // to what the folder reads if one folder's broken reference blocking the others bites
   const resolved = await resolveReferences(deps, target.organizationId, requestId, [
     gathered.base,
     ...gathered.environments.map((e) => e.chain),
@@ -262,6 +297,25 @@ export async function openTarget(
           maxRetries: 1,
           maxRetryDelayMs: 2_000,
         }),
+      );
+    }
+    case GITHUB_ACTIONS: {
+      const { baseUrl, token } = await openGithubConnection(
+        deps,
+        organizationId,
+        connectionId,
+        requestId,
+      );
+      return githubActionsAdapter(
+        actionsApi(
+          createGithubClient({
+            baseUrl,
+            token,
+            timeoutMs: 15_000,
+            maxRetries: 1,
+            maxRetryDelayMs: 2_000,
+          }),
+        ),
       );
     }
     case AWS_SSM: {
@@ -358,7 +412,7 @@ export async function planTarget(
   const adapter = await openTarget(deps, target, requestId);
   try {
     // before any secret is opened: a target that cannot be planned costs nothing
-    const config = adapter.validate(target.config);
+    const config = adapter.validate(splitConfig(target.config).rest);
     const desired = await desiredSnapshot(deps, target, requestId);
     refuse(adapter, desired.items);
     const violations = checkItems(

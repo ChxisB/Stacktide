@@ -1,8 +1,9 @@
-import { and, asc, eq, gt, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { BunSQLQueryResultHKT } from "drizzle-orm/bun-sql";
 import type { PgDatabase } from "drizzle-orm/pg-core";
+import { baseUrlOf, DOTCOM } from "./project-connection";
 import type * as schema from "./schema";
-import { environments, organizations, projects } from "./schema";
+import { connections, environments, organizations, projects } from "./schema";
 
 /** A `Db` or a transaction: repo functions work inside either, so callers can add audit writes. */
 export type Executor = PgDatabase<BunSQLQueryResultHKT, typeof schema>;
@@ -211,9 +212,14 @@ export function listEnvironments(
 
 /**
  * What AUTH-5 asks GitLab about: every organization linked to a GitLab group and every project
- * linked to a GitLab project, with the platform ids that roles are keyed by.
+ * linked to a GitLab project, with the platform ids that roles are keyed by. Only the deployment's own
+ * GitLab (`deploymentUrl`, `GITLAB_URL`) is asked: people sign in to it, so their `gitlab_id` is an id
+ * there and nowhere else. A project bound to a connection at another address is left out (FRG-6), or user
+ * 100 on one instance would hold the roles of user 100 on the other. An unbound project is the deployment's.
+ * shortcut: a group link is taken to be the deployment's GitLab too; it has no connection of its own until
+ * a second instance has its own OAuth sign-in.
  */
-export async function gitlabLinks(db: Executor) {
+export async function gitlabLinks(db: Executor, deploymentUrl: string) {
   const orgs = await db
     .select({ organizationId: organizations.id, gitlabGroupId: organizations.gitlabGroupId })
     .from(organizations)
@@ -222,7 +228,19 @@ export async function gitlabLinks(db: Executor) {
   const projs = await db
     .select({ projectId: projects.id, gitlabProjectId: projects.gitlabProjectId })
     .from(projects)
-    .where(isNotNull(projects.gitlabProjectId))
+    .leftJoin(connections, eq(connections.id, projects.connectionId))
+    .where(
+      and(
+        isNotNull(projects.gitlabProjectId),
+        or(
+          isNull(projects.connectionId),
+          and(
+            eq(connections.type, "gitlab"),
+            sql`rtrim(${baseUrlOf}, '/') = ${deploymentUrl.replace(/\/+$/, "")}`,
+          ),
+        ),
+      ),
+    )
     .orderBy(asc(projects.id));
   return {
     groups: orgs.flatMap((o) =>
@@ -232,4 +250,36 @@ export async function gitlabLinks(db: Executor) {
       p.gitlabProjectId === null ? [] : [{ ...p, gitlabProjectId: p.gitlabProjectId }],
     ),
   };
+}
+
+/**
+ * The repositories a GitHub account's project roles are read from (FRG-25): the projects bound to a github.com
+ * connection, with the repository id (`gitlabProjectId` holds it for these projects) and the connection whose token
+ * reads who may do what there. A GitLab project, an unbound one and an Enterprise Server's repository are not: a
+ * person's GitHub id is one number on github.com and means nothing elsewhere.
+ */
+export async function githubLinks(db: Executor) {
+  const rows = await db
+    .select({
+      projectId: projects.id,
+      organizationId: projects.organizationId,
+      connectionId: connections.id,
+      repositoryId: projects.gitlabProjectId,
+    })
+    .from(projects)
+    .innerJoin(connections, eq(connections.id, projects.connectionId))
+    .where(
+      and(
+        eq(connections.type, "github"),
+        isNotNull(projects.gitlabProjectId),
+        sql`rtrim(${baseUrlOf}, '/') in (${sql.join(
+          DOTCOM.map((u) => sql`${u}`),
+          sql`, `,
+        )})`,
+      ),
+    )
+    .orderBy(asc(projects.id));
+  return rows.flatMap((r) =>
+    r.repositoryId === null ? [] : [{ ...r, repositoryId: r.repositoryId }],
+  );
 }

@@ -7,6 +7,7 @@
     "./testing": "./src/testing.ts"
   },
   "dependencies": {
+    "@orch/github": "workspace:*",
     "@orch/gitlab": "workspace:*",
     "zod": "4.6.7"
   }

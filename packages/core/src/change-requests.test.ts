@@ -20,6 +20,23 @@ describe("diffOf", () => {
     expect(JSON.stringify(diff)).not.toContain("hunter2");
     expect(JSON.stringify(diff)).not.toContain("eu-west-1");
   });
+
+  test("names the folder of a step that is not at the root, and says nothing of the root", () => {
+    const diff = diffOf([
+      { op: "set", folder: "/pay", key: "A", kind: "secret", value: "hunter2-very-secret" },
+      { op: "set", folder: "/", key: "B", value: "v" },
+      { op: "rename", folder: "/pay", key: "C", to: "D" },
+      { op: "delete", folder: "/a/b", key: "E" },
+    ]);
+    expect(diff).toEqual([
+      { action: "set", key: "A", kind: "secret", folder: "/pay" },
+      { action: "set", key: "B" },
+      { action: "rename", key: "C", to: "D", folder: "/pay" },
+      { action: "delete", key: "E", folder: "/a/b" },
+    ]);
+    expect(Object.keys(diff[1] ?? {})).toEqual(["action", "key"]);
+    expect(JSON.stringify(diff)).not.toContain("hunter2");
+  });
 });
 
 describe("personRef", () => {

@@ -59,6 +59,10 @@ const job = z
     // GitLab's own word (`script_failure`, `runner_system_failure`...), only on a failed job
     failure_reason: z.string().nullish(),
     web_url: z.string(),
+    // ISO times and seconds, null until the job has started and finished
+    started_at: z.string().nullish(),
+    finished_at: z.string().nullish(),
+    duration: z.number().nullish(),
   })
   .transform((j) => ({
     id: j.id,
@@ -68,20 +72,47 @@ const job = z
     allowFailure: j.allow_failure ?? false,
     failureReason: j.failure_reason ?? null,
     webUrl: j.web_url,
+    startedAt: j.started_at ?? null,
+    finishedAt: j.finished_at ?? null,
+    duration: j.duration ?? null,
   }));
 export type Job = z.output<typeof job>;
 
-// A trigger job of a parent pipeline: `downstream_pipeline` is the child pipeline it started, null while there is none.
+// A trigger job of a parent pipeline: `downstream_pipeline` is the pipeline it started (in this project or
+// another), null while there is none. Only the fields named here are kept.
 const bridge = z
   .object({
+    /** A trigger is a job: its number comes from the same sequence as the jobs', so it sorts among them. */
+    id: z.number(),
     name: z.string(),
+    stage: z.string().nullish(),
     status,
-    downstream_pipeline: z.object({ id: z.number() }).nullish(),
+    web_url: z.string().nullish(),
+    downstream_pipeline: z
+      .object({
+        id: z.number(),
+        project_id: z.number().nullish(),
+        status: status.nullish(),
+        web_url: z.string().nullish(),
+      })
+      .nullish(),
   })
   .transform((b) => ({
+    id: b.id,
     name: b.name,
+    stage: b.stage ?? "",
     status: b.status,
+    webUrl: b.web_url ?? "",
     downstreamPipelineId: b.downstream_pipeline?.id ?? null,
+    downstream: b.downstream_pipeline
+      ? {
+          pipelineId: b.downstream_pipeline.id,
+          /** GitLab's project number; another project's pipeline when it is not this project's. */
+          projectId: b.downstream_pipeline.project_id ?? null,
+          status: b.downstream_pipeline.status ?? null,
+          webUrl: b.downstream_pipeline.web_url ?? "",
+        }
+      : null,
   }));
 export type Bridge = z.output<typeof bridge>;
 

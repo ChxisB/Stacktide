@@ -1,6 +1,8 @@
+import { ROOT } from "@orch/core/folders";
 import { useRef, useState } from "react";
 import { call, useClient } from "./api";
-import { AppliesTo, type Env, levelOf, variablesAt } from "./variable-parts";
+import { useInDrawer } from "./components";
+import { AppliesTo, type Env, inFolder, levelOf, variablesAt } from "./variable-parts";
 
 type Format = "dotenv" | "json";
 interface Run {
@@ -37,16 +39,20 @@ export function Import({
   orgId,
   projectId,
   envs,
+  folder,
   reload,
   close,
 }: {
   orgId: string;
   projectId: string;
   envs: Env[];
+  /** The folder the variables go into. */
+  folder: string;
   reload: () => Promise<void>;
   close: () => void;
 }) {
   const client = useClient();
+  const inDrawer = useInDrawer();
   const [format, setFormat] = useState<Format>("dotenv");
   const [kind, setKind] = useState<"secret" | "plain">("secret");
   const [scope, setScope] = useState("project");
@@ -79,6 +85,7 @@ export function Import({
           kind,
           overwrite,
           dryRun,
+          ...inFolder(folder),
         }),
       );
       if (seen !== edits.current) return;
@@ -123,7 +130,12 @@ export function Import({
         void send(true);
       }}
     >
-      <h2>Import variables</h2>
+      {!inDrawer && <h2>Import variables</h2>}
+      {folder !== ROOT && (
+        <p className="muted">
+          They go into <code>{folder}</code>.
+        </p>
+      )}
       <p className="muted">
         Paste a <code>.env</code> file or JSON, or choose a file. You see what would happen to each
         name before anything is saved.
@@ -147,7 +159,12 @@ export function Import({
             <option value="plain">Plain (shown to everyone who can see the project)</option>
           </select>
         </label>
-        <AppliesTo envs={envs} value={scope} onChange={edit(setScope)} />
+        <AppliesTo
+          envs={envs}
+          value={scope}
+          onChange={edit(setScope)}
+          organization={folder === ROOT}
+        />
         <label>
           <input
             type="checkbox"
@@ -243,7 +260,10 @@ export function Import({
           {pending && !worth && <p>Nothing would change.</p>}
         </div>
       )}
-      <div className="row">
+      <div className="drawer-foot">
+        <button type="button" onClick={close}>
+          {shown && !pending ? "Close" : "Cancel"}
+        </button>
         <button type="submit" disabled={busy !== undefined || content === ""}>
           {busy === "preview" ? "Checking…" : "Preview"}
         </button>
@@ -257,9 +277,6 @@ export function Import({
             {busy === "apply" ? "Saving…" : "Apply import"}
           </button>
         )}
-        <button type="button" onClick={close}>
-          {shown && !pending ? "Close" : "Cancel"}
-        </button>
       </div>
     </form>
   );

@@ -63,12 +63,15 @@ export async function getPipelineRun(
   )[0];
 }
 
-/** A project's runs, newest first (GitLab's pipeline ids only grow), after the cursor `before`. */
+/**
+ * A project's runs, newest first (GitLab's pipeline ids only grow), after the cursor `before`; `pipelineId`
+ * keeps only the run of that GitLab pipeline.
+ */
 export async function listPipelineRuns(
   db: Executor,
   organizationId: string,
   projectId: string,
-  o: { ref?: string; status?: string; before?: number; limit: number },
+  o: { ref?: string; status?: string; before?: number; pipelineId?: number; limit: number },
 ) {
   return db
     .select()
@@ -78,6 +81,7 @@ export async function listPipelineRuns(
         projectIs(organizationId, projectId),
         o.ref === undefined ? undefined : eq(pipelineRuns.ref, o.ref),
         o.status === undefined ? undefined : eq(pipelineRuns.status, o.status),
+        o.pipelineId === undefined ? undefined : eq(pipelineRuns.gitlabPipelineId, o.pipelineId),
         o.before === undefined ? undefined : lt(pipelineRuns.gitlabPipelineId, o.before),
       ),
     )

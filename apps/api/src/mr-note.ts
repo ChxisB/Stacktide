@@ -21,6 +21,8 @@ export interface NoteView {
   notice: string | null;
   /** The project's address in GitLab, for links to jobs. */
   projectUrl: string | undefined;
+  /** The repository is GitHub's, whose job pages are at another address (FRG-32). */
+  github?: boolean | undefined;
   /** The organization's cost limits as they are now; none shows each estimate without a verdict. */
   limits?: readonly CostLimit[] | undefined;
   /** The organization's secret gate and what it counts for the project now; nothing is said unless it warns or denies. */
@@ -57,6 +59,17 @@ const policyLine = (s: RunStack) =>
     .join(" ");
 
 // What a plan is estimated to cost and what the limit makes of it: figures and rule names, never a resource.
+const noun = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;
+
+/** The counts of a zone's lint (DNS-11): per severity, or "no findings" when it ran and found none. */
+function lintLine(errors: number, warnings: number): string {
+  const counts = [
+    ...(errors > 0 ? [noun(errors, "error")] : []),
+    ...(warnings > 0 ? [noun(warnings, "warning")] : []),
+  ];
+  return counts.length > 0 ? counts.join(", ") : "no findings";
+}
+
 function costLine(stack: string, { estimate: e, limit, verdict, rules }: CostView): string {
   // cents, unless that would round away what a comparison turned on (100.004 is over a limit of 100)
   const money = (n: number, currency: string) =>
@@ -76,7 +89,14 @@ function costLine(stack: string, { estimate: e, limit, verdict, rules }: CostVie
  * it. Counts only: no address of a resource and no plan (a plan holds secrets); whoever may see the
  * plan opens the job.
  */
-export function renderNote({ run, notice, projectUrl, limits = [], secrets }: NoteView): string {
+export function renderNote({
+  run,
+  notice,
+  projectUrl,
+  github,
+  limits = [],
+  secrets,
+}: NoteView): string {
   const base = projectUrl?.replace(/\/+$/, "");
   const out = ["**orch plan**"];
   if (run) {
@@ -92,16 +112,39 @@ export function renderNote({ run, notice, projectUrl, limits = [], secrets }: No
         s.planAdd === null ? [dash, dash, dash] : [s.planAdd, s.planChange, s.planDestroy];
       const link =
         s.planJobId !== null && base !== undefined && SAFE_URL.test(base)
-          ? `[job](${base}/-/jobs/${s.planJobId})`
+          ? // shortcut: GitHub sends /runs/<job id> on to the job's page (not confirmed against GitHub); upgrade by
+            // keeping the workflow run's id with the job
+            `[job](${base}${github ? "/runs/" : "/-/jobs/"}${s.planJobId})`
           : dash;
       const status = `${plain(s.status, 20)}${s.error === null ? "" : ` (${plain(s.error, 100)})`}`;
       out.push(`| \`${plain(s.stack, 63)}\` | ${status} | ${counts.join(" | ")} | ${link} |`);
+    }
+  }
+  // an apply GitHub holds for the environment's reviewers: a person approves it there, the platform never does
+  const held =
+    run?.stacks.filter((s) => s.approvalUrl !== null && SAFE_URL.test(s.approvalUrl)) ?? [];
+  if (held.length > 0) {
+    out.push("", "Approval:", "");
+    for (const s of held) {
+      out.push(
+        `- \`${plain(s.stack, 63)}\`: waiting for approval in GitHub ([open the job](${s.approvalUrl}))`,
+      );
     }
   }
   const judged = run?.stacks.filter((s) => s.policyVerdict !== null) ?? [];
   if (judged.length > 0) {
     out.push("", "Policy:", "");
     for (const s of judged) out.push(`- \`${plain(s.stack, 63)}\`: ${policyLine(s)}`);
+  }
+  // only a zone has a lint: the counts of any other stack's row are not the platform's to show
+  const linted =
+    run?.stacks.filter(
+      (s) => s.dnsPrune !== null && s.lintErrors !== null && s.lintWarnings !== null,
+    ) ?? [];
+  if (linted.length > 0) {
+    out.push("", "DNS lint:", "");
+    for (const s of linted)
+      out.push(`- \`${plain(s.stack, 63)}\`: ${lintLine(s.lintErrors ?? 0, s.lintWarnings ?? 0)}`);
   }
   const costs = run?.stacks.flatMap((s) => {
     const view = costViewOf(s, limits);
@@ -126,9 +169,12 @@ export function renderNote({ run, notice, projectUrl, limits = [], secrets }: No
   return out.join("\n");
 }
 
+/** What the note needs of a forge: a GitLab client and a `Forge` both fit. */
+export type NoteForge = Pick<Gitlab, "projects" | "mergeRequests">;
+
 /** Updates the note, or makes it when there is none or someone deleted it; returns its id. */
 export async function upsertNote(
-  gitlab: Gitlab,
+  gitlab: NoteForge,
   project: number,
   iid: number,
   noteId: number | null,
@@ -154,7 +200,7 @@ export async function upsertNote(
 export async function writeNote(
   tx: Tx,
   row: MergeRequestNote,
-  gitlab: Gitlab,
+  gitlab: NoteForge,
   gitlabProjectId: number,
   only?: string,
 ): Promise<void> {
@@ -169,7 +215,8 @@ export async function writeNote(
   const { webUrl } = await gitlab.projects.get(gitlabProjectId);
   const limits = await allCostLimits(tx, row.organizationId);
   const secrets = await secretGateOf(tx, row);
-  const body = renderNote({ run, notice: row.notice, projectUrl: webUrl, limits, secrets });
+  const github = "kind" in gitlab && gitlab.kind === "github";
+  const body = renderNote({ run, notice: row.notice, projectUrl: webUrl, github, limits, secrets });
   const noteId = await upsertNote(gitlab, gitlabProjectId, row.mergeRequestIid, row.noteId, body);
   if (noteId !== row.noteId) await saveMergeRequestNote(tx, row, { noteId });
 }
@@ -179,7 +226,7 @@ export const refreshNote = (
   deps: Pick<RunDeps, "db">,
   at: { organizationId: string; projectId: string; gitlabProjectId: number },
   iid: number,
-  gitlab: Gitlab,
+  gitlab: NoteForge,
   only?: string,
 ) =>
   withMergeRequest(deps.db, at.organizationId, at.projectId, iid, (tx, row) =>

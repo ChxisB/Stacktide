@@ -1,12 +1,18 @@
 import {
+  address,
   type BulkOp,
   bulkKeys,
   can,
   DomainError,
   type ImportEntry,
+  isFolderPath,
   KEY_PATTERN,
   type Logger,
+  MAX_TAGS,
+  normalizeTags,
+  ROOT,
   resolveVariables,
+  TAG_PATTERN,
   VARIABLE_KINDS,
   VARIABLE_LEVELS,
   type VariableLevel,
@@ -20,16 +26,21 @@ import {
   deleteVariable,
   describeVariable,
   type Executor,
+  FolderNotFoundError,
   getEnvironment,
+  getFolderByPath,
   getOrganization,
   getProject,
   getVariable,
   type Imported,
   importLevel,
   importPlan,
+  listEnvironments,
+  listVariableChanges,
   listVariables,
   listVersions,
   lockEnvironment,
+  moveVariable,
   openChain,
   restoreLevel,
   restorePlan,
@@ -39,6 +50,7 @@ import {
   setVariable,
   snapshotLevel,
   type Variable,
+  type VariableChange,
   type VariableInfo,
   type VariableVersion,
 } from "@orch/db";
@@ -78,6 +90,9 @@ const variableSchema = z.object({
   key: z.string(),
   kind: z.enum(VARIABLE_KINDS),
   description: z.string(),
+  tags: z.array(z.string()),
+  /** The folder's path, `/` for the root. */
+  folder: z.string(),
   version: z.number().int(),
   /** Plain variables only: a secret or file value is read through `/value`, which is audited. */
   value: z.string().nullable(),
@@ -92,6 +107,8 @@ const dto = (level: VariableLevel, v: Variable): z.infer<typeof variableSchema> 
   key: v.key,
   kind: v.kind,
   description: v.description,
+  tags: v.tags,
+  folder: v.folder,
   version: v.currentVersion,
   value: v.kind === "plain" ? v.value : null,
   createdAt: iso(v.createdAt),
@@ -119,8 +136,10 @@ const resolvedSchema = z.object({
       level: z.enum(VARIABLE_LEVELS),
       key: z.string(),
       kind: z.enum(VARIABLE_KINDS),
+      folder: z.string(),
       /** `kind` is `secret` only because the value reads a secret or a file. */
       tainted: z.boolean(),
+      tags: z.array(z.string()),
       value: z.string().nullable(),
     }),
   ),
@@ -131,6 +150,8 @@ const resolvedSchema = z.object({
       ref: z.string().optional(),
       path: z.array(z.string()).optional(),
       level: z.enum(VARIABLE_LEVELS).optional(),
+      /** Where the variable with the issue is; left out at the root. */
+      folder: z.string().optional(),
     }),
   ),
 });
@@ -140,15 +161,24 @@ const value = z
   .max(MAX_VALUE)
   .refine((s) => s.isWellFormed(), "must be valid Unicode text");
 const description = z.string().max(1000);
+// Sorted and de-duplicated by `normalizeTags` where it is stored; a tag that is not one is a 422.
+const tags = z
+  .array(z.string().regex(TAG_PATTERN, "lower-case letters, digits and hyphens, up to 24"))
+  .max(MAX_TAGS);
 const reason = z.string().max(500);
 const keyName = z
   .string()
   .regex(KEY_PATTERN, "letters, digits and underscores, not starting with a digit, up to 255");
+const folderPath = z.string().refine(isFolderPath, "/ or the path of a folder, such as /pay");
+// The root unless named; a folder that is not there is a 404 where the route checks it.
+const folderQuery = z.object({ folder: folderPath.optional() });
 const create = z.strictObject({
   key: keyName,
   kind: z.enum(VARIABLE_KINDS),
+  folder: folderPath.optional(),
   value,
   description: description.optional(),
+  tags: tags.optional(),
   reason: reason.optional(),
 });
 // The key and the kind are what other variables and targets refer to: to change one, make a new variable.
@@ -156,14 +186,32 @@ const patch = z
   .strictObject({
     value: value.optional(),
     description: description.optional(),
+    tags: tags.optional(),
     reason: reason.optional(),
+    /** A move: the folder it goes to (`/` for the root), and nothing else in the same patch. */
+    folder: folderPath.optional(),
+    /** Go ahead with a move although other variables would stop resolving. */
+    force: z.boolean().optional(),
   })
   .refine(
-    (o) => o.value !== undefined || o.description !== undefined,
-    "a value or a description is required",
+    (o) =>
+      o.value !== undefined ||
+      o.description !== undefined ||
+      o.tags !== undefined ||
+      o.folder !== undefined,
+    "a value, a description, tags or a folder is required",
   )
   // A reason belongs to a version, and only a new value makes one.
-  .refine((o) => o.reason === undefined || o.value !== undefined, "a reason needs a value");
+  .refine((o) => o.reason === undefined || o.value !== undefined, "a reason needs a value")
+  .refine(
+    (o) =>
+      o.folder === undefined ||
+      (o.value === undefined && o.description === undefined && o.tags === undefined),
+    "a move is a patch of the folder alone",
+  )
+  .refine((o) => o.force === undefined || o.folder !== undefined, "force goes with a move");
+/** What a refused move says besides the problem: the addresses it would leave unresolved. */
+const moveRefused = problemSchema.extend({ breaks: z.array(z.string()).optional() });
 const revealQuery = z.object({ version: z.coerce.number().int().min(1).optional() });
 
 // A moment to go back to: not in the future, and with a zone. In a query an unencoded "+" is a space.
@@ -182,6 +230,8 @@ const snapshotSchema = z.object({
   variables: z.array(
     z.object({
       id: z.uuid(),
+      /** The folder it is in now, `/` for the root: versions do not record one. */
+      folder: z.string(),
       key: z.string(),
       kind: z.enum(VARIABLE_KINDS),
       description: z.string(),
@@ -194,6 +244,8 @@ const snapshotSchema = z.object({
 const changeSchema = z.object({
   change: z.enum(["update", "create", "remove", "conflict"]),
   key: z.string(),
+  /** Where the key is; left out at the root. */
+  folder: z.string().optional(),
   kind: z.enum(VARIABLE_KINDS),
 });
 const planSchema = z.object({ at: z.iso.datetime(), changes: z.array(changeSchema) });
@@ -205,7 +257,12 @@ const restoredSchema = z.object({
 // A pasted `.env` or JSON text, or the variables of the GitLab project this one was imported from.
 // A dry run is the default, and so is `secret`: nothing is made readable on a guess.
 const MAX_CONTENT = 1_048_576;
-const importOptions = { overwrite: z.boolean().optional(), dryRun: z.boolean().optional() };
+const importOptions = {
+  /** The folder the variables go into (a project's or an environment's); the root when left out. */
+  folder: folderPath.optional(),
+  overwrite: z.boolean().optional(),
+  dryRun: z.boolean().optional(),
+};
 const fileImport = {
   content: z.string().min(1).max(MAX_CONTENT),
   kind: z.enum(["plain", "secret"]).optional(),
@@ -223,6 +280,8 @@ const importedSchema = z.object({
     z.object({
       change: z.enum(["create", "update", "unchanged", "conflict", "kind_mismatch"]),
       key: z.string(),
+      /** Where the key is; left out at the root. */
+      folder: z.string().optional(),
       kind: z.enum(VARIABLE_KINDS),
       applied: z.boolean(),
       /** GitLab's own flags, noted and not carried over. */
@@ -253,12 +312,18 @@ const MAX_BULK = 1000;
 const bulkOp = z.discriminatedUnion("op", [
   z.strictObject({
     op: z.literal("set"),
+    folder: folderPath.optional(),
     key: keyName,
     kind: z.enum(VARIABLE_KINDS).optional(),
     value,
   }),
-  z.strictObject({ op: z.literal("rename"), key: keyName, to: keyName }),
-  z.strictObject({ op: z.literal("delete"), key: keyName }),
+  z.strictObject({
+    op: z.literal("rename"),
+    folder: folderPath.optional(),
+    key: keyName,
+    to: keyName,
+  }),
+  z.strictObject({ op: z.literal("delete"), folder: folderPath.optional(), key: keyName }),
 ]);
 /** The steps of a bulk edit, or of a change request (GOV-2), which carries the same. */
 export const bulkOps = z
@@ -266,6 +331,8 @@ export const bulkOps = z
   .min(1)
   .max(MAX_BULK)
   .refine((ops) => {
+    // A step with a bad folder is refused by its own check; naming it here would throw.
+    if (!ops.every((o) => o.folder === undefined || isFolderPath(o.folder))) return true;
     const named = ops.flatMap(bulkKeys);
     return new Set(named).size === named.length;
   }, "a key may be named by one step only")
@@ -289,6 +356,8 @@ const bulkedSchema = z.object({
         "conflict",
       ]),
       key: z.string(),
+      /** Where the key is; left out at the root. */
+      folder: z.string().optional(),
       /** The new key of a rename. */
       to: z.string().optional(),
       /** The kind the key has or will have; none for a key that is not there. */
@@ -304,6 +373,8 @@ const searchBody = z
     key: z.string().min(1).max(255).optional(),
     value: z.string().min(1).max(1000).optional(),
     kind: z.enum(VARIABLE_KINDS).optional(),
+    /** Only this folder's variables, in whichever project; left out, every folder (each hit says where). */
+    folder: folderPath.optional(),
     limit: z.number().int().min(1).max(100).optional(),
   })
   .refine(
@@ -403,6 +474,53 @@ export const environmentLevel = {
     Promise.reject(notFound("Environment")),
 } as const satisfies Level;
 
+/**
+ * The folder a read asks for: the root unless named. One that is not there (deleted, another
+ * project's, or the organization's, which has none) is a 404, not an empty answer.
+ */
+const folderAsked = async (db: RouteDeps["db"], projectId: string | undefined, path = ROOT) => {
+  if (path !== ROOT && !(projectId && (await getFolderByPath(db, projectId, path)))) {
+    throw notFound("Folder");
+  }
+  return path;
+};
+
+/** Every folder the steps name, checked as {@link folderAsked} does: a whole request is refused if one is not there. */
+export const foldersNamed = async (
+  db: RouteDeps["db"],
+  projectId: string | undefined,
+  steps: readonly { folder?: string }[],
+) => {
+  for (const path of new Set(steps.map((s) => s.folder ?? ROOT))) {
+    await folderAsked(db, projectId, path);
+  }
+};
+
+/**
+ * The addresses that have an issue in any chain a variable is seen in: an environment's own for an
+ * environment's variable, the project's and each environment's for a project's. Names only. A move
+ * is judged by what this gains: an address with an issue after it and none before.
+ * shortcut: every value of those chains is opened for it (the resolver needs them), twice per move;
+ * fine for a move, which is rare, not for a loop of them.
+ */
+const issuesAround = async (db: Executor, keys: KeyProvider, v: VariableInfo) => {
+  const { organizationId, projectId, environmentId } = v;
+  const found = new Set<string>();
+  if (!projectId) return found; // an organization's variables have no folder to leave
+  const seenFrom = environmentId
+    ? [environmentId]
+    : [undefined, ...(await listEnvironments(db, organizationId, projectId)).map((e) => e.id)];
+  for (const env of seenFrom) {
+    const chain = await openChain(db, keys, {
+      organizationId,
+      projectId,
+      ...(env && { environmentId: env }),
+    });
+    for (const i of resolveVariables(chain).issues) found.add(address(i.folder, i.key));
+  }
+  return found;
+};
+
 export const scopeOf = (p: Params): Scope => ({
   organizationId: p.orgId,
   projectId: p.projectId,
@@ -430,6 +548,7 @@ export const audited = (
     ...(v.environmentId && { environmentId: v.environmentId }),
     key: v.key,
     kind: v.kind,
+    ...(v.folder !== ROOT && { folder: v.folder }),
     ...extra,
   },
 });
@@ -476,6 +595,7 @@ const KNOWN_ERRORS = {
  * API error.
  */
 const fail = (logger: Logger, requestId: unknown) => (e: unknown) => {
+  if (e instanceof FolderNotFoundError) throw notFound("Folder");
   if (!(e instanceof CryptoError)) return mapDbError(KNOWN_ERRORS)(e);
   logger.error("variable value cannot be opened", { request_id: requestId, code: e.code });
   throw new DomainError(
@@ -570,17 +690,20 @@ const levelRoutes = <const P extends string>(
         const k = sealing();
         await spec.parent(db, p);
         const scope = scopeOf(p);
+        const folder = await folderAsked(db, p.projectId, query.folder);
         return paged<Variable, [string], z.infer<typeof variableSchema>>(query, {
           key: z.tuple([z.uuid()]),
           keyOf: (v): [string] => [v.id],
           fetch: (after, limit) =>
-            listVariables(db, k, scope, { after: after?.[0], limit }).catch(failingWith(set)),
+            listVariables(db, k, scope, { after: after?.[0], limit }, folder).catch(
+              failingWith(set),
+            ),
           dto: (v) => dto(level, v),
         });
       },
       {
         params,
-        query: pageQuery,
+        query: pageQuery.extend(folderQuery.shape),
         response: { 200: pageOf(variableSchema), ...reads },
         guard: actions.read,
       },
@@ -608,7 +731,12 @@ const levelRoutes = <const P extends string>(
         const created = await db
           .transaction(async (tx) => {
             await writable(tx, p);
-            const v = await createVariable(tx, k, { ...scopeOf(p), ...body, actor });
+            const v = await createVariable(tx, k, {
+              ...scopeOf(p),
+              ...body,
+              tags: body.tags && normalizeTags(body.tags),
+              actor,
+            });
             await audit(tx, audited("variable.create", level, v));
             return v;
           })
@@ -633,9 +761,44 @@ const levelRoutes = <const P extends string>(
         const changed = await db
           .transaction(async (tx) => {
             await writable(tx, p);
-            const v = await setVariable(tx, k, scopeOf(p), p.varId, { ...body, actor });
+            if (body.folder !== undefined) {
+              const was = await describeVariable(tx, scopeOf(p), p.varId);
+              if (!was) throw notFound("Variable");
+              const before = await issuesAround(tx, k, was);
+              const moved = await moveVariable(tx, k, scopeOf(p), p.varId, body.folder);
+              if (!moved) throw notFound("Variable");
+              // Judged after the move, so a clash is a 409 key_taken first; thrown, the move is undone.
+              const breaks = [...(await issuesAround(tx, k, moved))]
+                .filter((a) => !before.has(a))
+                .sort();
+              if (breaks.length > 0 && !body.force) {
+                throw new DomainError(
+                  "move_breaks_readers",
+                  409,
+                  "Moving this would leave other variables unresolved: the addresses are in `breaks`, and `force` goes ahead",
+                  { breaks },
+                );
+              }
+              const left = moved.folder !== was.folder;
+              await audit(
+                tx,
+                audited("variable.update", level, moved, {
+                  fields: left ? ["folder"] : [],
+                  ...(left && was.folder !== ROOT && { previousFolder: was.folder }),
+                  ...(breaks.length > 0 && { forced: true, breakCount: breaks.length }),
+                }),
+              );
+              return moved;
+            }
+            const v = await setVariable(tx, k, scopeOf(p), p.varId, {
+              ...body,
+              tags: body.tags && normalizeTags(body.tags),
+              actor,
+            });
             if (!v) throw notFound("Variable");
-            const fields = (["description", "value"] as const).filter((f) => body[f] !== undefined);
+            const fields = (["description", "tags", "value"] as const).filter(
+              (f) => body[f] !== undefined,
+            );
             await audit(
               tx,
               audited("variable.update", level, v, { fields, version: v.currentVersion }),
@@ -649,7 +812,7 @@ const levelRoutes = <const P extends string>(
         params: itemParams,
         body: patch,
         parse: "json",
-        response: { 200: variableSchema, ...writes },
+        response: { 200: variableSchema, ...writes, 409: moveRefused },
         audit: "variable.update",
         guard: actions.update,
       },
@@ -767,8 +930,9 @@ const levelRoutes = <const P extends string>(
         const held = await snapshotLevel(db, k, scopeOf(p), moment).catch(failingWith(set));
         return {
           at: moment.toISOString(),
-          variables: held.map(({ id, key, kind, description, version, value }) => ({
+          variables: held.map(({ id, folder, key, kind, description, version, value }) => ({
             id,
+            folder,
             key,
             kind,
             description,
@@ -847,7 +1011,13 @@ const levelRoutes = <const P extends string>(
           .catch(failingWith(set));
         return {
           at: moment.toISOString(),
-          changes: done.map(({ change, key, kind, applied }) => ({ change, key, kind, applied })),
+          changes: done.map(({ change, key, folder, kind, applied }) => ({
+            change,
+            key,
+            ...(folder && { folder }),
+            kind,
+            applied,
+          })),
         };
       },
       {
@@ -876,6 +1046,7 @@ const levelRoutes = <const P extends string>(
         const k = sealing();
         const actor = actorOf(caller);
         await spec.parent(db, p);
+        const folder = await folderAsked(db, p.projectId, body.folder);
         const dryRun = body.dryRun !== false;
         const overwrite = body.overwrite === true;
         const { source } = body;
@@ -885,19 +1056,22 @@ const levelRoutes = <const P extends string>(
           body.source === "gitlab"
             ? await fromGitlabProject(p, body.connectionId, set.headers["x-request-id"], accept)
             : fromFile(body.source, body.content, body.kind ?? "secret", accept);
+        const entries =
+          folder === ROOT ? found.entries : found.entries.map((e) => ({ ...e, folder }));
         const done = await db
           .transaction(async (tx) => {
             if (!dryRun) await writable(tx, p);
             const changes = dryRun
-              ? (await importPlan(tx, k, scopeOf(p), found.entries, overwrite)).map(
+              ? (await importPlan(tx, k, scopeOf(p), entries, overwrite)).map(
                   (c): Imported => ({
                     change: c.change,
                     key: c.key,
+                    ...(c.folder && { folder: c.folder }),
                     kind: c.kind,
                     applied: false,
                   }),
                 )
-              : await importLevel(tx, k, scopeOf(p), found.entries, { actor, overwrite, source });
+              : await importLevel(tx, k, scopeOf(p), entries, { actor, overwrite, source });
             for (const c of changes) {
               if (!c.variable) continue;
               await audit(
@@ -921,6 +1095,7 @@ const levelRoutes = <const P extends string>(
                 level,
                 ...(p.envId && { environmentId: p.envId }),
                 source,
+                ...(folder !== ROOT && { folder }),
                 ...(body.source === "gitlab" && { connectionId: body.connectionId }),
                 dryRun,
                 overwrite,
@@ -937,9 +1112,10 @@ const levelRoutes = <const P extends string>(
         return {
           source,
           dryRun,
-          changes: done.map(({ change, key, kind, applied }) => ({
+          changes: done.map(({ change, key, folder: where, kind, applied }) => ({
             change,
             key,
+            ...(where && { folder: where }),
             kind,
             applied,
             ...found.flags.get(key),
@@ -964,6 +1140,10 @@ const levelRoutes = <const P extends string>(
         await spec.parent(db, p);
         const dryRun = body.dryRun !== false;
         const ops: BulkOp[] = body.ops;
+        await foldersNamed(db, p.projectId, ops);
+        const folders = [
+          ...new Set(ops.flatMap((o) => (o.folder && o.folder !== ROOT ? [o.folder] : []))),
+        ].sort();
         const done = await db
           .transaction(async (tx) => {
             if (!dryRun) await writable(tx, p);
@@ -972,6 +1152,7 @@ const levelRoutes = <const P extends string>(
                   (c): Bulked => ({
                     change: c.change,
                     key: c.key,
+                    ...(c.folder && { folder: c.folder }),
                     kind: c.kind,
                     applied: false,
                     ...(c.to !== undefined && { to: c.to }),
@@ -992,6 +1173,7 @@ const levelRoutes = <const P extends string>(
                 level,
                 ...(p.envId && { environmentId: p.envId }),
                 dryRun,
+                ...(folders.length > 0 && { folders }),
                 plannedCount: changes.length,
                 createdCount: changes.filter((c) => c.change === "create" && c.applied).length,
                 updatedCount: changes.filter((c) => c.change === "update" && c.applied).length,
@@ -1006,9 +1188,10 @@ const levelRoutes = <const P extends string>(
           .catch(failingWith(set));
         return {
           dryRun,
-          changes: done.map(({ change, key, to, kind, applied }) => ({
+          changes: done.map(({ change, key, folder, to, kind, applied }) => ({
             change,
             key,
+            ...(folder && { folder }),
             ...(to !== undefined && { to }),
             kind,
             applied,
@@ -1033,7 +1216,23 @@ export const variableRoutes = (deps: RouteDeps & { keys?: KeyProvider; logger: L
     .use(levelRoutes(deps, environmentLevel))
     .use(resolvedRoute(deps))
     .use(exportRoute(deps))
+    .use(changesRoute(deps))
     .use(searchRoute(deps));
+
+/**
+ * One folder's share of a resolution. The whole chain is resolved first, so a reference reaches
+ * across folders (`${/pay/KEY}`); only the variables and issues of the folder asked for are
+ * answered. An issue with no `folder` is the root's.
+ * shortcut: every folder of the project is opened to answer for one, so the cost follows the
+ * project, not the folder; resolve one subtree at a time when a project holds thousands.
+ */
+const inFolderOf = <V extends { folder: string }, I extends { folder?: string }>(
+  folder: string,
+  { variables, issues }: { variables: V[]; issues: I[] },
+) => ({
+  variables: variables.filter((v) => v.folder === folder),
+  issues: issues.filter((i) => (i.folder ?? ROOT) === folder),
+});
 
 /** What an environment sees: the three levels laid over each other, references filled in. */
 const resolvedRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =>
@@ -1042,24 +1241,28 @@ const resolvedRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger })
     .use(guardPlugin)
     .get(
       "/organizations/:orgId/projects/:projectId/environments/:envId/resolved-variables",
-      async ({ params: { orgId, projectId, envId }, set }) => {
+      async ({ params: { orgId, projectId, envId }, query, set }) => {
         if (!deps.keys) throw noKeys();
         if (!(await getEnvironment(deps.db, orgId, projectId, envId))) {
           throw notFound("Environment");
         }
+        const folder = await folderAsked(deps.db, projectId, query.folder);
         const chain = await openChain(deps.db, deps.keys, {
           organizationId: orgId,
           projectId,
           environmentId: envId,
         }).catch(failing(deps.logger)(set));
-        const { variables, issues } = resolveVariables(chain);
+        const { variables, issues } = inFolderOf(folder, resolveVariables(chain));
+        const tagged = new Map(chain.map((c) => [c.id, c.tags]));
         return {
           variables: variables.map((v) => ({
             id: v.id,
             level: v.level,
             key: v.key,
             kind: v.kind,
+            folder: v.folder,
             tainted: v.tainted,
+            tags: tagged.get(v.id) ?? [],
             // A secret, a file, and a plain value that reads one: none of them leaves here.
             value: v.kind === "plain" ? v.value : null,
           })),
@@ -1068,6 +1271,7 @@ const resolvedRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger })
       },
       {
         params: z.object({ orgId: z.uuid(), projectId: z.uuid(), envId: z.uuid() }),
+        query: folderQuery,
         response: { 200: resolvedSchema, ...reads },
         guard: "variable.read",
       },
@@ -1100,11 +1304,13 @@ const exportRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =
     .use(rateLimitPlugin)
     .get(
       "/organizations/:orgId/projects/:projectId/environments/:envId/resolved-variables/values",
-      async ({ params: { orgId, projectId, envId }, audit, set }) => {
+      async ({ params: { orgId, projectId, envId }, query, audit, set }) => {
         set.headers["cache-control"] = "no-store";
         const { keys, db } = deps;
         if (!keys) throw noKeys();
         if (!(await getEnvironment(db, orgId, projectId, envId))) throw notFound("Environment");
+        const folder = await folderAsked(db, projectId, query.folder);
+        const where = folder === ROOT ? {} : { folder };
         const result = await db
           .transaction(async (tx) => {
             const chain = await openChain(tx, keys, {
@@ -1112,7 +1318,8 @@ const exportRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =
               projectId,
               environmentId: envId,
             });
-            const { variables, issues } = resolveVariables(chain);
+            // Only the folder asked for is revealed, so only its secrets are on record.
+            const { variables, issues } = inFolderOf(folder, resolveVariables(chain));
             const versions = new Map(chain.map((c) => [c.id, c.version]));
             const hidden = variables.filter((v) => v.kind !== "plain");
             for (const v of hidden) {
@@ -1129,6 +1336,7 @@ const exportRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =
                   kind: v.kind,
                   version: versions.get(v.id),
                   via: "export",
+                  ...where,
                 },
               });
             }
@@ -1143,6 +1351,7 @@ const exportRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =
                 count: variables.length,
                 revealedCount: hidden.length,
                 issueCount: issues.length,
+                ...where,
               },
             });
             return { variables, issues };
@@ -1155,6 +1364,7 @@ const exportRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =
       },
       {
         params: z.object({ orgId: z.uuid(), projectId: z.uuid(), envId: z.uuid() }),
+        query: folderQuery,
         response: { 200: exportedSchema, ...reads },
         audit: ["variable.reveal", "variable.export"],
         limit: "reveal",
@@ -1162,8 +1372,68 @@ const exportRoute = (deps: RouteDeps & { keys?: KeyProvider; logger: Logger }) =
       },
     );
 
-const levelOf = (v: VariableInfo): VariableLevel =>
+const levelOf = (v: Pick<VariableInfo, "projectId" | "environmentId">): VariableLevel =>
   v.environmentId ? "environment" : v.projectId ? "project" : "organization";
+
+const versionWrittenSchema = z.object({
+  id: z.uuid(),
+  variableId: z.uuid(),
+  key: z.string(),
+  kind: z.enum(VARIABLE_KINDS),
+  /** Where the variable is now: a folder's rename writes no version. */
+  folder: z.string(),
+  level: z.enum(VARIABLE_LEVELS),
+  environmentId: z.uuid().nullable(),
+  version: z.number().int(),
+  actorKind: z.string(),
+  actorId: z.string(),
+  reason: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+/**
+ * The versions written to a project's variables, newest first (VWS-9): who changed which key,
+ * when and why, never a value. It is a read of names, versions and people, so it takes
+ * `variable.read` like the list, and it writes no audit row. The organization's level is not in
+ * it (`variable.org.read` is a different permission); with `environmentId` it is what reaches that
+ * environment: the project's variables and its own.
+ */
+const changesRoute = (deps: RouteDeps) =>
+  new Elysia()
+    .use(auditPlugin(deps.principal))
+    .use(guardPlugin)
+    .get(
+      "/organizations/:orgId/projects/:projectId/variable-changes",
+      async ({ params: { orgId, projectId }, query }) => {
+        if (!(await getProject(deps.db, orgId, projectId))) throw notFound("Project");
+        const { environmentId } = query;
+        if (environmentId && !(await getEnvironment(deps.db, orgId, projectId, environmentId))) {
+          throw notFound("Environment");
+        }
+        return paged<VariableChange, [string], z.infer<typeof versionWrittenSchema>>(query, {
+          key: z.tuple([z.uuid()]),
+          keyOf: (c): [string] => [c.id],
+          fetch: (after, limit) =>
+            listVariableChanges(
+              deps.db,
+              { organizationId: orgId, projectId },
+              environmentId ? { environmentId } : {},
+              { after: after?.[0], limit },
+            ),
+          dto: ({ projectId: _project, ...c }) => ({
+            ...c,
+            level: levelOf({ projectId: _project, environmentId: c.environmentId }),
+            createdAt: iso(c.createdAt),
+          }),
+        });
+      },
+      {
+        params: z.object({ orgId: z.uuid(), projectId: z.uuid() }),
+        query: pageQuery.extend({ environmentId: z.uuid().optional() }),
+        response: { 200: pageOf(versionWrittenSchema), ...readErrors },
+        guard: "variable.read",
+      },
+    );
 
 /**
  * Variables of an organization by part of the key and, for plain ones, of the value: one request

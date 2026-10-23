@@ -229,12 +229,23 @@ async function world(
     run: (runId: string, who: Who | null = "alice") =>
       call(who, "GET", `${targets}/${target}/runs/${runId}`),
     /** A variable here: at the project, or in an environment. */
-    put: async (at: "project" | "prod" | "stage", key: string, kind: string, value: string) => {
+    put: async (
+      at: "project" | "prod" | "stage",
+      key: string,
+      kind: string,
+      value: string,
+      folder?: string,
+    ) => {
       const path =
         at === "project"
           ? `/organizations/${org}/projects/${project}/variables`
           : `/organizations/${org}/projects/${project}/environments/${envs[at]}/variables`;
-      const res = await call("alice", "POST", path, { key, kind, value });
+      const res = await call("alice", "POST", path, {
+        key,
+        kind,
+        value,
+        ...(folder && { folder }),
+      });
       expect(res.status).toBe(201);
       return res.json as { id: string };
     },
@@ -491,6 +502,210 @@ describe("environments", () => {
     });
     await w.put("project", "READS", "plain", "${FROM_ORG}");
     expect(brief(await w.plan())).toEqual(["create FROM_ORG *", "create READS *"]);
+  });
+});
+
+describe("a target's folder (FLD-9)", () => {
+  const made = async (w: World, name: string) => {
+    const res = await call(
+      "alice",
+      "POST",
+      `/organizations/${w.org}/projects/${w.project}/folders`,
+      { name },
+    );
+    expect(res.status).toBe(201);
+    return res.json as { id: string; path: string };
+  };
+  const aim = async (w: World, folder: string) => {
+    const res = await w.patchTarget({ config: { project: w.of.project, protected: true, folder } });
+    expect(res.status).toBe(200);
+    return res;
+  };
+  const remoteKeys = async (w: World) => {
+    const keys: string[] = [];
+    for await (const v of w.gitlab.variables.list(w.of)) keys.push(v.key);
+    return keys.sort();
+  };
+
+  test("a target on a folder wants that folder's variables and nothing else; one without wants the root's", async () => {
+    const w = await world();
+    await made(w, "pay");
+    await w.put("project", "ROOT_A", "plain", "r");
+    await w.put("prod", "ROOT_PROD", "plain", "rp");
+    await w.put("project", "PAY_A", "plain", "p", "/pay");
+    await w.put("project", "PAY_B", "secret", sekrit("pay"), "/pay");
+    await w.put("prod", "PAY_PROD", "plain", "pp", "/pay");
+    expect(brief(await w.plan())).toEqual(["create ROOT_A *", "create ROOT_PROD production"]);
+    await aim(w, "/pay");
+    expect(brief(await w.plan())).toEqual([
+      "create PAY_A *",
+      "create PAY_B *",
+      "create PAY_PROD production",
+    ]);
+    await aim(w, "/");
+    expect(brief(await w.plan())).toEqual(["create ROOT_A *", "create ROOT_PROD production"]);
+  });
+
+  test("the same key in two folders goes to the target of its own folder", async () => {
+    const w = await world();
+    await made(w, "pay");
+    await w.put("project", "URL", "plain", "root-url");
+    await w.put("project", "URL", "plain", "pay-url", "/pay");
+    await w.seed("URL", "root-url");
+    expect(brief(await w.plan())).toEqual(["noop URL *"]);
+    await aim(w, "/pay");
+    expect(brief(await w.plan())).toEqual(["update URL *"]);
+  });
+
+  test("a reference reads another folder by its absolute address, and never falls back to the root", async () => {
+    const w = await world({ mapping: {} });
+    await made(w, "pay");
+    await w.put("project", "HOST", "plain", "h.example");
+    await w.put("project", "URL", "plain", "https://${/HOST}/", "/pay");
+    await w.put("project", "BARE", "plain", "${HOST}", "/pay");
+    await w.seed("URL", "https://h.example/");
+    await aim(w, "/pay");
+    const res = await w.plan();
+    expect(brief(res)).toEqual(["noop URL *"]);
+    expect(res.json.skipped.unresolved).toEqual([{ key: "BARE", scope: "*", code: "missing" }]);
+  });
+
+  test("a key that cannot be resolved blocks the folder it is in and no other", async () => {
+    const w = await world();
+    await made(w, "pay");
+    await w.put("project", "OK", "plain", "ok");
+    await w.put("project", "BROKEN", "plain", "${GONE}", "/pay");
+    await w.put("prod", "ENV_BROKEN", "plain", "${GONE}", "/pay");
+    await w.seed("BROKEN", "left alone");
+    const root = await w.plan();
+    expect(brief(root)).toEqual(["create OK *"]);
+    expect(root.json.skipped.unresolved).toEqual([]);
+    await aim(w, "/pay");
+    const pay = await w.plan();
+    expect(brief(pay)).toEqual([]);
+    // each at the scopes it fails in; the root's OK is nobody's concern here
+    expect(pay.json.skipped.unresolved).toEqual([
+      { key: "BROKEN", scope: "*", code: "missing" },
+      { key: "BROKEN", scope: "production", code: "missing" },
+      { key: "ENV_BROKEN", scope: "production", code: "missing" },
+    ]);
+  });
+
+  test("an apply writes the folder's variables only, and the next plan has nothing to do", async () => {
+    const w = await world({ policy: "prune" });
+    await made(w, "pay");
+    await w.put("project", "ROOT_A", "plain", "r");
+    await w.put("project", "PAY_S", "secret", sekrit("pay-apply"), "/pay");
+    await w.seed("STRAY", "not wanted");
+    await aim(w, "/pay");
+    const planned = await w.plan();
+    expect(brief(planned)).toEqual(["create PAY_S *", "delete STRAY *"]);
+    expect((await w.apply(planned.json.id)).status).toBe(202);
+    expect((await w.finished(planned.json.id)).json).toMatchObject({ status: "applied" });
+    expect(await remoteKeys(w)).toEqual(["PAY_S"]);
+    expect(brief(await w.plan())).toEqual(["noop PAY_S *"]);
+  });
+
+  test("a folder that is not there fails the plan and the apply, and stores no run", async () => {
+    const w = await world();
+    const folder = await made(w, "pay");
+    await w.put("project", "A", "plain", "a", "/pay");
+    await aim(w, "/pay");
+    const planned = await w.plan();
+    expect(planned.status).toBe(201);
+    const renamed = await call(
+      "alice",
+      "PATCH",
+      `/organizations/${w.org}/projects/${w.project}/folders/${folder.id}`,
+      { name: "pay2" },
+    );
+    expect(renamed.status).toBe(200);
+    for (const res of [await w.plan(), await w.apply(planned.json.id)]) {
+      expect(res.status).toBe(409);
+      expect(res.json.code).toBe("target_folder_missing");
+    }
+    expect((await w.runs()).length).toBe(1);
+    expect(await remoteKeys(w)).toEqual([]);
+  });
+
+  test("a variable moved into or out of the folder changes what a plan was made from", async () => {
+    const w = await world();
+    await made(w, "pay");
+    const a = await w.put("project", "A", "plain", "a");
+    await aim(w, "/pay");
+    const first = await w.plan();
+    expect(brief(first)).toEqual([]);
+    const moved = await call(
+      "alice",
+      "PATCH",
+      `/organizations/${w.org}/projects/${w.project}/variables/${a.id}`,
+      { folder: "/pay" },
+    );
+    expect(moved.status).toBe(200);
+    expect((await w.apply(first.json.id)).json.code).toBe("plan_stale");
+    const second = await w.plan();
+    expect(brief(second)).toEqual(["create A *"]);
+    const [one, two] = await w.runs();
+    expect(two?.desiredDigest).not.toBe(one?.desiredDigest);
+  });
+});
+
+describe("a target's folder, as a setting (FLD-9)", () => {
+  test("is a folder the project has, or the root; the root is not stored; the list shows it", async () => {
+    const w = await world();
+    const folders = `/organizations/${w.org}/projects/${w.project}/folders`;
+    expect((await call("alice", "POST", folders, { name: "pay" })).status).toBe(201);
+    const body = (folder: unknown) => ({
+      name: `other-${++n}`,
+      type: "gitlab-variables",
+      connectionId: conns.o1,
+      config: { project: w.of.project, folder },
+    });
+
+    for (const bad of ["pay", "/PAY", "/pay/", "", 7, null]) {
+      const res = await call("alice", "POST", w.targets, body(bad));
+      expect([bad, res.status, res.json.code]).toEqual([bad, 422, "invalid_config"]);
+    }
+    const unknown = await call("alice", "POST", w.targets, body("/nope"));
+    expect([unknown.status, unknown.json.code]).toEqual([422, "unknown_folder"]);
+
+    const pay = await call("alice", "POST", w.targets, body("/pay"));
+    expect(pay.status).toBe(201);
+    expect(pay.json.config).toEqual({ project: w.of.project, folder: "/pay" });
+    const root = await call("alice", "POST", w.targets, body("/"));
+    expect(root.status).toBe(201);
+    expect(root.json.config).toEqual({ project: w.of.project });
+
+    // the same at patch
+    for (const bad of ["pay", "/nope", 7]) {
+      const res = await w.patchTarget({ config: { project: w.of.project, folder: bad } });
+      expect([bad, res.status]).toEqual([bad, 422]);
+    }
+    const listed = await call("alice", "GET", w.targets);
+    const folderOf = (id: string) =>
+      listed.json.items.find((i: { id: string }) => i.id === id).config.folder;
+    expect(folderOf(pay.json.id)).toBe("/pay");
+    expect(folderOf(root.json.id)).toBeUndefined();
+    expect(folderOf(w.target)).toBeUndefined();
+
+    // the audit says which folder a target was pointed at, and that it was pointed back at the root
+    expect(
+      await w.patchTarget({ config: { project: w.of.project, folder: "/pay" } }),
+    ).toMatchObject({ status: 200 });
+    expect(await w.patchTarget({ config: { project: w.of.project } })).toMatchObject({
+      status: 200,
+    });
+    const folderIn = async (action: string, id: string) =>
+      (await events(action)).filter((e) => e.resourceId === id).map((e) => e.metadata.folder);
+    expect(await folderIn("sync_target.create", pay.json.id)).toEqual(["/pay"]);
+    expect(await folderIn("sync_target.create", root.json.id)).toEqual([undefined]);
+    expect((await folderIn("sync_target.update", w.target)).sort()).toEqual(["/", "/pay"]);
+  });
+
+  test("does not let the type's own settings be said twice, or anything else through", async () => {
+    const w = await world();
+    const res = await w.patchTarget({ config: { project: w.of.project, folders: "/pay" } });
+    expect(res.status).toBe(422);
   });
 });
 
@@ -1610,6 +1825,38 @@ describe("drift detection (SYNC-8)", () => {
     expect((await w.apply(planned.json.id)).status).toBe(202);
     expect((await w.finished(planned.json.id)).json.status).toBe("applied");
   };
+
+  test("a target on a folder is checked against that folder only, and a folder that is gone keeps the last result", async () => {
+    const w = await world();
+    const folders = `/organizations/${w.org}/projects/${w.project}/folders`;
+    const pay = await call("alice", "POST", folders, { name: "pay" });
+    await w.put("project", "A", "plain", "a", "/pay");
+    expect(
+      (
+        await w.patchTarget({
+          config: { project: w.of.project, protected: true, folder: "/pay" },
+        })
+      ).status,
+    ).toBe(200);
+    await applyOnce(w);
+    await check(w);
+    expect((await driftOf(w)).json).toMatchObject({ status: "in_sync", counts: { noop: 1 } });
+
+    // a variable at the root is not this target's business, and a hand edit of its own is
+    await w.put("project", "AT_ROOT", "plain", "r");
+    await check(w);
+    expect((await driftOf(w)).json).toMatchObject({ status: "in_sync", counts: { noop: 1 } });
+    await w.gitlab.variables.update(w.of, { key: "A" }, { value: "edited" });
+    await check(w);
+    expect((await driftOf(w)).json).toMatchObject({ status: "drifted", counts: { update: 1 } });
+
+    // renamed away: not checked, nothing recorded, nothing thrown at the queue
+    const before = (await driftOf(w)).json;
+    const renamed = await call("alice", "PATCH", `${folders}/${pay.json.id}`, { name: "pay2" });
+    expect(renamed.status).toBe(200);
+    await check(w);
+    expect((await driftOf(w)).json).toEqual(before);
+  });
 
   test("a change made directly on the target is found by the next check, and nothing is written", async () => {
     const w = await world();

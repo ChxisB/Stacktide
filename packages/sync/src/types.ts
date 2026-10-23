@@ -31,6 +31,11 @@ export interface RemoteItem extends ItemRef {
   value: string | null;
   secret: boolean;
   file: boolean;
+  /**
+   * When the target last changed the item, as the target words it, for a target that hides values but says when
+   * (a GitHub secret). Only compared for equality, so a hand edit shows without the value.
+   */
+  changedAt?: string;
 }
 
 /**

@@ -1,0 +1,2 @@
+ALTER TABLE "stacks" DROP CONSTRAINT "stacks_tool_check";--> statement-breakpoint
+ALTER TABLE "stacks" ADD CONSTRAINT "stacks_tool_check" CHECK ("stacks"."tool" in ('terraform', 'tofu', 'terragrunt', 'dnscontrol'));

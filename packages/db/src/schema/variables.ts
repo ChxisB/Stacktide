@@ -1,6 +1,7 @@
 import { VARIABLE_KINDS, type VariableKind } from "@orch/core";
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   check,
   customType,
   foreignKey,
@@ -17,6 +18,7 @@ import { id, timestamps } from "./columns";
 import { environments } from "./environments";
 import { organizations } from "./organizations";
 import { projects } from "./projects";
+import { variableFolders } from "./variable-folders";
 
 const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
   dataType: () => "bytea",
@@ -55,6 +57,10 @@ export const variableKeys = pgTable(
   ],
 );
 
+/** A null `folder_id` (the root) is one value to the unique indexes below, not a gap that lets a key repeat. */
+const folderOrRoot = (folderId: AnyPgColumn) =>
+  sql`coalesce(${folderId}, '00000000-0000-0000-0000-000000000000'::uuid)`;
+
 /**
  * A named value at one of three levels: the organization (`project_id` null), a project, or one
  * environment of a project. Deleting sets `deleted_at` (the key is then free again, the history
@@ -70,9 +76,13 @@ export const variables = pgTable(
       .references(() => organizations.id, { onDelete: "cascade" }),
     projectId: uuid(),
     environmentId: uuid(),
+    // The folder of the project's tree (ADR-0021); null is the root. Organization variables have none.
+    folderId: uuid(),
     key: text().notNull(),
     kind: text().$type<VariableKind>().notNull(),
     description: text().notNull().default(""),
+    // Labels to find and group by: lower-case letters, digits and hyphens, at most 8 of 24 characters.
+    tags: text().array().notNull().default(sql`'{}'::text[]`),
     currentVersion: integer().notNull().default(1),
     deletedAt: timestamp({ withTimezone: true }),
     ...timestamps(),
@@ -86,17 +96,17 @@ export const variables = pgTable(
     index("variables_environment_idx")
       .on(t.environmentId)
       .where(sql`${t.environmentId} IS NOT NULL`),
-    // Live rows only: a deleted variable does not hold its key.
+    // Live rows only: a deleted variable does not hold its key. A key is held once per folder.
     uniqueIndex("variables_org_key")
-      .on(t.organizationId, t.key)
+      .on(t.organizationId, folderOrRoot(t.folderId), t.key)
       .where(sql`${t.projectId} IS NULL AND ${t.deletedAt} IS NULL`),
     uniqueIndex("variables_project_key")
-      .on(t.projectId, t.key)
+      .on(t.projectId, folderOrRoot(t.folderId), t.key)
       .where(
         sql`${t.projectId} IS NOT NULL AND ${t.environmentId} IS NULL AND ${t.deletedAt} IS NULL`,
       ),
     uniqueIndex("variables_environment_key")
-      .on(t.environmentId, t.key)
+      .on(t.environmentId, folderOrRoot(t.folderId), t.key)
       .where(sql`${t.environmentId} IS NOT NULL AND ${t.deletedAt} IS NULL`),
     foreignKey({
       name: "variables_project_org_fk",
@@ -108,10 +118,24 @@ export const variables = pgTable(
       columns: [t.environmentId, t.projectId],
       foreignColumns: [environments.id, environments.projectId],
     }).onDelete("cascade"),
+    // Not CASCADE: folders are soft-deleted, and a project's removal takes both tables in one statement.
+    // With a null `folder_id` (the root) the key is not checked.
+    foreignKey({
+      name: "variables_folder_fk",
+      columns: [t.folderId, t.projectId],
+      foreignColumns: [variableFolders.id, variableFolders.projectId],
+    }),
     check("variables_scope_check", sql`${t.environmentId} IS NULL OR ${t.projectId} IS NOT NULL`),
+    check("variables_folder_check", sql`${t.folderId} IS NULL OR ${t.projectId} IS NOT NULL`),
     check("variables_key_check", sql`${t.key} ~ '^[A-Za-z_][A-Za-z0-9_]{0,254}$'`),
     check("variables_kind_check", sql`${t.kind} IN ('plain', 'secret', 'file')`),
     check("variables_version_check", sql`${t.currentVersion} >= 1`),
+    // The same limits as `tags` in `@orch/core`: joined with commas each is a tag, none is empty or null,
+    // and no element holds a comma (the last term: as many commas as joins).
+    check(
+      "variables_tags_check",
+      sql`array_to_string(${t.tags}, ',') ~ '^([a-z0-9-]{1,24}(,[a-z0-9-]{1,24}){0,7})?$' AND array_position(${t.tags}, '') IS NULL AND array_position(${t.tags}, NULL) IS NULL AND length(array_to_string(${t.tags}, ',')) - length(replace(array_to_string(${t.tags}, ','), ',', '')) = greatest(cardinality(${t.tags}) - 1, 0)`,
+    ),
   ],
 );
 

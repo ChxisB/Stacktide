@@ -3,12 +3,20 @@ import { envKeyProvider } from "@orch/crypto";
 import { eq } from "drizzle-orm";
 import { AUTO_SYNC_DELAY_MS, AUTO_SYNC_QUEUE, queueAutoSync } from "./auto-sync";
 import { createConnection } from "./connections";
+import { createFolder } from "./folders";
 import { claim } from "./jobs";
 import { createEnvironment, createOrganization, createProject } from "./repo";
 import { jobs } from "./schema";
 import { createSyncTarget, updateSyncTarget } from "./sync-targets";
 import { createTestDb, type TestDb } from "./testing";
-import { bulkLevel, createVariable, deleteVariable, type Scope, setVariable } from "./variables";
+import {
+  bulkLevel,
+  createVariable,
+  deleteVariable,
+  moveVariable,
+  type Scope,
+  setVariable,
+} from "./variables";
 
 let t: TestDb;
 beforeAll(async () => {
@@ -154,6 +162,19 @@ describe("auto-sync on change", () => {
       await step();
       expect([name, await w.targets()]).toEqual([name, ids(w.auto, w.auto2)]);
     }
+  });
+
+  test("a move queues the targets; a move of nothing queues none", async () => {
+    const w = await world();
+    const v = await make(w.one.at, "A");
+    const made = await createFolder(t.db, { ...w.one.at, parent: "/", name: "db" });
+    if (!("row" in made)) throw new Error(made.error);
+    await t.db.delete(jobs).where(eq(jobs.queue, AUTO_SYNC_QUEUE));
+    const missing = "00000000-0000-4000-8000-000000000000";
+    expect(await moveVariable(t.db, keys, w.one.at, missing, "/db")).toBeUndefined();
+    expect(await w.targets()).toEqual([]);
+    await moveVariable(t.db, keys, w.one.at, v.id, "/db");
+    expect(await w.targets()).toEqual(ids(w.auto, w.auto2));
   });
 
   test("the job waits for the quiet time, from the first change", async () => {

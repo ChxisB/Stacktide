@@ -12,4 +12,6 @@ coverage
 # browser-test files: the e2e state holds a session token, and none of it runs in the image
 apps/web/e2e
 apps/web/test-results
+# the demo seeds a throwaway stack for showing the platform; it is not part of it
+apps/web/demo
 apps/web/playwright-report

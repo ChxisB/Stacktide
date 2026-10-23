@@ -344,6 +344,125 @@
       "when": 1792421391496,
       "tag": "0048_state_resources",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1792494924485,
+      "tag": "0049_stacks_tool_dnscontrol",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1792496145893,
+      "tag": "0050_run_stacks_costed",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1792499351199,
+      "tag": "0051_dns_zones",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1792499882702,
+      "tag": "0052_run_stacks_dns_prune",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1792502219124,
+      "tag": "0053_run_stacks_lint",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1792512097270,
+      "tag": "0054_variables_tags",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1792602439803,
+      "tag": "0055_deployments",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1792610227854,
+      "tag": "0056_deploy_approvals",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1792611981253,
+      "tag": "0057_deployment_failed_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1792615336062,
+      "tag": "0058_variable_folders",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1792615950259,
+      "tag": "0059_variables_in_folders",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1792627962466,
+      "tag": "0060_projects_know_their_connection",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1792655131720,
+      "tag": "0061_connections_seal_webhook_secret",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1792661738693,
+      "tag": "0062_run_plans",
+      "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1792669038760,
+      "tag": "0063_run_stacks_approval_url",
+      "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1792673162482,
+      "tag": "0064_ci_tokens_pipeline",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1792676896850,
+      "tag": "0065_github_identity",
+      "breakpoints": true
     }
   ]
 }

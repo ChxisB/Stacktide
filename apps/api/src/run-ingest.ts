@@ -15,11 +15,19 @@ import {
   type RunStack,
   recordStackJobs,
   runOfPipeline,
+  setStackApproval,
 } from "@orch/db";
-import { type Gitlab, GitlabError, type Job } from "@orch/gitlab";
+import { GitlabError, type Job } from "@orch/gitlab";
 import { z } from "zod";
-import { refreshNote } from "./mr-note";
-import { hopeless, pipelineEvent, type RunDeps } from "./pipeline-runs";
+import { type NoteForge, refreshNote } from "./mr-note";
+import {
+  type EventDeps,
+  githubRunEvent,
+  hopeless,
+  pipelineEvent,
+  type RunDeps,
+  type RunForge,
+} from "./pipeline-runs";
 import type { JobHandler } from "./worker";
 
 // A run's pipeline has up to four jobs per stack (plan, estimate, summary, apply) and a run at most a
@@ -49,6 +57,17 @@ const runEvent = pipelineEvent.extend({
   sourcePipelineId: z.number().int().positive().optional().catch(undefined),
   sourceProjectId: z.number().int().positive().optional().catch(undefined),
 });
+
+/** A job's page, kept only as an http(s) link of a sane length: it is shown to people as a link, and a forge's word is not trusted. */
+export function safeLink(url: string): string | null {
+  if (url.length === 0 || url.length > 2000) return null;
+  try {
+    const { protocol } = new URL(url);
+    return protocol === "https:" || protocol === "http:" ? url : null;
+  } catch {
+    return null;
+  }
+}
 
 type Kind = "plan" | "summary" | "apply";
 type StackJobs = Partial<Record<Kind, Job>>;
@@ -126,30 +145,45 @@ async function walk(
  *   the stack's plan and summary jobs: the summary route lets only that summary job post.
  * - An apply pipeline moves only stacks that are `applying` along `apply:<stack>`: entering
  *   `applying` takes the mutex and belongs to whoever starts the apply (IAC-8).
+ *
+ * A GitHub workflow run is the same thing read through the connection's forge (FRG-22): its events are
+ * `workflow_run`, `workflow_job` and `deployment_review`, and the repository is found by the connection. GitHub
+ * holds an apply job for the environment's reviewers (read as `manual`), so such a stack stays `applying` and carries
+ * the job's page until the job goes on: the platform makes no approval, a person does, in GitHub.
  */
 export const runEventHandler =
-  (deps: RunDeps): JobHandler =>
+  (deps: EventDeps): JobHandler =>
   async (ctx) => {
-    const parsed = runEvent.safeParse(ctx.payload);
-    if (!parsed.success) return;
-    const e = parsed.data;
-    const [project] = await linkedProjects(deps.db, e.organizationId, [e.projectId]);
+    const github = githubRunEvent.safeParse(ctx.payload);
+    const lab = github.success ? undefined : runEvent.safeParse(ctx.payload);
+    const e = github.success ? github.data : lab?.success ? lab.data : undefined;
+    if (!e) return;
+    const open = github.success ? deps.forge : deps.gitlab;
+    if (!open) {
+      ctx.log.warn("run event dropped", { reason: "no way to open the connection" });
+      return;
+    }
+    const [project] = await linkedProjects(
+      deps.db,
+      e.organizationId,
+      [e.projectId],
+      github.success ? e.connectionId : undefined,
+    );
     if (!project) return;
     // the pipeline a run started: the event's own, or the parent of the child pipeline it is of
-    const root =
-      e.sourcePipelineId !== undefined && e.sourceProjectId === e.projectId
-        ? e.sourcePipelineId
-        : e.pipelineId;
+    // (a workflow run has no parent: only a GitLab child pipeline names the pipeline that started it)
+    const parent = lab?.success && lab.data.sourceProjectId === e.projectId;
+    const root = parent ? (lab.data.sourcePipelineId ?? e.pipelineId) : e.pipelineId;
     const found = await runOfPipeline(deps.db, e.organizationId, project.id, root);
     if (!found) return;
     const { run, action } = found;
 
     let status: string;
     let jobs: Job[];
-    let gitlab: Gitlab;
+    let client: RunForge & NoteForge;
     try {
-      gitlab = await deps.gitlab(e.organizationId, e.connectionId);
-      ({ status, jobs } = await readPipeline(gitlab, e.projectId, root));
+      client = await open(e.organizationId, e.connectionId);
+      ({ status, jobs } = await readPipeline(client, e.projectId, root));
     } catch (error) {
       if (error instanceof TooBig) {
         ctx.log.warn("run event dropped", { reason: error.message });
@@ -181,6 +215,18 @@ export const runEventHandler =
       }
       const outcome = outcomeFor(action, mine, status, alone);
       if (outcome) await walk(deps, at, stack, outcome, action === "plan" ? PLAN_FROM : APPLY_FROM);
+      if (github.success && action === "apply") {
+        // held for reviewers: the job's page, until it goes on (a stack that moved on keeps none)
+        const held = mine.apply?.status === "manual" ? safeLink(mine.apply.webUrl) : null;
+        await setStackApproval(
+          deps.db,
+          at.organizationId,
+          at.projectId,
+          at.runId,
+          stack.stack,
+          held,
+        );
+      }
     }
     ctx.log.debug("run event handled", { action, status, jobs: jobs.length });
 
@@ -190,7 +236,8 @@ export const runEventHandler =
     if (run.mergeRequestIid !== null) {
       try {
         const where = { ...at, gitlabProjectId: e.projectId };
-        await refreshNote(deps, where, run.mergeRequestIid, gitlab, run.id);
+        // the client is the forge's own (`open`), which writes notes whichever forge it is
+        await refreshNote(deps, where, run.mergeRequestIid, client, run.id);
       } catch (error) {
         ctx.log.warn("could not update the merge request note", { error: describeError(error) });
       }
@@ -204,7 +251,7 @@ class TooBig extends Error {}
  * generated pipeline is a child of the project's own (docs/iac.md). A child GitLab does not show
  * (one in another project, or gone) has no jobs to add.
  */
-async function readPipeline(gitlab: Gitlab, project: number, root: number) {
+export async function readPipeline(gitlab: RunForge, project: number, root: number) {
   const { status } = await gitlab.pipelines.get(project, root);
   const jobs: Job[] = [];
   const add = async (id: number) => {

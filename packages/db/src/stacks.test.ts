@@ -249,6 +249,15 @@ describe("the stacks table", () => {
     }
   });
 
+  test("a DNS zone is a stack like any other, with a version and no state to judge", async () => {
+    const { org, project } = await world();
+    await mirror(t.db, org.id, project.id, [
+      stack("zone", "dns", { tool: "dnscontrol", version: "5.5.0", backend: "unchecked" }),
+    ]);
+    const [row] = await listStacks(t.db, org.id, project.id);
+    expect(row).toMatchObject({ name: "zone", tool: "dnscontrol", version: "5.5.0" });
+  });
+
   test("a path may be the root, hidden, versioned, or nested", async () => {
     const { org, project } = await world();
     const ok = [".", ".github/x", "v1.2/app_1", "a@b/c+d=e", "a..b/c"];

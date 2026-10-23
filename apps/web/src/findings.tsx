@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { Card, Named, StatusBadge, type Tone } from "./components";
 import { ProjectPicker } from "./projects";
 import { Loading, stamp, when } from "./ui";
 
@@ -27,12 +28,12 @@ const VIEWS = [
 ] as const;
 type View = (typeof VIEWS)[number][0];
 
-type Tone = "ok" | "bad" | "quiet";
 const STATUS: Record<string, [label: string, tone: Tone]> = {
-  open: ["Open", "bad"],
+  open: ["Open", "manual"],
   dismissed: ["Dismissed", "quiet"],
   resolved: ["Resolved", "ok"],
 };
+const SEVERITY: Record<string, Tone> = { critical: "bad", high: "bad", medium: "warn" };
 const capital = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 const where = (f: Finding) => (f.line === null ? f.path : `${f.path}:${f.line}`);
 const message = (e: unknown) => (e instanceof Error ? e.message : "That did not work.");
@@ -98,7 +99,7 @@ function Findings({ orgId, projectId }: { orgId: string; projectId: string }) {
 
   const rows = list.data;
   return (
-    <div className="stack">
+    <div className="stack wide">
       <label>
         Show
         <select value={view} onChange={(e) => setView(e.target.value as View)}>
@@ -124,7 +125,7 @@ function Findings({ orgId, projectId }: { orgId: string; projectId: string }) {
       ) : rows.length === 0 ? (
         <p>No {view === "all" ? "" : `${view} `}findings for this project.</p>
       ) : (
-        <>
+        <Card title="Findings">
           <p className="warn">
             A finding is a secret that was in your repository: revoke it at the source. Dismissing
             it only stops it being counted, and does not make it safe.
@@ -151,7 +152,6 @@ function Findings({ orgId, projectId }: { orgId: string; projectId: string }) {
             <tbody>
               {rows.map((f) => {
                 const [label, tone] = STATUS[f.status] ?? [f.status, "quiet"];
-                const hot = f.severity === "critical" || f.severity === "high";
                 return (
                   <tr key={f.id}>
                     <th scope="row">
@@ -161,15 +161,15 @@ function Findings({ orgId, projectId }: { orgId: string; projectId: string }) {
                       <code>{f.rule}</code>
                     </td>
                     <td>
-                      <span className={`tag status-${hot ? "bad" : "quiet"}`}>
+                      <StatusBadge tone={SEVERITY[f.severity] ?? "quiet"}>
                         {capital(f.severity)}
-                      </span>
+                      </StatusBadge>
                     </td>
                     <td>
                       <code>{f.ref}</code>
                     </td>
                     <td>
-                      <span className={`tag status-${tone}`}>{label}</span>
+                      <StatusBadge tone={tone}>{label}</StatusBadge>
                       {f.status === "dismissed" && (
                         <span className="muted">
                           {" "}
@@ -212,12 +212,12 @@ function Findings({ orgId, projectId }: { orgId: string; projectId: string }) {
                               setReason("");
                             }}
                           >
-                            Dismiss {where(f)}
+                            <Named word="Dismiss" name={where(f)} />
                           </button>
                         ))}
                       {f.status === "dismissed" && (
                         <button type="button" disabled={busy} onClick={() => reopen(f)}>
-                          Reopen {where(f)}
+                          <Named word="Reopen" name={where(f)} />
                         </button>
                       )}
                     </td>
@@ -226,7 +226,7 @@ function Findings({ orgId, projectId }: { orgId: string; projectId: string }) {
               })}
             </tbody>
           </table>
-        </>
+        </Card>
       )}
     </div>
   );

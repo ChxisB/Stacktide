@@ -3,7 +3,16 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type Backend, clientVia, down, mount, pathOf, startBackend } from "./testing";
 import { variablesAt } from "./variable-parts";
-import { cellOf, must, SECRET, scene as sceneOn } from "./variables.fixture";
+import {
+  addNew,
+  cellOf,
+  detailsOf,
+  fromMenu,
+  must,
+  SECRET,
+  scene as sceneOn,
+  showCompare,
+} from "./variables.fixture";
 
 let backend: Backend;
 beforeAll(async () => {
@@ -26,19 +35,25 @@ type User = ReturnType<typeof userEvent.setup>;
 /** The history panel once its versions have loaded. */
 const historyOf = async (key: string) => {
   const region = await screen.findByRole("region", { name: `History of ${key}` });
-  await within(region).findByRole("table");
+  await within(region).findByRole("list", { name: `Versions of ${key}` });
   return region;
 };
 const openHistory = async (user: User, key: string, env: string) => {
-  await user.click(
-    within(cellOf(key, env)).getByRole("button", { name: `History of ${key} in ${env}` }),
-  );
+  await fromMenu(user, key, env, "Version history");
   return historyOf(key);
 };
+/** A secret's value shown in its details: Reveal is a button of the details, not of the line. */
+const showSecret = async (user: User, key: string, env: string, shown: string) => {
+  const dialog = await detailsOf(user, key, env);
+  await user.click(await within(dialog).findByRole("button", { name: `Reveal ${key} in ${env}` }));
+  await within(dialog).findByText(shown);
+  return dialog;
+};
+/** The versions of the timeline, newest first: a version is one list item named "Version N" (VUI-15). */
 const versionsShown = (region: HTMLElement) =>
   within(region)
-    .getAllByRole("rowheader")
-    .map((h) => h.textContent);
+    .getAllByRole("listitem")
+    .map((item) => item.getAttribute("aria-label")?.replace("Version ", ""));
 /** Waits for both panels to be gone; a boolean, because bun prints a failed DOM node whole. */
 const panelsClosed = () =>
   waitFor(() =>
@@ -49,28 +64,35 @@ const panelsClosed = () =>
   );
 
 describe("the history of a variable", () => {
-  test("lists the versions newest first with who and why but never a value, and marks the current one", async () => {
+  test("lists the versions newest first with who and why, no value until one is asked for, and marks the current one", async () => {
     const s = await scene();
     const v = await s.put.project("API_KEY", SECRET, true);
     const edit = s.scope.variables({ varId: v.id });
     must(await edit.patch({ value: "second-value-22" }));
     must(await edit.patch({ value: "third-value-33", reason: "rotated after the leak scare" }));
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openHistory(user, "API_KEY", "dev");
 
     expect(versionsShown(region)).toEqual(["3", "2", "1"]);
-    const rows = within(region).getAllByRole("row");
-    expect(rows[1]?.textContent).toContain("Current");
-    expect(rows[1]?.textContent).toContain("rotated after the leak scare");
+    const rows = within(region).getAllByRole("listitem");
+    expect(rows[0]?.textContent).toContain("Current");
+    expect(rows[0]?.textContent).toContain("rotated after the leak scare");
     // who and when: the kind of actor with a short id, a date in UTC, and a machine-readable time
-    expect(rows[1]?.textContent).toMatch(/[a-z]+ [0-9a-f]{8}/);
-    expect(rows[1]?.textContent).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+    expect(rows[0]?.textContent).toMatch(/[a-z]+ [0-9a-f]{8}/);
+    expect(rows[0]?.textContent).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
     expect(region.querySelector("time")?.getAttribute("datetime")).toMatch(
       /^\d{4}-\d{2}-\d{2}T.*Z$/,
     );
-    expect(within(rows[1] as HTMLElement).queryByRole("button")).toBeNull();
+    // the current version cannot be restored; its only buttons are the Reveal and Copy every version has (VUI-6)
+    expect(within(rows[0] as HTMLElement).queryByRole("button", { name: /^Restore/ })).toBeNull();
+    expect(
+      within(rows[0] as HTMLElement)
+        .getAllByRole("button")
+        .map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Copy API_KEY version 3", "Reveal API_KEY version 3"]);
     expect(
       within(region).getByRole("button", { name: "Restore API_KEY to version 2" }),
     ).toBeTruthy();
@@ -84,18 +106,19 @@ describe("the history of a variable", () => {
     expect(await s.audit("variable.reveal")).toHaveLength(0);
   });
 
-  test("a variable that was never changed has nothing to go back to, and Close leaves the history", async () => {
+  test("a variable that was never changed has nothing to go back to, and the X leaves the history", async () => {
     const s = await scene();
     await s.put.project("REGION", "eu");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openHistory(user, "REGION", "dev");
     expect(versionsShown(region)).toEqual(["1"]);
     expect(within(region).queryByRole("button", { name: /^Restore/ })).toBeNull();
-    await user.click(within(region).getByRole("button", { name: "Close" }));
+    await user.click(screen.getByRole("button", { name: "Close drawer" }));
     expect(screen.queryByRole("region", { name: "History of REGION" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Add a variable" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add New" })).toBeTruthy();
   });
 
   test("going back asks first: cancel changes nothing, confirming adds a version that holds the old value", async () => {
@@ -103,6 +126,7 @@ describe("the history of a variable", () => {
     const v = await s.put.project("API_KEY", SECRET, true);
     must(await s.scope.variables({ varId: v.id }).patch({ value: "second-value-22" }));
     const { queries } = mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openHistory(user, "API_KEY", "dev");
@@ -136,15 +160,10 @@ describe("the history of a variable", () => {
 
     // opened again, the history has the new version
     expect(versionsShown(await openHistory(user, "API_KEY", "dev"))).toEqual(["3", "2", "1"]);
-    await user.click(screen.getByRole("button", { name: "Close" }));
+    await user.click(screen.getByRole("button", { name: "Close drawer" }));
 
     // the secret is back, and it is the old value that a reveal now gives
-    await user.click(
-      await within(cellOf("API_KEY", "dev")).findByRole("button", {
-        name: "Reveal API_KEY in dev",
-      }),
-    );
-    await within(cellOf("API_KEY", "dev")).findByText(SECRET);
+    await showSecret(user, "API_KEY", "dev", SECRET);
     expect(
       JSON.stringify(
         queries
@@ -162,14 +181,13 @@ describe("the history of a variable", () => {
       must(await s.scope.variables({ varId: v.id }).patch({ value: "b" }));
     }
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openHistory(user, "FIRST", "dev");
     await user.click(within(region).getByRole("button", { name: "Restore FIRST to version 1" }));
     await screen.findByRole("form", { name: "Restore FIRST to version 1" });
-    await user.click(
-      within(cellOf("SECOND", "dev")).getByRole("button", { name: "History of SECOND in dev" }),
-    );
+    await fromMenu(user, "SECOND", "dev", "Version history");
     const other = await historyOf("SECOND");
     expect(versionsShown(other)).toEqual(["2", "1"]);
     expect(screen.queryByRole("form", { name: /^Restore / }) === null).toBe(true);
@@ -186,6 +204,7 @@ describe("the history of a variable", () => {
         .patch({ value: "debug" }),
     );
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     expect(cellOf("LOG_LEVEL", "dev").textContent).toContain("debug");
@@ -224,6 +243,7 @@ describe("the history of a variable", () => {
         }),
       );
       mount(s.client);
+      await showCompare();
       const user = userEvent.setup();
       await screen.findByRole("table");
       const region = await openHistory(user, "REGION", "dev");
@@ -239,6 +259,7 @@ describe("the history of a variable", () => {
     const v = await s.put.project("REGION", "eu");
     must(await s.scope.variables({ varId: v.id }).patch({ value: "us" }));
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     const region = await openHistory(user, "REGION", "dev");
@@ -257,11 +278,10 @@ describe("the history of a variable", () => {
       failing && pathOf(request).endsWith("/versions") ? down("the history store is down") : send(),
     );
     mount(client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(
-      within(cellOf("REGION", "dev")).getByRole("button", { name: "History of REGION in dev" }),
-    );
+    await fromMenu(user, "REGION", "dev", "Version history");
     expect((await screen.findByRole("alert")).textContent).toContain("the history store is down");
     failing = false;
     await user.click(screen.getByRole("button", { name: "Try again" }));
@@ -272,7 +292,7 @@ describe("the history of a variable", () => {
 const NAMES = "NEW_ONE=alpha-secret-11\nEXISTING=different-value-22\nSAME=same-value-33\n";
 
 const openImport = async (user: User) => {
-  await user.click(screen.getByRole("button", { name: "Import variables" }));
+  await addNew(user, "Import variables");
   return screen.getByRole("form", { name: "Import variables" });
 };
 const paste = async (user: User, text: string) => {
@@ -294,6 +314,7 @@ describe("importing variables", () => {
   test("the preview names each key and what would happen to it, never a value, and writes nothing", async () => {
     const s = await existing();
     const { queries } = mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     await openImport(user);
@@ -341,6 +362,7 @@ describe("importing variables", () => {
   test("a change can only be applied after a preview of the same text and options", async () => {
     const s = await existing();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     await openImport(user);
@@ -382,6 +404,7 @@ describe("importing variables", () => {
   test("applying creates the new names, keeps the conflicts, says what happened and drops the text", async () => {
     const s = await existing();
     const { queries } = mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     await openImport(user);
@@ -403,10 +426,7 @@ describe("importing variables", () => {
     // the grid behind the panel has the new name, and the kept one still holds its own value
     // (the summary appears once the grid has reloaded, so no waiting is needed)
     expect(cellOf("NEW_ONE", "dev").textContent).not.toContain("alpha-secret-11");
-    await user.click(
-      within(cellOf("EXISTING", "dev")).getByRole("button", { name: "Reveal EXISTING in dev" }),
-    );
-    await within(cellOf("EXISTING", "dev")).findByText("old-value-00");
+    await showSecret(user, "EXISTING", "dev", "old-value-00");
 
     const listed = must(await s.scope.variables.get({ query: { limit: 100 } })).items;
     expect(listed.map((x) => [x.key, x.kind]).sort()).toEqual([
@@ -433,13 +453,15 @@ describe("importing variables", () => {
       expect(document.body.textContent?.includes(value)).toBe(false);
     }
 
-    await user.click(screen.getByRole("button", { name: "Close" }));
+    // (the details of EXISTING are open now: the drawer's X closes both)
+    await user.click(screen.getByRole("button", { name: "Close drawer" }));
     expect(screen.queryByRole("form", { name: "Import variables" })).toBeNull();
   });
 
   test("replacing values that differ shows them as changes and applies them", async () => {
     const s = await existing();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     await openImport(user);
@@ -469,12 +491,10 @@ describe("importing variables", () => {
   test("a secret that was on show is hidden again once an import has replaced it", async () => {
     const s = await existing();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
-    await user.click(
-      within(cellOf("EXISTING", "dev")).getByRole("button", { name: "Reveal EXISTING in dev" }),
-    );
-    await within(cellOf("EXISTING", "dev")).findByText("old-value-00");
+    await showSecret(user, "EXISTING", "dev", "old-value-00");
     await openImport(user);
     await paste(user, "EXISTING=different-value-22\n");
     await user.click(screen.getByLabelText("Replace values that differ"));
@@ -486,16 +506,18 @@ describe("importing variables", () => {
         "1 changed",
       ),
     );
-    // the old value is gone from the screen, and the cell asks to be revealed again
+    // the old value is gone from the screen, and the details ask to be revealed again
     expect(document.body.textContent?.includes("old-value-00")).toBe(false);
+    // the details stay open beside the import's panel, so the drawer is named for the import
     expect(
-      within(cellOf("EXISTING", "dev")).getByRole("button", { name: "Reveal EXISTING in dev" }),
-    ).toBeTruthy();
+      (await screen.findByRole("button", { name: "Reveal EXISTING in dev" })).isConnected,
+    ).toBe(true);
   });
 
   test("plain values can be imported, and show in the grid", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -517,6 +539,7 @@ describe("importing variables", () => {
   test("lines that cannot be read are listed by line number, without their text", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -539,6 +562,7 @@ describe("importing variables", () => {
   test("JSON is read as JSON, and a document that is not one is reported, not echoed", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -564,6 +588,7 @@ describe("importing variables", () => {
   test("a chosen file fills the text, and its name picks the format", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -585,6 +610,7 @@ describe("importing variables", () => {
   test("a file that is too large is refused before it is read", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -601,6 +627,7 @@ describe("importing variables", () => {
   test("a file that cannot be read says so and keeps the text", async () => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -619,6 +646,7 @@ describe("importing variables", () => {
   ] as const)("applies to the %s the form says", async (level, choice) => {
     const s = await scene();
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -648,6 +676,7 @@ describe("importing variables", () => {
   test("an import the API refuses says why, writes nothing and keeps the text", async () => {
     const s = await scene({ reporter: true });
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -670,6 +699,7 @@ describe("importing variables", () => {
       return send();
     });
     mount(client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -698,6 +728,7 @@ describe("importing variables", () => {
       return down("a late failure");
     });
     mount(client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -731,6 +762,7 @@ describe("importing variables", () => {
       return send();
     });
     mount(client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByText(/No variables yet/);
     await openImport(user);
@@ -764,6 +796,7 @@ describe("importing variables", () => {
     const s = await scene();
     await s.put.project("SAME", "same-value-33");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     await openImport(user);
@@ -780,6 +813,7 @@ describe("importing variables", () => {
     await s.put.project("EXISTING", "old-value-00");
     await s.put.project("SAME", "same-value-33");
     mount(s.client);
+    await showCompare();
     const user = userEvent.setup();
     await screen.findByRole("table");
     await openImport(user);

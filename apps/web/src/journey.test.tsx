@@ -3,7 +3,15 @@ import { createGitlab } from "@orch/gitlab";
 import { configure, getConfig, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { mount, startBackend } from "./testing";
-import { cellOf, must, SECRET, tagsOf } from "./variables.fixture";
+import {
+  addEnvironment,
+  addNew,
+  cellOf,
+  must,
+  SECRET,
+  showCompare,
+  tagsOf,
+} from "./variables.fixture";
 
 // UI-9: the whole journey of a new team, in one test, through the screens and the real API, with
 // the mock GitLab standing in for GitLab. (Sign-in itself is covered by the API's tests.)
@@ -103,25 +111,26 @@ test("connect GitLab, import a project, set up its pipeline, give it variables a
   // 3. two environments, a secret for all of them and a plain value for one
   await nav("Variables");
   for (const name of ["dev", "staging"]) {
-    await user.type(await screen.findByLabelText("New environment"), name);
-    await user.click(screen.getByRole("button", { name: "Add environment" }));
-    await waitFor(() =>
-      expect(screen.getByLabelText("New environment")).toHaveProperty("value", ""),
-    );
+    await addEnvironment(user, name);
+    await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
   }
-  // the form is opened once the environments are all in, or their arrival would close it
   await settled();
-  await user.click(await screen.findByRole("button", { name: "Add a variable" }));
-  await user.type(screen.getByLabelText("Name"), "API_KEY");
-  await user.type(screen.getByLabelText("Value"), SECRET);
-  await user.click(screen.getByRole("button", { name: "Add variable" }));
+  // the page opens on the Secrets list; the grid of every environment is one press away
+  await showCompare();
+  // the drawer, not the page: the grid has a quick-add field of its own with the same labels
+  await addNew(user, "Add a variable");
+  const first = within(await screen.findByRole("dialog", { name: "New variable" }));
+  await user.type(first.getByLabelText("Name"), "API_KEY");
+  await user.type(first.getByLabelText("Value"), SECRET);
+  await user.click(first.getByRole("button", { name: "Add variable" }));
   await screen.findByRole("rowheader", { name: "API_KEY" });
-  await user.click(await screen.findByRole("button", { name: "Add a variable" }));
-  await user.selectOptions(screen.getByLabelText("Kind"), "plain");
-  await user.type(screen.getByLabelText("Name"), "LOG_LEVEL");
-  await user.type(screen.getByLabelText("Value"), "debug");
-  await user.selectOptions(screen.getByLabelText("Applies to"), "Only dev");
-  await user.click(screen.getByRole("button", { name: "Add variable" }));
+  await addNew(user, "Add a variable");
+  const second = within(await screen.findByRole("dialog", { name: "New variable" }));
+  await user.selectOptions(second.getByLabelText("Kind"), "plain");
+  await user.type(second.getByLabelText("Name"), "LOG_LEVEL");
+  await user.type(second.getByLabelText("Value"), "debug");
+  await user.selectOptions(second.getByLabelText("Applies to"), "Only dev");
+  await user.click(second.getByRole("button", { name: "Add variable" }));
   await screen.findByRole("rowheader", { name: "LOG_LEVEL" });
   expect(tagsOf(cellOf("API_KEY", "staging"))).toEqual(["From project", "secret"]);
   expect(cellOf("LOG_LEVEL", "dev").textContent).toContain("debug");

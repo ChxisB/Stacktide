@@ -2,12 +2,14 @@ import { can, DomainError, PROJECT_TAGS } from "@orch/core";
 import {
   createProject,
   deleteProject,
+  forgesOfProjects,
   getOrganization,
   getProject,
   listProjects,
   type projects,
   updateProject,
 } from "@orch/db";
+import { CAPABILITY_FLAGS, capabilitiesOf, type ForgeKind } from "@orch/forge";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
@@ -47,18 +49,30 @@ export const projectSchema = z.object({
   defaultBranch: z.string(),
   /** What the repository looks like, as of the last import; empty for a project made by hand. */
   types: z.array(detectedType),
+  /** The forge the project is on, and what that forge cannot do, so a screen hides or explains it (FRG-24). */
+  forge: z.enum(["gitlab", "github"]),
+  capabilities: z.record(z.enum(CAPABILITY_FLAGS), z.boolean()),
   ...stamps,
 });
-export const projectDto = (p: typeof projects.$inferSelect): z.infer<typeof projectSchema> => ({
+export const projectDto = (
+  p: typeof projects.$inferSelect,
+  forge: ForgeKind,
+): z.infer<typeof projectSchema> => ({
   id: p.id,
   organizationId: p.organizationId,
   name: p.name,
   gitlabProjectId: p.gitlabProjectId,
   defaultBranch: p.defaultBranch,
   types: p.detectedTypes,
+  forge,
+  capabilities: capabilitiesOf(forge),
   createdAt: iso(p.createdAt),
   updatedAt: iso(p.updatedAt),
 });
+
+type Listed = readonly [typeof projects.$inferSelect, ForgeKind];
+const forgeOf = async (db: RouteDeps["db"], p: { connectionId: string | null }) =>
+  (await forgesOfProjects(db, [p]))[0] ?? "gitlab";
 
 const params = z.object({ orgId: z.uuid() });
 const itemParams = params.extend({ projectId: z.uuid() });
@@ -80,6 +94,7 @@ const patch = z
 const known = {
   projects_org_name_key: taken("name_taken", "The name"),
   projects_org_gitlab_project_key: taken("gitlab_project_linked", "The GitLab project"),
+  projects_connection_gitlab_project_key: taken("gitlab_project_linked", "The GitLab project"),
 };
 
 const audited = (
@@ -105,9 +120,13 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
         if (!(await getOrganization(db, orgId))) throw notFound("Organization");
         return paged(query, {
           key: z.tuple([z.uuid()]),
-          keyOf: (p) => [p.id],
-          fetch: (after, limit) => listProjects(db, orgId, { after: after?.[0], limit }),
-          dto: projectDto,
+          keyOf: ([p]: Listed) => [p.id],
+          fetch: async (after, limit) => {
+            const rows = await listProjects(db, orgId, { after: after?.[0], limit });
+            const forges = await forgesOfProjects(db, rows);
+            return rows.map((p, i): Listed => [p, forges[i] ?? "gitlab"]);
+          },
+          dto: ([p, forge]: Listed) => projectDto(p, forge),
         });
       },
       {
@@ -122,7 +141,7 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
       async ({ params: { orgId, projectId } }) => {
         const project = await getProject(db, orgId, projectId);
         if (!project) throw notFound("Project");
-        return projectDto(project);
+        return projectDto(project, await forgeOf(db, project));
       },
       {
         params: itemParams,
@@ -146,7 +165,7 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
             }),
           );
         set.status = 201;
-        return projectDto(project);
+        return projectDto(project, "gitlab"); // made by hand, it has no connection
       },
       {
         params,
@@ -178,7 +197,7 @@ export const projectRoutes = ({ db, principal }: RouteDeps) =>
             return project;
           })
           .catch(mapDbError(known));
-        return projectDto(project);
+        return projectDto(project, await forgeOf(db, project));
       },
       {
         params: itemParams,

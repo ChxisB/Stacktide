@@ -25,6 +25,12 @@ describe("signed out", () => {
     expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
   });
 
+  test("GitHub is offered beside GitLab, as a full page navigation to the API", async () => {
+    mount(backend.anonymous());
+    const link = await screen.findByRole("link", { name: "Sign in with GitHub" });
+    expect(link.getAttribute("href")).toBe("/auth/github/login?return_to=/");
+  });
+
   test("an organization's own provider is offered by its slug, and only once one is typed", async () => {
     mount(backend.anonymous());
     await screen.findByRole("link", { name: "Sign in with GitLab" });

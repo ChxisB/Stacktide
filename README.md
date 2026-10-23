@@ -15,6 +15,14 @@ bun run dev:db     # local Postgres on 127.0.0.1:5433 (needs Docker)
 bun run e2e        # the browser journey; once before: cd apps/web && bunx playwright install chromium
 ```
 
+See it without setting anything up: `bun run demo` ([docs/demo.md](docs/demo.md)) starts the platform over a mock GitLab with an invented organization.
+
+Deployments: what is deployed where, promote and roll back a build (with an approval in a protected environment) and a `docker-deploy` pipeline template: [docs/deployments.md](docs/deployments.md).
+
+Variable folders: group a project's variables so the same key can mean different things in different places, with `${/path/KEY}` references, one folder per target or `orch run`, and a move that says what it would break: [docs/variable-folders.md](docs/variable-folders.md).
+
+Which GitLab works (GitLab.com, self-managed, a private CA, a second instance), the token each feature needs and the version it asks for: [docs/forges.md](docs/forges.md).
+
 Run it, build it, release it: [docs/self-host.md](docs/self-host.md) (the container image and `deploy/compose.yml`), [docs/ci-cd.md](docs/ci-cd.md) (GitHub Actions and GitLab CI, versions from commit messages, releases), [docs/install.md](docs/install.md) (the `orch` binary).
 
 ## API
@@ -23,9 +31,9 @@ Run it, build it, release it: [docs/self-host.md](docs/self-host.md) (the contai
 
 Connections (`/organizations/:orgId/connections`, org admins only) hold the credentials the platform uses for outside systems; today a GitLab access token with `read_api` and its base URL (https, or loopback for tests). `POST` checks the token against GitLab first (a bad one is a 422 and nothing is stored), seals it with a per-connection key and answers without it; `POST .../:id/test` re-checks it and reports the account and scopes; no route ever returns the token. They need `ORCH_MASTER_KEYS` (`k2:<base64 32 bytes>,k1:<...>`, newest first, see ADR-0007): without it creating and testing answer 503, and a key list that does not parse stops the API from starting. An organization with connections cannot be deleted until they are.
 
-Importing (`/organizations/:orgId/connections/:connectionId/...`, org admins only): `GET .../gitlab-projects` lists the GitLab projects the connection sees (cursor paged, `search`, `archived`), marking the ones already imported; `POST .../imports` takes up to 25 GitLab project ids and creates or refreshes a platform project for each, named by its GitLab path, with its default branch and **detected types** (`bun`, `node`, `docker`, `terraform`, `terragrunt`, each with a confidence and the paths that suggest it). Detection reads file paths only, never contents. Importing again refreshes the branch and types and keeps a name changed here. A project GitLab does not know, the token may not read, whose name is taken, or whose path or branch is not acceptable fails alone; a failing GitLab or token fails the whole import with nothing written. A repository with more than 5000 entries is reported `truncated`: its types may be incomplete.
+Importing (`/organizations/:orgId/connections/:connectionId/...`, org admins only): `GET .../gitlab-projects` lists the GitLab projects the connection sees (cursor paged, `search`, `archived`), marking the ones already imported; `POST .../imports` takes up to 25 GitLab project ids and creates or refreshes a platform project for each, named by its GitLab path, with its default branch and **detected types** (`bun`, `node`, `docker`, `terraform`, `terragrunt`, `dnscontrol` (a `dnsconfig.js`), each with a confidence and the paths that suggest it). Detection reads file paths only, never contents. Importing again refreshes the branch and types and keeps a name changed here. A project GitLab does not know, the token may not read, whose name is taken, or whose path or branch is not acceptable fails alone; a failing GitLab or token fails the whole import with nothing written. A repository with more than 5000 entries is reported `truncated`: its types may be incomplete.
 
-Webhooks: an org admin issues a connection's webhook secret with `POST /organizations/:orgId/connections/:connectionId/webhook-secret` (shown once, only its hash is stored; issuing again replaces it) and sets it as the **Secret token** of a GitLab webhook that posts to `/webhooks/gitlab/:connectionId`. The receiver checks the token in constant time before it reads the body; an unknown connection, a connection without a secret and a wrong token all answer the same 401. Push, merge request, pipeline, job and note events each become one job on the `gitlab.event` queue, carrying ids and a few fields (never the body, which can hold CI variables and note text); other events are accepted and dropped. A repeated `Idempotency-Key` (else `X-Gitlab-Event-UUID`) is answered `duplicate` and queues nothing; without one there is no dedupe. Bodies over 1 MiB are refused (413). The worker consumes the queue: pipeline events update pipeline and run records, and merge request events plan the merge request ([docs/iac.md](docs/iac.md)).
+Webhooks: an org admin issues a connection's webhook secret with `POST /organizations/:orgId/connections/:connectionId/webhook-secret` (shown once, only its hash is stored; issuing again replaces it) and sets it as the **Secret token** of a GitLab webhook that posts to `/webhooks/gitlab/:connectionId`. The receiver checks the token in constant time before it reads the body; an unknown connection, a connection without a secret and a wrong token all answer the same 401. Push, merge request, pipeline, job, note and deployment events each become one job on the `gitlab.event` queue, carrying ids and a few fields (never the body, which can hold CI variables and note text); other events are accepted and dropped. A repeated `Idempotency-Key` (else `X-Gitlab-Event-UUID`) is answered `duplicate` and queues nothing; without one there is no dedupe. Bodies over 1 MiB are refused (413). The worker consumes the queue: pipeline events update pipeline and run records, deployment events (tick **Deployment events** on the webhook) update what is deployed where ([docs/deployments.md](docs/deployments.md)), and merge request events plan the merge request ([docs/iac.md](docs/iac.md)). DNS zones are stacks too, applied by DNSControl in the runner with the platform holding no DNS credential: [docs/dns.md](docs/dns.md).
 
 ## Local database
 
@@ -39,7 +47,7 @@ Webhooks: an org admin issues a connection's webhook secret with `POST /organiza
 
 ## GitLab contract against a real instance
 
-`packages/gitlab` ships one contract suite ([contract.ts](packages/gitlab/src/contract.ts)). It always runs against the in-process mock; it can also run against a real GitLab **sandbox group**, which is how the mock stays honest. It is off by default and the first run is a deliberate step: it writes to the instance.
+`packages/forge` ships one contract suite ([contract.ts](packages/forge/src/contract.ts)), run through the GitLab adapter. It always runs against the in-process mock; it can also run against a real GitLab **sandbox group**, which is how the mock stays honest. It is off by default and the first run is a deliberate step: it writes to the instance.
 
 What it writes, all inside the one project you name: branches `orch-contract-*` (with a `.gitlab-ci.yml` of one manual job), merge requests on them (closed again), CI variables `ORCH_CONTRACT_*` in that project and in the group, and manual pipelines (cancelled). It never commits to the default branch. When it finishes it deletes the branches and variables it created (a removal that fails fails the run; merge requests go with their branches). Pipelines stay, cancelled. If a run is killed midway, anything named `orch-contract-*` or `ORCH_CONTRACT_*` is safe to delete by hand. The group-level variables exist briefly and are inherited by every project in the group, so use a group of its own.
 
@@ -49,7 +57,24 @@ export GITLAB_E2E_TOKEN=...            # a project/group access token with `api`
 export GITLAB_E2E_GROUP=sandbox/orch   # full path of the sandbox group
 export GITLAB_E2E_PROJECT=sandbox/orch/demo   # a project inside it with a default branch and at least one commit
 export GITLAB_E2E_ALLOW_WRITES=yes     # confirms the run may write there
-bun test packages/gitlab/src/real.contract.test.ts
+bun test packages/forge/src/gitlab.real.contract.test.ts
 ```
 
 Group variable scopes are Premium; a Free group makes the scope cases fail by design (the client reports a scope GitLab ignored). Differences between the mock and the instance show up as failing contract cases: fix the mock, not the assertion, unless GitLab's behaviour is not guaranteed.
+
+## GitHub contract against a real repository
+
+The same contract suite runs through the GitHub adapter (`packages/forge/src/github.real.contract.test.ts`). It always runs against the in-process mock; it can also run against a real **sandbox repository**. Off by default, and the first run is a deliberate step: it writes to GitHub. It has not been run by the project's authors yet (FRG-27).
+
+What it writes, all inside the one repository you name: branches `orch-contract-*` (with a file on each), pull requests on them (closed again). It never commits to the default branch. When it finishes it deletes the branches it created. If a run is killed midway, any branch named `orch-contract-*` is safe to delete by hand. Use a repository of its own in an organization or user of its own: the token can write there.
+
+```bash
+export GITHUB_E2E_REPO=sandbox-orch/demo      # owner/name of the sandbox repository, with a default branch and at least one commit
+export GITHUB_E2E_OWNER=sandbox-orch          # its owner: the repository must be inside it
+export GITHUB_E2E_TOKEN=...                   # a fine-grained token for that one repository: Contents, Pull requests and Metadata (read and write)
+export GITHUB_E2E_ALLOW_WRITES=yes            # confirms the run may write there
+# GITHUB_E2E_URL=https://ghe.example.com      # only for GitHub Enterprise Server; github.com otherwise
+bun test packages/forge/src/github.real.contract.test.ts
+```
+
+Only the areas the mock run has (projects, repository, merge requests) run. A half-set configuration fails the run and names what is missing, never the token. Differences between the mock and GitHub show up as failing cases: fix the mock, not the assertion, unless GitHub's behaviour is not guaranteed.

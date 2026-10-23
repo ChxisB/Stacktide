@@ -25,7 +25,7 @@ import { z } from "zod";
 import { auditPlugin } from "../audit";
 import { WHY } from "../connections";
 import { guardPlugin } from "../guard";
-import { type Principal, personOf } from "../principal";
+import { jobKey, type Principal, personOf } from "../principal";
 import { gitlabFor } from "./pipeline";
 import {
   notFound,
@@ -183,8 +183,10 @@ export const stateRoutes = ({
     return { keys, ref: await scoped(p, mustExist) };
   };
   // The job a state write or lock is the work of: the lock's owner, and `created_by` of a version.
-  const ownerOf = (who: Extract<Principal, { subject: unknown }>, projectId: string) =>
-    who.job?.gitlabJobId ? `ci:${projectId}:job-${who.job.gitlabJobId}` : `ci:${who.id}`;
+  const ownerOf = (who: Extract<Principal, { subject: unknown }>, projectId: string) => {
+    const job = jobKey(who.job);
+    return job ? `ci:${projectId}:${job}` : `ci:${who.id}`;
+  };
   const lockInfoOf = async (request: Request) => {
     const text = await readCapped(request, MAX_LOCK_BYTES);
     if (text === undefined)

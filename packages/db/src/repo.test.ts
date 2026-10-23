@@ -423,7 +423,7 @@ describe("gitlabLinks", () => {
       gitlabProjectId: gitlabProject,
     });
     await createProject(t.db, { organizationId: plain.id, name: "b" });
-    const links = await gitlabLinks(t.db);
+    const links = await gitlabLinks(t.db, "https://gitlab.example");
     expect(links.groups).toContainEqual({ organizationId: linked.id, gitlabGroupId: group });
     expect(links.groups.map((g) => g.organizationId)).not.toContain(plain.id);
     expect(links.projects).toContainEqual({ projectId: p1.id, gitlabProjectId: gitlabProject });
@@ -432,6 +432,8 @@ describe("gitlabLinks", () => {
     ).toEqual([]);
     // Unlinking removes it again.
     await updateProject(t.db, plain.id, p1.id, { gitlabProjectId: null });
-    expect((await gitlabLinks(t.db)).projects.map((p) => p.projectId)).not.toContain(p1.id);
+    expect(
+      (await gitlabLinks(t.db, "https://gitlab.example")).projects.map((p) => p.projectId),
+    ).not.toContain(p1.id);
   });
 });

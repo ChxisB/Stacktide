@@ -1,7 +1,8 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { ApiError, allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { Card, StatusBadge } from "./components";
 import { href } from "./router";
 import { Loading } from "./ui";
 
@@ -9,9 +10,38 @@ import { Loading } from "./ui";
 export interface Project {
   id: string;
   name: string;
+  /** GitLab's number of the project; none for one made by hand. */
+  gitlabProjectId?: number | null;
   defaultBranch: string;
   types: { tag: string; confidence: "high" | "medium"; evidence: string[] }[];
+  /** The forge the project is on, and what that forge cannot do (FRG-24). */
+  forge: Forge;
+  capabilities: Record<string, boolean>;
 }
+
+export type Forge = "gitlab" | "github";
+/** How each forge is named on a screen, and what it calls the things one imports. */
+export const FORGES: Record<Forge, { name: string; things: string; file: string }> = {
+  gitlab: { name: "GitLab", things: "projects", file: ".gitlab-ci.yml" },
+  github: { name: "GitHub", things: "repositories", file: ".github/workflows/orch.yml" },
+};
+const isForge = (type: string): type is Forge => type === "gitlab" || type === "github";
+
+/** Why a screen leaves something out for a forge, one line for each capability flag a screen uses. */
+const LACKS: Record<string, string> = {
+  ciLint: "does not check a workflow before it is merged, so the review cannot lint it",
+  deployments:
+    "deployments are not read by the platform yet, so there is nothing to refresh or promote",
+  runners: "runners are not listed by the platform yet, so a pool's health cannot be checked",
+};
+/** What a project's forge lacks, in a sentence, or nothing when it has the capability. */
+export const lacks = (
+  project: Pick<Project, "forge" | "capabilities">,
+  flag: keyof typeof LACKS,
+) =>
+  project.capabilities[flag] === false
+    ? `${FORGES[project.forge].name} ${LACKS[flag]}.`
+    : undefined;
 
 /** The most projects one import takes (the API's limit). */
 const MAX_IMPORT = 25;
@@ -27,59 +57,73 @@ export const useProjects = (orgId: string) => {
   });
 };
 
-/** The project a page is about: the only one, or the one chosen from a list. `children` gets it. */
+/**
+ * The project a page is about: the only one, or the one chosen from a list. `children` gets it. With `head`,
+ * the page's header is drawn here with the choice in its actions, beside the title, in every state of the list.
+ */
 export function ProjectPicker({
   orgId,
+  head,
   children,
 }: {
   orgId: string;
+  head?: (choice: ReactNode) => ReactNode;
   children: (project: Project) => ReactNode;
 }) {
   const projects = useProjects(orgId);
   const [chosen, setChosen] = useState<string>();
-  if (projects.error) return <ErrorPanel error={projects.error} />;
-  if (!projects.data) return <Loading what="Loading projects" />;
+  const alone = (body: ReactNode) => (
+    <>
+      {head?.(null)}
+      {body}
+    </>
+  );
+  if (projects.error) return alone(<ErrorPanel error={projects.error} />);
+  if (!projects.data) return alone(<Loading what="Loading projects" />);
   const project = projects.data.find((p) => p.id === chosen) ?? projects.data[0];
   if (!project) {
-    return (
+    return alone(
       <p>
         No projects yet. <a href={href("projects")}>Import one</a> first.
-      </p>
+      </p>,
     );
   }
+  const choice =
+    projects.data.length > 1 ? (
+      <label>
+        Project
+        <select value={project.id} onChange={(e) => setChosen(e.target.value)}>
+          {projects.data.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </label>
+    ) : (
+      <p>
+        Project <strong>{project.name}</strong>
+      </p>
+    );
   return (
     <div className="stack wide">
-      {projects.data.length > 1 ? (
-        <label>
-          Project
-          <select value={project.id} onChange={(e) => setChosen(e.target.value)}>
-            {projects.data.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : (
-        <p>
-          Project <strong>{project.name}</strong>
-        </p>
-      )}
+      {head ? head(choice) : choice}
       {children(project)}
     </div>
   );
 }
 
-export const useConnections = (orgId: string) => {
+/** The organization's forge connections (a cloud account is not one), or only those of `forge`. */
+export const useConnections = (orgId: string, forge?: Forge) => {
   const client = useClient();
   return useQuery({
-    queryKey: ["connections", orgId],
+    queryKey: forge ? ["connections", orgId, forge] : ["connections", orgId],
     queryFn: async () =>
       (
         await allPages((cursor) =>
           client.organizations({ orgId }).connections.get({ query: { limit: 100, cursor } }),
         )
-      ).filter((c) => c.type === "gitlab"),
+      ).filter((c) => (forge ? c.type === forge : isForge(c.type))),
   });
 };
 
@@ -98,7 +142,20 @@ export function Types({ types }: { types: Project["types"] }) {
   );
 }
 
-/** Add a GitLab connection: the token is tested before it is stored, and kept here only while typing. */
+const ADDRESS: Record<Forge, { url: string; hint: string; token: string }> = {
+  gitlab: {
+    url: "https://gitlab.com",
+    hint: "https://gitlab.example.com",
+    token: "an access token with the read_api scope (or api)",
+  },
+  github: {
+    url: "https://github.com",
+    hint: "https://github.example.com",
+    token: "a fine-grained token with read access to the repositories (or a classic one with repo)",
+  },
+};
+
+/** Add a forge connection: the token is tested before it is stored, and kept here only while typing. */
 export function AddConnection({
   orgId,
   onDone,
@@ -110,15 +167,23 @@ export function AddConnection({
 }) {
   const client = useClient();
   const queries = useQueryClient();
+  const [forge, setForge] = useState<Forge>("gitlab");
   const [name, setName] = useState("GitLab");
-  const [baseUrl, setBaseUrl] = useState("https://gitlab.com");
+  const [baseUrl, setBaseUrl] = useState(ADDRESS.gitlab.url);
   const [token, setToken] = useState("");
+  const system = FORGES[forge].name;
+  // the fields still holding the last forge's defaults take the new one's; typed ones stay
+  const choose = (next: Forge) => {
+    if (name === FORGES[forge].name) setName(FORGES[next].name);
+    if (baseUrl === ADDRESS[forge].url) setBaseUrl(ADDRESS[next].url);
+    setForge(next);
+  };
   const add = useMutation({
     // gcTime 0: the mutation cache must not keep the token after the call
     gcTime: 0,
     mutationFn: () =>
       call(() =>
-        client.organizations({ orgId }).connections.post({ type: "gitlab", name, baseUrl, token }),
+        client.organizations({ orgId }).connections.post({ type: forge, name, baseUrl, token }),
       ),
     onSuccess: async (connection) => {
       setToken("");
@@ -131,24 +196,34 @@ export function AddConnection({
     add.mutate();
   };
   return (
-    <form onSubmit={submit} className="stack" aria-label="Connect GitLab">
-      <h2>Connect GitLab</h2>
+    <form onSubmit={submit} className="stack" aria-label={`Connect ${system}`}>
+      <h2>Connect {system}</h2>
       <p className="muted">
-        Use an access token with the <code>read_api</code> scope (or <code>api</code>). It is
-        checked with GitLab first, then stored encrypted; it is never shown again.
+        Use {ADDRESS[forge].token}. It is checked with {system} first, then stored encrypted; it is
+        never shown again.
       </p>
+      <label>
+        Forge
+        <select value={forge} onChange={(e) => choose(e.target.value as Forge)}>
+          {(Object.keys(FORGES) as Forge[]).map((f) => (
+            <option key={f} value={f}>
+              {FORGES[f].name}
+            </option>
+          ))}
+        </select>
+      </label>
       <label>
         Name
         <input value={name} onChange={(e) => setName(e.target.value)} required maxLength={100} />
       </label>
       <label>
-        GitLab address
+        {system} address
         <input
           type="url"
           value={baseUrl}
           onChange={(e) => setBaseUrl(e.target.value)}
           required
-          placeholder="https://gitlab.example.com"
+          placeholder={ADDRESS[forge].hint}
         />
       </label>
       <label>
@@ -190,13 +265,29 @@ interface Found {
   projectId: string | null;
 }
 
-/** Browse what the token can see, pick projects and import them; says what happened to each. */
-function Browse({ orgId, connectionId }: { orgId: string; connectionId: string }) {
+/**
+ * Browse what the token can see, pick projects and import them; says what happened to each. With `want`
+ * (a path from a repository address), the list starts on that name and the repository with that path is ticked once.
+ */
+function Browse({
+  orgId,
+  connectionId,
+  forge,
+  want,
+}: {
+  orgId: string;
+  connectionId: string;
+  forge: Forge;
+  want?: string | undefined;
+}) {
   const client = useClient();
   const queries = useQueryClient();
-  const [typed, setTyped] = useState("");
-  const [search, setSearch] = useState("");
+  const { name: system, things } = FORGES[forge];
+  const first = want?.split("/").pop() ?? "";
+  const [typed, setTyped] = useState(first);
+  const [search, setSearch] = useState(first);
   const [picked, setPicked] = useState<ReadonlySet<number>>(new Set());
+  const tick = useRef(want?.toLowerCase());
   const scope = client.organizations({ orgId }).connections({ connectionId });
 
   const found = useInfiniteQuery({
@@ -215,6 +306,15 @@ function Browse({ orgId, connectionId }: { orgId: string; connectionId: string }
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
   const rows: Found[] = found.data?.pages.flatMap((p) => p.items) ?? [];
+  // the address names one repository: tick it when it comes up, once, so a later untick sticks
+  useEffect(() => {
+    const row = found.data?.pages
+      .flatMap((p) => p.items)
+      .find((r) => r.path.toLowerCase() === tick.current);
+    if (!row) return;
+    tick.current = undefined;
+    setPicked((now) => new Set(now).add(row.gitlabProjectId));
+  }, [found.data]);
 
   const run = useMutation({
     mutationFn: (ids: number[]) => call(() => scope.imports.post({ gitlabProjectIds: ids })),
@@ -230,7 +330,7 @@ function Browse({ orgId, connectionId }: { orgId: string; connectionId: string }
     },
   });
   const labelOf = (id: number) =>
-    rows.find((r) => r.gitlabProjectId === id)?.path ?? `GitLab project ${id}`;
+    rows.find((r) => r.gitlabProjectId === id)?.path ?? `${system} #${id}`;
   const toggle = (id: number) =>
     setPicked((now) => {
       const next = new Set(now);
@@ -245,7 +345,7 @@ function Browse({ orgId, connectionId }: { orgId: string; connectionId: string }
 
   return (
     <div className="stack">
-      <form onSubmit={searching} className="row" aria-label="Search GitLab projects">
+      <form onSubmit={searching} className="row" aria-label={`Search ${system} ${things}`}>
         <label>
           <span className="visually-hidden">Search by name</span>
           <input
@@ -258,18 +358,22 @@ function Browse({ orgId, connectionId }: { orgId: string; connectionId: string }
         <button type="submit">Search</button>
       </form>
 
-      {found.isPending && <Loading what="Asking GitLab" />}
+      {found.isPending && <Loading what={`Asking ${system}`} />}
       {found.error && <ErrorPanel error={found.error} retry={() => void found.refetch()} />}
       {found.data && rows.length === 0 && (
         <p>
           {search
-            ? `GitLab shows no projects matching “${search}” for this token.`
-            : "GitLab shows no projects for this token. Check that the token's user is a member of the projects you want."}
+            ? `${system} shows no ${things} matching “${search}” for this token.`
+            : `${system} shows no ${things} for this token. ${
+                forge === "gitlab"
+                  ? "Check that the token's user is a member of the projects you want."
+                  : "Check that the token can read the repositories you want."
+              }`}
         </p>
       )}
       {rows.length > 0 && (
         <fieldset className="list">
-          <legend>Projects in GitLab</legend>
+          <legend>{`${things[0]?.toUpperCase()}${things.slice(1)} in ${system}`}</legend>
           {rows.map((r) => (
             <label key={r.gitlabProjectId} className="item">
               <input
@@ -279,21 +383,23 @@ function Browse({ orgId, connectionId }: { orgId: string; connectionId: string }
                 onChange={() => toggle(r.gitlabProjectId)}
               />
               <span>{r.path}</span>
-              {r.archived && <span className="tag">archived</span>}
-              {r.projectId && <span className="tag">imported</span>}
+              {r.archived && <StatusBadge tone="quiet">archived</StatusBadge>}
+              {r.projectId && <StatusBadge tone="ok">imported</StatusBadge>}
               {!r.defaultBranch && <span className="muted">empty</span>}
             </label>
           ))}
         </fieldset>
       )}
       {found.hasNextPage && (
-        <button
-          type="button"
-          onClick={() => void found.fetchNextPage()}
-          disabled={found.isFetchingNextPage}
-        >
-          Show more
-        </button>
+        <div className="row">
+          <button
+            type="button"
+            onClick={() => void found.fetchNextPage()}
+            disabled={found.isFetchingNextPage}
+          >
+            Show more
+          </button>
+        </div>
       )}
       {full && (
         <p className="muted">
@@ -344,10 +450,88 @@ function Browse({ orgId, connectionId }: { orgId: string; connectionId: string }
   );
 }
 
+export const bare = (host: string) => host.replace(/^api\./, "");
+
+/**
+ * The host and repository path of a pasted address, or nothing for what is no web address.
+ * shortcut: web addresses only (no git@host:path), a GitLab served from a sub-path is not matched, add when asked.
+ */
+export function addressOf(text: string): { host: string; path: string } | undefined {
+  let url: URL;
+  try {
+    url = new URL(text.trim());
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+  const path = url.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
+  return path ? { host: bare(url.host), path } : undefined;
+}
+
+/** The repository path an address names on a forge: GitHub's is owner/name, GitLab's ends where `/-/` begins. */
+export const pathOn = (forge: Forge, path: string) =>
+  forge === "github" ? path.split("/").slice(0, 2).join("/") : (path.split("/-/")[0] ?? path);
+
+export const hostOf = (config: Record<string, unknown>) => {
+  try {
+    return bare(new URL(String(config.baseUrl)).host);
+  } catch {
+    return undefined;
+  }
+};
+
+/** Onboarding by address: the connection the address belongs to takes over the import card below it. */
+function RepositoryAddress({
+  connections,
+  onFound,
+}: {
+  connections: { id: string; type: string; config: Record<string, unknown> }[];
+  onFound: (connectionId: string, path: string) => void;
+}) {
+  const [typed, setTyped] = useState("");
+  const [problem, setProblem] = useState<string>();
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const address = addressOf(typed);
+    if (!address) {
+      setProblem("That is not a repository address, like https://github.com/acme/web.");
+      return;
+    }
+    const connection = connections.find((c) => hostOf(c.config) === address.host);
+    if (!connection || !isForge(connection.type)) {
+      setProblem(`No connection reaches ${address.host}. Add one for it first.`);
+      return;
+    }
+    setProblem(undefined);
+    onFound(connection.id, pathOn(connection.type, address.path));
+  };
+  return (
+    <form onSubmit={submit} className="row middle" aria-label="Repository address">
+      <label>
+        Repository address
+        {/* text, not url: the browser would hold back a bad address before this form could say what is wrong */}
+        <input
+          inputMode="url"
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          placeholder="https://github.com/acme/web"
+        />
+      </label>
+      <button type="submit">Find</button>
+      {problem && (
+        <p role="alert" className="error">
+          {problem}
+        </p>
+      )}
+    </form>
+  );
+}
+
 /** The import flow of one organization: the connection (added here if there is none), then browsing. */
 function Import({ orgId }: { orgId: string }) {
   const connections = useConnections(orgId);
   const [chosen, setChosen] = useState<string>();
+  const [want, setWant] = useState<string>();
   const [adding, setAdding] = useState(false);
 
   if (connections.isPending) return <Loading />;
@@ -361,24 +545,40 @@ function Import({ orgId }: { orgId: string }) {
   const current = list.find((c) => c.id === chosen) ?? list[0];
   if (!current || adding) {
     return (
-      <AddConnection
-        orgId={orgId}
-        onDone={(id) => {
-          setChosen(id);
-          setAdding(false);
-        }}
-        onCancel={current ? () => setAdding(false) : undefined}
-      />
+      <Card>
+        <AddConnection
+          orgId={orgId}
+          onDone={(id) => {
+            setChosen(id);
+            setWant(undefined);
+            setAdding(false);
+          }}
+          onCancel={current ? () => setAdding(false) : undefined}
+        />
+      </Card>
     );
   }
+  const forge = isForge(current.type) ? current.type : "gitlab";
   return (
-    <div className="stack">
-      <h2>Import from GitLab</h2>
-      <div className="row">
+    <Card title={`Import from ${FORGES[forge].name}`}>
+      <RepositoryAddress
+        connections={list}
+        onFound={(id, path) => {
+          setChosen(id);
+          setWant(path);
+        }}
+      />
+      <div className="row middle">
         {list.length > 1 ? (
           <label>
             Connection
-            <select value={current.id} onChange={(e) => setChosen(e.target.value)}>
+            <select
+              value={current.id}
+              onChange={(e) => {
+                setChosen(e.target.value);
+                setWant(undefined);
+              }}
+            >
               {list.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
@@ -395,8 +595,14 @@ function Import({ orgId }: { orgId: string }) {
           Add a connection
         </button>
       </div>
-      <Browse key={current.id} orgId={orgId} connectionId={current.id} />
-    </div>
+      <Browse
+        key={`${current.id} ${want ?? ""}`}
+        orgId={orgId}
+        connectionId={current.id}
+        forge={forge}
+        want={want}
+      />
+    </Card>
   );
 }
 
@@ -404,38 +610,42 @@ function Import({ orgId }: { orgId: string }) {
 export function ProjectsPage({ orgId }: { orgId: string }) {
   const projects = useProjects(orgId);
   return (
-    <>
-      {projects.isPending && <Loading />}
-      {projects.error && (
-        <ErrorPanel error={projects.error} retry={() => void projects.refetch()} />
-      )}
-      {projects.data &&
-        (projects.data.length === 0 ? (
-          <p>No projects yet. Import some from GitLab below.</p>
-        ) : (
-          <table>
-            <caption className="visually-hidden">Imported projects</caption>
-            <thead>
-              <tr>
-                <th scope="col">Project</th>
-                <th scope="col">Default branch</th>
-                <th scope="col">Detected</th>
-              </tr>
-            </thead>
-            <tbody>
-              {projects.data.map((p) => (
-                <tr key={p.id}>
-                  <th scope="row">{p.name}</th>
-                  <td>{p.defaultBranch}</td>
-                  <td>
-                    <Types types={p.types} />
-                  </td>
+    <div className="stack wide">
+      <Card title="Imported projects">
+        {projects.isPending && <Loading />}
+        {projects.error && (
+          <ErrorPanel error={projects.error} retry={() => void projects.refetch()} />
+        )}
+        {projects.data &&
+          (projects.data.length === 0 ? (
+            <p>No projects yet. Import some below.</p>
+          ) : (
+            <table>
+              <caption className="visually-hidden">Imported projects</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Project</th>
+                  <th scope="col">Forge</th>
+                  <th scope="col">Default branch</th>
+                  <th scope="col">Detected</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        ))}
+              </thead>
+              <tbody>
+                {projects.data.map((p) => (
+                  <tr key={p.id}>
+                    <th scope="row">{p.name}</th>
+                    <td>{FORGES[p.forge].name}</td>
+                    <td>{p.defaultBranch}</td>
+                    <td>
+                      <Types types={p.types} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ))}
+      </Card>
       <Import orgId={orgId} />
-    </>
+    </div>
   );
 }

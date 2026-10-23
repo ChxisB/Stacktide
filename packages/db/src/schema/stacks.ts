@@ -20,7 +20,7 @@ export const stacks = pgTable(
     name: text().notNull(),
     // The stack's directory, relative to the repository root (`.` for the root).
     path: text().notNull(),
-    tool: text().$type<"terraform" | "tofu" | "terragrunt">().notNull(),
+    tool: text().$type<"terraform" | "tofu" | "terragrunt" | "dnscontrol">().notNull(),
     version: text(),
     tags: text().array().notNull().default(sql`'{}'::text[]`),
     dependsOn: text().array().notNull().default(sql`'{}'::text[]`),
@@ -45,7 +45,7 @@ export const stacks = pgTable(
       sql`${t.path} = '.' or (${t.path} ~ '^[A-Za-z0-9._@+=][A-Za-z0-9._@+=-]*(/[A-Za-z0-9._@+=][A-Za-z0-9._@+=-]*)*$' and ${t.path} !~ '(^|/)[.][.]?(/|$)')`,
     ),
     check("stacks_name_check", sql`${t.name} ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'`),
-    check("stacks_tool_check", sql`${t.tool} in ('terraform', 'tofu', 'terragrunt')`),
+    check("stacks_tool_check", sql`${t.tool} in ('terraform', 'tofu', 'terragrunt', 'dnscontrol')`),
     check("stacks_apply_on_check", sql`${t.applyOn} in ('merge', 'command')`),
     check("stacks_backend_check", sql`${t.backend} in ('http', 'other', 'none', 'unchecked')`),
   ],

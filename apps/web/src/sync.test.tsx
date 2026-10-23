@@ -44,6 +44,7 @@ async function world(
     policy?: "ignore" | "adopt" | "prune";
     target?: boolean;
     autoSync?: boolean;
+    mapping?: Record<string, string>;
   } = {},
 ) {
   const s = await sceneOn(backend, { reporter: options.reporter });
@@ -74,7 +75,7 @@ async function world(
             type: "gitlab-variables",
             connectionId: connection.id,
             config: { project: gl.path },
-            environmentMapping: { dev: "development" },
+            environmentMapping: options.mapping ?? { dev: "development" },
             ...(options.policy ? { unmanagedPolicy: options.policy } : {}),
             ...(options.autoSync ? { autoSync: true } : {}),
           }),
@@ -170,7 +171,9 @@ describe("before there is a target", () => {
   test("a project with none says so", async () => {
     const w = await world({ target: false });
     mountPage(w.client);
-    await screen.findByText("This project has no sync targets yet.");
+    // in a card of its own, as a target would be, and not a loose line under the picker
+    const card = await screen.findByRole("region", { name: "Sync targets" });
+    expect(within(card).getByText("This project has no sync targets yet.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Plan sync" })).toBeNull();
   });
 
@@ -193,6 +196,49 @@ describe("before there is a target", () => {
         "Last sync": "Never synced from here.",
       }),
     );
+  });
+});
+
+// FLW-5: the environments of a target as a flow, with the counts of an open plan on each line
+describe("the flow of a target", () => {
+  const strip = (c: HTMLElement) =>
+    Array.from(c.querySelectorAll(".sync-lines li")).map((li) => li.textContent);
+
+  test("shows each mapped environment as a line, and no counts before a plan is made", async () => {
+    const w = await world({ mapping: { dev: "development", staging: "staging" } });
+    mountPage(w.client);
+    const c = await card();
+    expect(strip(c)).toEqual(["dev \u2192 development", "staging \u2192 staging"]);
+    expect(c.querySelector(".sync-flow")?.textContent).not.toContain("to create");
+  });
+
+  test("with a plan open, a line carries the counts of its own scope", async () => {
+    const w = await filled({ mapping: { dev: "development", staging: "staging" } });
+    mountPage(w.client);
+    await planIt(userEvent.setup());
+    const c = await card();
+    // A_PLAIN and B_SECRET are new and D_CHANGED differs, all for every environment; F_DEV is dev's own
+    expect(strip(c)).toEqual([
+      "All environments2 to create, 1 to change",
+      "dev \u2192 development1 to create",
+      "staging \u2192 stagingNothing to change",
+    ]);
+  });
+
+  test("a drifted target shows its totals once, on the Drift line, and not again in the flow", async () => {
+    const w = await world();
+    await recordDrift(
+      backend.t.db,
+      { id: w.target?.id ?? "", projectId: w.project.id, organizationId: w.org.id },
+      "drifted",
+      { create: 2, update: 1, delete: 0, noop: 3, adopt: 0 },
+    );
+    mountPage(w.client);
+    const c = await card();
+    await waitFor(() =>
+      expect(facts(c).Drift).toContain("(2 to create, 1 to change, 0 to delete)"),
+    );
+    expect(c.textContent?.match(/to create/g)).toHaveLength(1);
   });
 });
 
@@ -670,5 +716,43 @@ describe("applying a plan", () => {
     expect(results.filter((r) => r?.startsWith("Failed: "))).toHaveLength(1);
     expect(results.filter((r) => r === "Done")).toHaveLength(3);
     noValues();
+  });
+});
+
+describe("how the screen looks", () => {
+  test("drift is a badge with its words, and Plan sync sits in the card's head", async () => {
+    const w = await world();
+    if (!w.target) throw new Error("no target");
+    await recordDrift(
+      backend.t.db,
+      { id: w.target.id, projectId: w.project.id, organizationId: w.org.id },
+      "drifted",
+      { create: 1, update: 0, delete: 0 },
+    );
+    mountPage(w.client);
+    const c = await card();
+    await waitFor(() => expect(facts(c).Drift).toMatch(/^Drifted /));
+    const badge = c.querySelector("dd .st");
+    expect([badge?.className, badge?.textContent]).toEqual(["st st-warn", "Drifted"]);
+    expect(
+      within(c).getByRole("button", { name: "Plan sync" }).closest(".card-head"),
+    ).not.toBeNull();
+  });
+
+  test("each kind of change in a plan has its own mark, which is not read out", async () => {
+    const w = await filled();
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    const mark = (action: string) =>
+      Array.from(within(p).getByRole("table").querySelectorAll("tbody tr"))
+        .find((tr) => tr.children[2]?.textContent === action)
+        ?.querySelector("svg.op");
+    const create = mark("Create");
+    const change = mark("Change");
+    expect(create?.getAttribute("aria-hidden")).toBe("true");
+    expect(change?.getAttribute("aria-hidden")).toBe("true");
+    expect(create?.innerHTML).not.toBe(change?.innerHTML);
+    expect(create?.classList.contains("op-create")).toBe(true);
+    expect(change?.classList.contains("op-update")).toBe(true);
   });
 });

@@ -174,6 +174,11 @@ describe("importing projects", () => {
     expect(got.json.types).toEqual([
       { tag: "docker", confidence: "high", evidence: ["Dockerfile"] },
     ]);
+    // FRG-24: a GitLab project says so, and that GitLab can do all of it
+    expect(got.json).toMatchObject({
+      forge: "gitlab",
+      capabilities: { ciLint: true, runners: true },
+    });
     const byHand = await call("alice", "POST", `/organizations/${o1}/projects`, {
       name: "by-hand",
     });
@@ -196,6 +201,66 @@ describe("importing projects", () => {
       await t.db.select().from(projects).where(eq(projects.gitlabProjectId, a.id)),
     ).toHaveLength(1);
     expect((await importEvents()).length).toBe(before + 1);
+  });
+
+  test("an import binds the project to its connection, and the list shows it only there", async () => {
+    const org = (await createOrganization(t.db, { slug: "bound", name: "Bound" })).id;
+    roleTable.set(901, {
+      orgRoles: { [o1]: "admin", [o2]: "admin", [org]: "admin" },
+      projectRoles: {},
+    });
+    const make = async () => {
+      const res = await call("alice", "POST", `/organizations/${org}/connections`, {
+        type: "gitlab",
+        name: `gl${++n}`,
+        baseUrl: mock.url,
+        token: mock.token,
+      });
+      return res.json.id as string;
+    };
+    const [a, b] = [await make(), await make()];
+    const p = add({ "bun.lock": "" });
+    const done = await run([p.id], a, org);
+    expect(done.json.results[0].outcome).toBe("created");
+    const [row] = await t.db
+      .select()
+      .from(projects)
+      .where(eq(projects.id, done.json.results[0].project.id));
+    expect(row?.connectionId).toBe(a);
+    const listed = (c: string) =>
+      call("alice", "GET", `${found(c, org)}?limit=100&search=${p.path}`).then((r) => r.json.items);
+    expect(await listed(a)).toMatchObject([{ gitlabProjectId: p.id, projectId: row?.id }]);
+    expect(await listed(b)).toMatchObject([{ gitlabProjectId: p.id, projectId: null }]);
+    // The connection the project came through is not taken from under it.
+    const del = await call("alice", "DELETE", `/organizations/${org}/connections/${a}`);
+    expect([del.status, del.json.code]).toEqual([409, "connection_in_use"]);
+    expect((await call("alice", "DELETE", `/organizations/${org}/connections/${b}`)).status).toBe(
+      204,
+    );
+  });
+
+  test("an import adopts a project linked before connections were recorded", async () => {
+    const org = (await createOrganization(t.db, { slug: "legacy", name: "Legacy" })).id;
+    roleTable.set(901, {
+      orgRoles: { [o1]: "admin", [o2]: "admin", [org]: "admin" },
+      projectRoles: {},
+    });
+    const made = await call("alice", "POST", `/organizations/${org}/connections`, {
+      type: "gitlab",
+      name: "gl",
+      baseUrl: mock.url,
+      token: mock.token,
+    });
+    const p = add({ "bun.lock": "" });
+    const mine = await createProject(t.db, {
+      organizationId: org,
+      name: "mine",
+      gitlabProjectId: p.id,
+    });
+    const done = await run([p.id], made.json.id, org);
+    expect(done.json.results[0]).toMatchObject({ outcome: "updated", project: { id: mine.id } });
+    const [row] = await t.db.select().from(projects).where(eq(projects.id, mine.id));
+    expect(row?.connectionId).toBe(made.json.id);
   });
 
   test("a rename here survives a re-import", async () => {

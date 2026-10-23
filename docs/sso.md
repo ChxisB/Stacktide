@@ -97,6 +97,27 @@ It goes in once, is stored encrypted under the master key (and is re-wrapped wit
 row or a log line. To replace it, send a new one; leave it out to keep the stored one. Without a master key the API
 answers 503 to a change (turning a provider off still works).
 
+## A second GitLab instance as the provider (FRG-6)
+
+GitLab sign-in (`GITLAB_URL`) is **one** instance per deployment: `users.gitlab_id` is an id on that instance, and
+GitLab-membership roles are read from it alone. Projects imported through a connection to **another** GitLab are
+not asked about there, so user 100 on one instance can never hold the roles of user 100 on the other. People of a second
+instance sign in through this page's SSO, with that GitLab as the OpenID Connect provider (issuer = its address,
+an OAuth application on that GitLab with the `openid`, `profile` and `email` scopes):
+
+* **Role rules use `groups_direct`**: the paths of the groups the person *directly* belongs to (for example claim
+  `groups_direct`, value `acme/platform`). A person who is a member only of a *parent* group, or by inheritance, is not
+  in it. GitLab's per-level claims (`https://gitlab.org/claims/groups/owner` and the like) and `groups` are returned by
+  its userinfo endpoint only, which the platform does not read, so a rule cannot name a GitLab access level.
+* **The email rule applies as for any provider.** GitLab's documentation says `email` and `email_verified` come only
+  with the `email` scope and a public email address; a person with neither is refused.
+* **The instance must be reachable by the address rule above** (`https`, a public address), so a GitLab on a private
+  network cannot be a provider.
+* **Their projects are linked through a connection** to that instance (the project then belongs to it, and a CI job
+  token of that instance reaches it, see [ci.md](ci.md)). The organization's GitLab **group link** is the deployment's
+  GitLab alone; there is no group link to a second instance, so its roles come from the rules above.
+* Documented from GitLab's page (fetched 2026-10-22), **not run against a real instance**.
+
 ## The audit trail
 
 Every change is an audit row in the organization (`sso_provider`): `sso.create`, `sso.update`, `sso.enable`, `sso.disable`,

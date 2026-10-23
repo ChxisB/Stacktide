@@ -1,18 +1,27 @@
-import { can, DomainError, type Logger } from "@orch/core";
+import { can, DomainError, type Logger, projectRoleOf } from "@orch/core";
 import { audit, describeError, latestRunOfMergeRequest } from "@orch/db";
 import type { Gitlab } from "@orch/gitlab";
 import { NAME, type Tool } from "@orch/iac";
 import { z } from "zod";
 import { inline } from "./mr-note";
-import { type MrPlanConfig, planMergeRequest, plannedProject } from "./mr-plan";
-import { hopeless, type RunDeps } from "./pipeline-runs";
+import {
+  isGithub,
+  type MrPlanConfig,
+  type PlanClient,
+  planMergeRequest,
+  plannedProject,
+} from "./mr-plan";
+import { type EventDeps, hopeless } from "./pipeline-runs";
 import { applyRun } from "./run-apply";
 import type { Roles } from "./session";
 import type { JobHandler } from "./worker";
 
-export interface CommandDeps extends RunDeps {
-  /** What a GitLab user may do here (`gitlabRoles`): the commenter need not have signed in. */
-  roles: (user: { gitlabId: number }) => Promise<Roles>;
+export interface CommandDeps extends EventDeps {
+  /**
+   * What a GitLab user may do here (`gitlabRoles`): the commenter need not have signed in. Left out, GitLab notes are
+   * dropped. A GitHub commenter's role is read from GitHub itself, so this is not asked of one.
+   */
+  roles?: ((user: { gitlabId: number }) => Promise<Roles>) | undefined;
   /** Image repository per tool that has no default (Terragrunt). */
   images?: Partial<Record<Tool, string>> | undefined;
   /** Left out when merge request plans are not set up: `orch plan` then says so. */
@@ -26,6 +35,20 @@ const noteEvent = z.looseObject({
   connectionId: z.uuid(),
   projectId: z.number().int().positive(),
   noteableType: z.literal("MergeRequest"),
+  mrIid: z.number().int().positive(),
+  noteId: z.number().int().positive(),
+  action: z.string().optional(),
+});
+
+/**
+ * What an `issue_comment` job says (FRG-21): which comment on which pull request, never what it says or who wrote it.
+ * Only a comment on a pull request is queued.
+ */
+const githubCommentEvent = z.looseObject({
+  event: z.literal("issue_comment"),
+  organizationId: z.uuid(),
+  connectionId: z.uuid(),
+  projectId: z.number().int().positive(),
   mrIid: z.number().int().positive(),
   noteId: z.number().int().positive(),
   action: z.string().optional(),
@@ -74,12 +97,31 @@ const NEEDS = {
 export const mrCommandHandler =
   (deps: CommandDeps): JobHandler =>
   async (ctx) => {
-    const parsed = noteEvent.safeParse(ctx.payload);
-    // only a note when it is written: an edit (GitLab says `update`, as it does of our own notes
+    const hub = githubCommentEvent.safeParse(ctx.payload);
+    const parsed = hub.success ? hub : noteEvent.safeParse(ctx.payload);
+    // only a note when it is written: an edit (GitLab says `update`, GitHub `edited`, as GitLab does of our own notes
     // that are rewritten) does not run anything again
-    if (!parsed.success || (parsed.data.action ?? "create") !== "create") return;
+    if (!parsed.success) return;
+    const written = hub.success
+      ? parsed.data.action === "created"
+      : (parsed.data.action ?? "create") === "create";
+    if (!written) return;
     const e = parsed.data;
-    const project = await plannedProject(deps.db, e.organizationId, e.projectId);
+    const forge = hub.success ? "GitHub" : "GitLab";
+    const noun = hub.success ? "pull request" : "merge request";
+    // GitLab notes are answered only when the roles source is set (the worker says so when it starts)
+    if (!hub.success && !deps.roles) return;
+    const open = hub.success ? deps.forge : deps.gitlab;
+    if (!open) {
+      ctx.log.warn("note event dropped", { reason: "no way to open the connection" });
+      return;
+    }
+    const project = await plannedProject(
+      deps.db,
+      e.organizationId,
+      e.projectId,
+      hub.success ? e.connectionId : undefined,
+    );
     if (!project) return;
     const at = {
       organizationId: e.organizationId,
@@ -87,7 +129,7 @@ export const mrCommandHandler =
       gitlabProjectId: e.projectId,
     };
     try {
-      const gitlab = await deps.gitlab(e.organizationId, e.connectionId);
+      const gitlab: PlanClient = await open(e.organizationId, e.connectionId);
       const note = await gitlab.mergeRequests.getNote(e.projectId, e.mrIid, e.noteId);
       // GitLab's own notes ("merged", "added 1 commit") are not people talking
       if (note.system || note.authorId === null) return;
@@ -95,7 +137,21 @@ export const mrCommandHandler =
       if (command === undefined) return;
 
       const say = (text: string) => reply(gitlab, at, e.mrIid, text, ctx.log);
-      const roles = await deps.roles({ gitlabId: note.authorId });
+      // On GitHub the commenter's role in this one repository is read from GitHub, never granted from the comment. A
+      // level GitHub does not map (none, unknown) is no role, so the commenter can do nothing.
+      // shortcut: asked with the connection's token, which needs push access to read a collaborator's permission; no
+      // organization role is read. Upgrade with FRG-25, which knows the people who signed in with GitHub.
+      let roles: Roles;
+      if (isGithub(gitlab)) {
+        const role = projectRoleOf(
+          await gitlab.members.accessLevel({ project: e.projectId }, note.authorId),
+        );
+        roles = { orgRoles: {}, projectRoles: role ? { [at.projectId]: role } : {} };
+      } else {
+        roles = await (deps.roles as NonNullable<CommandDeps["roles"]>)({
+          gitlabId: note.authorId,
+        });
+      }
       const subject = { kind: "user", ...roles } as const;
       const resource = { organizationId: at.organizationId, projectId: at.projectId };
       // only people who can read the project are answered: anyone who can comment gets no bot notes
@@ -110,15 +166,18 @@ export const mrCommandHandler =
       }
       const need = NEEDS[command.name];
       if (!can(subject, need.action, resource)) {
-        ctx.log.warn("merge request command refused", {
-          gitlabUser: note.authorId,
+        ctx.log.warn(`${noun} command refused`, {
+          [hub.success ? "githubUser" : "gitlabUser"]: note.authorId,
           command: command.name,
         });
-        if (readable) await say(`You are not allowed to ${need.what} this merge request.`);
+        if (readable) await say(`You are not allowed to ${need.what} this ${noun}.`);
         return;
       }
 
-      const actor = { kind: "gitlab_user", id: String(note.authorId) };
+      const actor = {
+        kind: hub.success ? "github_user" : "gitlab_user",
+        id: String(note.authorId),
+      };
       const before = await latestRunOfMergeRequest(
         deps.db,
         at.organizationId,
@@ -128,7 +187,7 @@ export const mrCommandHandler =
       if (command.name === "plan") {
         if (!deps.config) {
           await say(
-            "Merge requests are not planned on this installation: it is not set up for it.",
+            `${hub.success ? "Pull" : "Merge"} requests are not planned on this installation: it is not set up for it.`,
           );
           return;
         }
@@ -148,12 +207,18 @@ export const mrCommandHandler =
       }
 
       if (!before) {
-        await say("Nothing to apply: this merge request has not been planned.");
+        await say(`Nothing to apply: this ${noun} has not been planned.`);
         return;
       }
       try {
         const started = await applyRun(
-          { db: deps.db, log: ctx.log, images: deps.images, platform: deps.config },
+          {
+            db: deps.db,
+            log: ctx.log,
+            images: deps.images,
+            platform: deps.config,
+            config: deps.config,
+          },
           gitlab,
           {
             at,
@@ -171,11 +236,11 @@ export const mrCommandHandler =
         await say(`Apply started for ${inline(started.join(", "))}.`);
       } catch (error) {
         if (!(error instanceof DomainError)) throw error;
-        ctx.log.warn("merge request apply refused", { code: error.code });
+        ctx.log.warn(`${noun} apply refused`, { code: error.code });
         await say(`Not applied: ${inline(error.message)}`);
       }
     } catch (error) {
-      const why = hopeless(error, "the merge request, the note or the repository");
+      const why = hopeless(error, `the ${noun}, the note or the repository`, forge);
       if (!why) throw error;
       ctx.log.warn("note event dropped", { reason: why, connection: e.connectionId });
     }
@@ -183,7 +248,7 @@ export const mrCommandHandler =
 
 /** Best effort: what was asked has been done or refused whatever becomes of the reply. */
 async function reply(
-  gitlab: Gitlab,
+  gitlab: Pick<Gitlab, "mergeRequests">,
   at: { gitlabProjectId: number },
   iid: number,
   text: string,

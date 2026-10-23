@@ -1227,3 +1227,30 @@ describe("the line diff", () => {
     expect(rebuild(d, "after")[0]).toBe("new0");
   });
 });
+
+describe("how the wizard looks", () => {
+  test("the steps before the current one are marked done, the rest are not", async () => {
+    const w = await world();
+    mountPage(w.client);
+    await detect();
+    const items = () =>
+      within(screen.getByRole("list", { name: "Steps" })).getAllByRole("listitem");
+    expect(items().map((li) => li.className)).toEqual(["", "", "", ""]);
+    await userEvent.setup().click(await button("Choose a template"));
+    expect(items().map((li) => li.className)).toEqual(["done", "", "", ""]);
+    expect(items()[1]?.getAttribute("aria-current")).toBe("step");
+  });
+
+  test("the templates are cards, and a recommended one is a badge", async () => {
+    const w = await world();
+    mountPage(w.client);
+    await userEvent.setup().click(await button("Choose a template"));
+    const group = screen.getByRole("group", { name: "Template" });
+    expect(group.classList.contains("cards")).toBe(true);
+    const badges = Array.from(group.querySelectorAll(".st"));
+    expect(badges.map((b) => [b.className, b.textContent])).toEqual([
+      ["st st-ok", "Recommended"],
+      ["st st-ok", "Recommended"],
+    ]);
+  });
+});

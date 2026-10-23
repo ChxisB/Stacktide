@@ -1,7 +1,8 @@
 import { parse } from "yaml";
 import { z } from "zod";
 
-export const TOOLS = ["terraform", "tofu", "terragrunt"] as const;
+/** `dnscontrol` is a DNS zone, not infrastructure: it is planned and applied by the same pipeline, with no Terraform state (ADR-0018). */
+export const TOOLS = ["terraform", "tofu", "terragrunt", "dnscontrol"] as const;
 export const APPLY_ON = ["merge", "command"] as const;
 /** Where a stack's Terraform state lives: GitLab's managed state (D9), or the platform's own (ADR-0017). */
 export const STATE_STORES = ["gitlab", "orch"] as const;
@@ -19,6 +20,10 @@ export const MAX_MANIFEST_BYTES = 64 * 1024;
 export const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 export const VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]{1,32})?$/;
 export const TAG = /^[a-z0-9][a-z0-9._-]{0,31}$/;
+// A DNS zone as a claim names it: at least two lowercase labels of 1 to 63 letters, digits and hyphens (a
+// name that is not ASCII is given in punycode), no wildcard and no trailing dot. The length is `MAX_ZONE`.
+export const ZONE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+export const MAX_ZONE = 253;
 // The platform's own rule for an environment's slug (apps/api routes/shared.ts), so that a marker
 // cannot name one that could never exist. It ends up in a generated job's `environment:`.
 export const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -81,38 +86,55 @@ const watchPath = z
  * silently has no dependencies. Nothing is applied unless the file asks for it, so `apply_on`
  * defaults to the explicit command.
  */
-export const stackManifest = z.strictObject({
-  name,
-  tool: z.enum(TOOLS),
-  version: z.string().regex(VERSION, "must look like 1.9.8 (no v, no range)").optional(),
-  tags: z
-    .array(z.string().regex(TAG, "must be lowercase letters, digits, . _ -"))
-    .max(20)
-    .default([]),
-  depends_on: z.array(name).max(50).default([]),
-  watch: z.array(watchPath).max(50).default([]),
-  apply_on: z.enum(APPLY_ON).default("command"),
-  // the platform environment whose variables the stack's plan gets as `TF_VAR_*` (IAC-11)
-  environment: z
-    .string()
-    .max(63)
-    .regex(SLUG, "must be the slug of an environment: lowercase letters and digits, single dashes")
-    .optional(),
-  // the organization's worker pool whose runner tags the stack's jobs ask for (POOL-2); none: the default pool, if there is one
-  pool: z
-    .string()
-    .max(63)
-    .regex(SLUG, "must be the name of a worker pool: lowercase letters and digits, single dashes")
-    .optional(),
-  // where the stack's state lives (STATE-5); none: GitLab's, as it always was
-  state: z.enum(STATE_STORES).optional(),
-  // how often the platform plans the stack to see whether the real infrastructure still matches (POL-1)
-  drift_every: z
-    .string()
-    .regex(/^[1-9]\d{0,2}[hd]$/, "must be whole hours or days, like 6h or 1d")
-    .transform((v) => Number.parseInt(v, 10) * (v.endsWith("d") ? 86_400 : 3_600))
-    .optional(),
-});
+export const stackManifest = z
+  .strictObject({
+    name,
+    tool: z.enum(TOOLS),
+    version: z.string().regex(VERSION, "must look like 1.9.8 (no v, no range)").optional(),
+    tags: z
+      .array(z.string().regex(TAG, "must be lowercase letters, digits, . _ -"))
+      .max(20)
+      .default([]),
+    depends_on: z.array(name).max(50).default([]),
+    watch: z.array(watchPath).max(50).default([]),
+    apply_on: z.enum(APPLY_ON).default("command"),
+    // the platform environment whose variables the stack's plan gets as `TF_VAR_*` (IAC-11)
+    environment: z
+      .string()
+      .max(63)
+      .regex(
+        SLUG,
+        "must be the slug of an environment: lowercase letters and digits, single dashes",
+      )
+      .optional(),
+    // the organization's worker pool whose runner tags the stack's jobs ask for (POOL-2); none: the default pool, if there is one
+    pool: z
+      .string()
+      .max(63)
+      .regex(SLUG, "must be the name of a worker pool: lowercase letters and digits, single dashes")
+      .optional(),
+    // where the stack's state lives (STATE-5); none: GitLab's, as it always was
+    state: z.enum(STATE_STORES).optional(),
+    // how often the platform plans the stack to see whether the real infrastructure still matches (POL-1)
+    drift_every: z
+      .string()
+      .regex(/^[1-9]\d{0,2}[hd]$/, "must be whole hours or days, like 6h or 1d")
+      .transform((v) => Number.parseInt(v, 10) * (v.endsWith("d") ? 86_400 : 3_600))
+      .optional(),
+    // a zone's one setting (DNS-3): DNSControl deletes records it does not know unless told not to, so
+    // deleting is the opt-in here (invariant 5), and a plan with a delete is denied without it
+    dns: z.strictObject({ prune: z.boolean().optional() }).optional(),
+  })
+  .superRefine((m, ctx) => {
+    const refuse = (key: string, message: string) =>
+      ctx.addIssue({ code: "custom", path: [key], message });
+    if (m.tool === "dnscontrol") {
+      if (m.version === undefined)
+        refuse("version", "is required for dnscontrol: it is the image tag");
+      if (m.state !== undefined)
+        refuse("state", "does not apply to dnscontrol: it has no Terraform state");
+    } else if (m.dns !== undefined) refuse("dns", "is only for tool: dnscontrol");
+  });
 export type StackManifest = z.output<typeof stackManifest>;
 
 export type Parsed = { ok: true; manifest: StackManifest } | { ok: false; errors: string[] };

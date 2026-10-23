@@ -22,6 +22,7 @@ import { type ItemInput, type PlanAction, type Remote, refId, SyncError } from "
 import { z } from "zod";
 import { approvalRequired, protectedMappings } from "./apply-approval";
 import type { CloudDeps } from "./connections";
+import { splitConfig } from "./sync-folder";
 import { desiredSnapshot, openTarget } from "./sync-plan";
 import type { JobContext, JobHandler } from "./worker";
 
@@ -139,7 +140,7 @@ async function applyLines(
 ): Promise<number> {
   const { db } = deps;
   const adapter = await openTarget(deps, target, ctx.id);
-  const config = adapter.validate(target.config);
+  const config = adapter.validate(splitConfig(target.config).rest);
   // the same check the endpoint made: a plan is only applied while it is still true
   const desired = await desiredSnapshot(deps, target, ctx.id);
   if (desired.digest !== run.desiredDigest) {

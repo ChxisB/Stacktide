@@ -761,6 +761,49 @@ describe("policy in the plan", () => {
   });
 });
 
+describe("a DNS zone in the plan (DNS-7)", () => {
+  const ZONES = {
+    ...FILES,
+    "stacks/pruned/stack.yml":
+      "name: pruned\ntool: dnscontrol\nversion: 5.5.0\ndns:\n  prune: true\n",
+    "stacks/pruned/dnsconfig.js": "// zone\n",
+    "stacks/kept/stack.yml": "name: kept\ntool: dnscontrol\nversion: 5.5.0\n",
+    "stacks/kept/dnsconfig.js": "// zone\n",
+  };
+
+  test("the run keeps each zone's prune setting from the commit: true, false, and none for Terraform", async () => {
+    const w = await world({ files: ZONES });
+    for (const f of [
+      "stacks/net/main.tf",
+      "stacks/pruned/dnsconfig.js",
+      "stacks/kept/dnsconfig.js",
+    ])
+      await w.change(f);
+    await w.open();
+    await handle(w);
+    const run = await w.latest();
+    const prune = Object.fromEntries((run?.stacks ?? []).map((s) => [s.stack, s.dnsPrune]));
+    expect(prune).toEqual({ app: null, kept: false, net: null, pruned: true });
+  });
+
+  // DNS-12: a repository of only zones has no Terraform for the import to see
+  test("a repo of only zones is planned when the import tagged it dnscontrol, and is left alone when it did not", async () => {
+    const files = {
+      ".gitlab-ci.yml": FILES[".gitlab-ci.yml"] as string,
+      "zones/example/stack.yml": "name: example-com\ntool: dnscontrol\nversion: 5.5.0\n",
+      "zones/example/dnsconfig.js": "// zone\n",
+    };
+    const tagged = await planned("zones/example/dnsconfig.js", {
+      files,
+      detectedTypes: [{ tag: "dnscontrol", confidence: "high", evidence: ["dnsconfig.js"] }],
+    });
+    expect(await tagged.runs()).toBe(1);
+    expect((await tagged.latest())?.stacks.map((s) => s.stack)).toEqual(["example-com"]);
+    const untagged = await planned("zones/example/dnsconfig.js", { files, detectedTypes: [] });
+    expect(await untagged.runs()).toBe(0);
+  });
+});
+
 describe("cost in the plan", () => {
   const COST_IMAGE = "ghcr.io/example/orch-cost:1";
   // `net` carries the tag; `app` (which depends on it, so is planned with it) does not

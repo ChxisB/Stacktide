@@ -1,8 +1,17 @@
 export type { CreateAccessTokenInput } from "./access-tokens";
 export { AccessToken } from "./access-tokens";
 export * from "./client";
+export type {
+  Deployment,
+  DeploymentStatus,
+  GitlabEnvironment,
+  ListDeploymentsOptions,
+} from "./deployments";
+export { readE2eConfig } from "./e2e-config";
 export * from "./errors";
 export * from "./gitlab";
+export type { Capability, CapabilityId, InstanceInfo } from "./instance";
+export { capabilitiesOf, parseInstance } from "./instance";
 export type { MemberOwner } from "./members";
 export type { CreateMergeRequest, MergeRequest, Note, UpdateMergeRequest } from "./merge-requests";
 export * from "./oauth";

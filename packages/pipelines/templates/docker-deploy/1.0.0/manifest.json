@@ -1,0 +1,50 @@
+{
+  "name": "docker-deploy",
+  "version": "1.0.0",
+  "description": "Build a Docker image, push it to the project's GitLab container registry on the default branch, then run the repository's own deploy script for one environment. A pipeline the platform starts with ORCH_DEPLOY_ENV runs only that deploy, for the build it names: that is how a build is promoted or rolled back. Needs a runner that allows Docker-in-Docker.",
+  "params": {
+    "type": "object",
+    "properties": {
+      "dockerVersion": {
+        "type": "string",
+        "description": "Tag of the docker and docker:dind images that build the image.",
+        "default": "27",
+        "pattern": "^[0-9][0-9A-Za-z.-]{0,30}$"
+      },
+      "dockerfile": {
+        "type": "string",
+        "description": "Path of the Dockerfile, from the repository root.",
+        "default": "Dockerfile",
+        "pattern": "^(?![/-])(?!.*\\.\\.)[A-Za-z0-9._/-]{1,100}$"
+      },
+      "context": {
+        "type": "string",
+        "description": "Build context directory, from the repository root.",
+        "default": ".",
+        "pattern": "^(?![/-])(?!.*\\.\\.)[A-Za-z0-9._/-]{1,100}$"
+      },
+      "environment": {
+        "type": "string",
+        "description": "The environment a merge to the default branch deploys to: its slug, which is the name GitLab gives it.",
+        "default": "staging",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+        "maxLength": 63
+      },
+      "deployScript": {
+        "type": "string",
+        "description": "The repository's script that deploys, from the repository root. It gets IMAGE, IMAGE_TAG, ORCH_DEPLOY_ENV and ORCH_DEPLOY_SHA, and must be safe to run twice for one build.",
+        "default": "deploy.sh",
+        "pattern": "^(?![/-])(?!.*\\.\\.)[A-Za-z0-9._/-]{1,100}$"
+      },
+      "deployImage": {
+        "type": "string",
+        "description": "The image the deploy job runs in: it needs the script's own tools, and curl when ORCH_HEALTH_URL is set.",
+        "default": "docker:27",
+        "pattern": "^(?!.*\\.\\.)[a-z0-9][a-z0-9._/-]{0,127}(:[A-Za-z0-9._-]{1,128})?$"
+      }
+    },
+    "required": []
+  },
+  "detects": [],
+  "requiresVariables": []
+}

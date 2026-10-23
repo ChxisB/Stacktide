@@ -1,0 +1,1 @@
+ALTER TABLE "run_stacks" ADD COLUMN "costed" boolean DEFAULT true NOT NULL;

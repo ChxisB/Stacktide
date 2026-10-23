@@ -23,12 +23,13 @@ import { auditForwardHandler } from "./audit-forward";
 import { auditPurgeHandler } from "./audit-purge";
 import { rolesFromEnv } from "./auth-config";
 import { changeRequestExpireHandler } from "./change-request-expire";
+import { deploymentEventHandler } from "./deployments";
 import { guardrailEnv, guardrailsOf } from "./guardrails";
 import { leaseSweepHandler } from "./lease";
 import { mrCommandHandler } from "./mr-commands";
 import { mrPlanHandler } from "./mr-plan";
 import { notifyDeliverHandler } from "./notify";
-import { pipelineEventHandler, workerGitlab } from "./pipeline-runs";
+import { pipelineEventHandler, workerForge, workerGitlab } from "./pipeline-runs";
 import { rotationTickHandler } from "./rotation-tick";
 import { builtInLeasers, builtInRotators } from "./rotators";
 import { mrApplyHandler } from "./run-apply";
@@ -198,11 +199,14 @@ if (keys) {
     queue: LEASE_SWEEP_QUEUE,
     enabled: true,
   });
-  // one queue, five consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
-  // belongs to (IAC-6); a merge request event plans the merge request (IAC-7), and its merge applies
-  // the stacks that opted in (IAC-8, which needs no setting of its own: no plan, no run to apply); a
-  // note may be a command (IAC-9, which needs the roles source)
+  // one queue, six consumers: a pipeline event updates the pipeline's record (PIPE-8) and the run it
+  // belongs to (IAC-6); a deployment event updates the deployment's record (DEP-4); a merge request
+  // event plans the merge request (IAC-7), and its merge applies the stacks that opted in (IAC-8,
+  // which needs no setting of its own: no plan, no run to apply); a note may be a command (IAC-9,
+  // which needs the roles source)
   const gitlab = { db, gitlab: workerGitlab({ db, keys, logger }) };
+  // a GitHub connection's run events (FRG-22) are read through the connection's own forge
+  const runs = { ...gitlab, forge: workerForge({ db, keys, logger }) };
   const plans = [
     ["ORCH_API_URL", config.ORCH_API_URL],
     ["ORCH_CI_AUDIENCE", config.ORCH_CI_AUDIENCE],
@@ -216,8 +220,9 @@ if (keys) {
   } = config;
   const images = toolImages(config);
   const consumers = [
-    pipelineEventHandler(gitlab),
-    runEventHandler(gitlab),
+    pipelineEventHandler(runs),
+    deploymentEventHandler(gitlab),
+    runEventHandler(runs),
     mrApplyHandler({ ...gitlab, images, platform: platformOf(apiUrl, audience) }),
   ];
   // a trailing slash is the usual way to write an address; the generator wants none
@@ -233,18 +238,18 @@ if (keys) {
         }
       : undefined;
   if (mr) {
-    consumers.push(mrPlanHandler({ ...gitlab, config: mr }));
+    consumers.push(mrPlanHandler({ ...runs, config: mr }));
     logger.info("merge request plans are on");
     handlers[STACK_DRIFT_TICK_QUEUE] = stackDriftTickHandler({ db });
     handlers[STACK_DRIFT_CHECK_QUEUE] = stackDriftCheckHandler({ ...gitlab, config: mr });
   } else logger.warn("merge requests will not be planned until these are set", { missing });
+  // a GitHub commenter's role is read from GitHub, so GitHub pull request commands need no roles source
   const roles = rolesFromEnv(config, db, logger);
-  if (roles) {
-    consumers.push(mrCommandHandler({ ...gitlab, roles, images, config: mr }));
-    logger.info("merge request commands are on");
-  } else {
+  consumers.push(mrCommandHandler({ ...runs, roles, images, config: mr }));
+  if (roles) logger.info("merge request commands are on");
+  else {
     logger.warn(
-      "merge request commands will not be answered until GITLAB_URL and GITLAB_MEMBERSHIP_TOKEN are set",
+      "GitLab merge request commands will not be answered until GITLAB_URL and GITLAB_MEMBERSHIP_TOKEN are set",
     );
   }
   handlers[WEBHOOK_QUEUE] = chain(...consumers);

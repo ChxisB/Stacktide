@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { detectProjectTypes } from "./project-types";
+import { detectProjectTypes, IAC_TAGS } from "./project-types";
 
 const tags = (paths: string[]) => detectProjectTypes(paths).map((t) => `${t.tag}:${t.confidence}`);
 
@@ -34,6 +34,14 @@ describe("detectProjectTypes", () => {
     expect(tags(["infra/prod/main.tf"])).toEqual(["terraform:medium"]);
     expect(tags(["terragrunt.hcl", "env/prod/terragrunt.hcl"])).toEqual(["terragrunt:high"]);
     expect(tags(["live/prod/terragrunt.hcl"])).toEqual(["terragrunt:medium"]);
+  });
+
+  test("a DNSControl repo: a dnsconfig.js is a zone's config, and it is planned like infrastructure (DNS-12)", () => {
+    expect(tags(["dnsconfig.js", "creds.json", "stack.yml"])).toEqual(["dnscontrol:high"]);
+    expect(tags(["zones/example/dnsconfig.js"])).toEqual(["dnscontrol:medium"]);
+    // a repo of zones next to code is both
+    expect(tags(["main.tf", "dns/dnsconfig.js"])).toEqual(["terraform:high", "dnscontrol:medium"]);
+    expect(IAC_TAGS).toContain("dnscontrol");
   });
 
   test("a mixed repo gets every tag, in a fixed order, the strongest evidence deciding", () => {
@@ -86,6 +94,9 @@ describe("detectProjectTypes", () => {
   });
 
   test("names are matched exactly, case included", () => {
-    expect(tags(["dockerfile", "MAIN.TF", "Package.json", "BUN.LOCK"])).toEqual([]);
+    expect(
+      tags(["dockerfile", "MAIN.TF", "Package.json", "BUN.LOCK", "DNSCONFIG.JS", "dnsconfig.json"]),
+    ).toEqual([]);
+    expect(tags(["my-dnsconfig.js", "dnsconfig.js.md", "dnsconfig.js/readme"])).toEqual([]);
   });
 });

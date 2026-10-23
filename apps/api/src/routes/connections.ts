@@ -31,6 +31,7 @@ import {
   isLoopback,
   noKeys,
   openAnyConnection,
+  testGithub,
   testGitlab,
 } from "../connections";
 import { guardPlugin } from "../guard";
@@ -77,25 +78,38 @@ const testSchema = z.union([
     user: z.object({ gitlabId: z.number().int(), username: z.string(), name: z.string() }),
     scopes: z.array(z.string()).nullable(),
     expiresAt: z.string().nullable(),
+    version: z.string().nullable(),
+    capabilities: z.array(
+      z.object({
+        id: z.string(),
+        label: z.string(),
+        state: z.enum(["yes", "no", "unknown"]),
+        needs: z.string(),
+      }),
+    ),
   }),
   z.object({ ok: z.literal(true), summary: z.string() }),
   z.object({ ok: z.literal(false), reason: z.string(), message: z.string() }),
 ]);
 
-const BASE_URL_HELP = "must be the https URL of a GitLab instance, without credentials";
-const baseUrl = z
-  .string()
-  .trim()
-  .min(1)
-  .max(2000)
-  .refine((v) => {
-    try {
-      parseBaseUrl(v);
-      return true;
-    } catch {
-      return false;
-    }
-  }, BASE_URL_HELP);
+const address = (help: string) =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .max(2000)
+    .refine((v) => {
+      try {
+        parseBaseUrl(v);
+        return true;
+      } catch {
+        return false;
+      }
+    }, help);
+const baseUrl = address("must be the https URL of a GitLab instance, without credentials");
+const githubUrl = address(
+  "must be the https URL of GitHub or a GitHub Enterprise Server, without credentials",
+);
 /** Origin and path only: a query, a fragment or a trailing slash is dropped. */
 const normalized = (v: string) => {
   const u = parseBaseUrl(v);
@@ -114,6 +128,25 @@ const create = z.discriminatedUnion("type", [
       .min(8)
       .max(512)
       .regex(/^[!-~]+$/, "must be a GitLab access token"),
+  }),
+  z.strictObject({
+    type: z.literal("github"),
+    name,
+    baseUrl: githubUrl,
+    // A fine-grained or classic personal access token: printable ASCII, so it can travel in a header.
+    token: z
+      .string()
+      .trim()
+      .min(8)
+      .max(512)
+      .regex(/^[!-~]+$/, "must be a GitHub access token"),
+    // The secret GitHub signs deliveries with, as the admin set it at GitHub (FRG-21 makes the hook itself).
+    webhookSecret: z
+      .string()
+      .min(16)
+      .max(256)
+      .regex(/^[!-~]+$/, "must be printable characters without spaces")
+      .optional(),
   }),
   // The other systems: the shape of each is its module's, the secret is the one field that is sealed.
   z.strictObject({
@@ -143,7 +176,7 @@ type Create = z.infer<typeof create>;
  * system that says no stops the create with its reason in fixed words.
  */
 async function prepareCloud(
-  body: Exclude<Create, { type: "gitlab" }>,
+  body: Exclude<Create, { type: "gitlab" | "github" }>,
   o: { loopback: boolean; cloud: CloudDeps | undefined },
 ) {
   let config: Record<string, unknown>;
@@ -186,12 +219,13 @@ async function prepareCloud(
 
 /** What a create body stores and seals, once its system has said the credential works. */
 async function prepare(body: Create, o: { loopback: boolean; cloud: CloudDeps | undefined }) {
-  if (body.type !== "gitlab") return prepareCloud(body, o);
+  if (body.type !== "gitlab" && body.type !== "github") return prepareCloud(body, o);
   const config: Record<string, unknown> = { baseUrl: normalized(body.baseUrl) };
   if (!o.loopback && isLoopback(new URL(String(config.baseUrl)).hostname)) {
     throw new DomainError("base_url_refused", 422, "The base URL must not point at this machine");
   }
-  const found = await testGitlab({ baseUrl: String(config.baseUrl), token: body.token });
+  const test = body.type === "gitlab" ? testGitlab : testGithub;
+  const found = await test({ baseUrl: String(config.baseUrl), token: body.token });
   if (!found.ok) throw new DomainError("connection_test_failed", 422, found.message);
   return { config, secret: body.token };
 }
@@ -264,6 +298,7 @@ export const connectionRoutes = ({
               name: body.name,
               config,
               token: secret,
+              webhookSecret: body.type === "github" ? body.webhookSecret : undefined,
             });
             await audit(
               tx,
@@ -298,10 +333,13 @@ export const connectionRoutes = ({
           connectionId,
           set.headers["x-request-id"],
         );
+        const address = () => z.string().parse(connection.config.baseUrl);
         const result =
           connection.type === "gitlab"
-            ? await testGitlab({ baseUrl: z.string().parse(connection.config.baseUrl), token })
-            : await checkCloud(connection, token, cloud);
+            ? await testGitlab({ baseUrl: address(), token })
+            : connection.type === "github"
+              ? await testGithub({ baseUrl: address(), token })
+              : await checkCloud(connection, token, cloud);
         await db.transaction((tx) =>
           audit(
             tx,
@@ -338,6 +376,12 @@ export const connectionRoutes = ({
                 "connection_in_use",
                 409,
                 "Sync targets still use this connection",
+              ),
+              // RESTRICT: nor the connection a project was imported through.
+              projects_connection_org_fk: new DomainError(
+                "connection_in_use",
+                409,
+                "Projects still use this connection",
               ),
             }),
           );

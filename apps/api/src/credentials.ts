@@ -62,7 +62,12 @@ export const bearerPrincipal = (options: SessionOptions): PrincipalResolver => {
           id: row.id,
           kind: "ci",
           subject: ciSubject(row),
-          job: { gitlabJobId: row.gitlabJobId, ref: row.ref, expiresAt: row.expiresAt },
+          job: {
+            gitlabJobId: row.gitlabJobId,
+            gitlabPipelineId: row.gitlabPipelineId,
+            ref: row.ref,
+            expiresAt: row.expiresAt,
+          },
         }
       );
     }

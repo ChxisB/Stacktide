@@ -1,6 +1,7 @@
 import { AWS_ASSUME_ROLE } from "./aws";
 import { AWS_SM, parseAwsSmConfig } from "./aws-sm";
 import { AWS_SSM, parseAwsSsmConfig } from "./aws-ssm";
+import { GITHUB_ACTIONS, parseGithubActionsConfig } from "./github-actions";
 import { GITLAB_VARIABLES, parseGitlabVariablesConfig } from "./gitlab-variables";
 import { KUBERNETES } from "./kubernetes";
 import { KUBERNETES_SECRET, parseKubernetesSecretConfig } from "./kubernetes-secret";
@@ -18,6 +19,7 @@ export const TARGET_TYPES = {
   [AWS_SM]: { connection: AWS_ASSUME_ROLE, validate: parseAwsSmConfig },
   [KUBERNETES_SECRET]: { connection: KUBERNETES, validate: parseKubernetesSecretConfig },
   [VAULT_KV]: { connection: VAULT_APPROLE, validate: parseVaultKvConfig },
+  [GITHUB_ACTIONS]: { connection: "github", validate: parseGithubActionsConfig },
 } as const;
 
 export type TargetType = keyof typeof TARGET_TYPES;

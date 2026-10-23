@@ -1,0 +1,91 @@
+{
+  "registrars": [
+    {
+      "name": "none",
+      "type": "-"
+    }
+  ],
+  "dns_providers": [
+    {
+      "name": "bind",
+      "type": "-"
+    }
+  ],
+  "domains": [
+    {
+      "name": "example.test",
+      "uniquename": "example.test",
+      "registrar": "none",
+      "dnsProviders": {
+        "bind": -1
+      },
+      "records": [
+        {
+          "typenum": 1,
+          "type": "A",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "192.0.2.1",
+          "filepos": "[line:4:3]",
+          "rdata": {
+            "Addr": "192.0.2.1"
+          }
+        },
+        {
+          "typenum": 1,
+          "type": "A",
+          "ttl": 300,
+          "name": "www",
+          "name_unicode": "www",
+          "comparablev3": "192.0.2.2",
+          "filepos": "[line:5:3]",
+          "rdata": {
+            "Addr": "192.0.2.2"
+          }
+        },
+        {
+          "typenum": 16,
+          "type": "TXT",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "\"v=spf1 -all\"",
+          "filepos": "[line:6:3]",
+          "rdata": {
+            "Txt": [
+              "v=spf1 -all"
+            ]
+          }
+        },
+        {
+          "typenum": 15,
+          "type": "MX",
+          "ttl": 300,
+          "name": "@",
+          "name_unicode": "@",
+          "comparablev3": "10 mail.example.test.",
+          "filepos": "[line:7:3]",
+          "rdata": {
+            "Preference": 10,
+            "Mx": "mail.example.test."
+          }
+        },
+        {
+          "typenum": 16,
+          "type": "TXT",
+          "ttl": 300,
+          "name": "_canary",
+          "name_unicode": "_canary",
+          "comparablev3": "\"CANARY-VALUE-7f3a\"",
+          "filepos": "[line:8:3]",
+          "rdata": {
+            "Txt": [
+              "CANARY-VALUE-7f3a"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

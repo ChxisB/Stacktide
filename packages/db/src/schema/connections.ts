@@ -15,7 +15,9 @@ const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
  * Only `connections.ts` in this package reads the three secret columns.
  *
  * `webhook_secret_hash` is the SHA-256 of the secret GitLab sends with webhooks (shown once, never
- * stored); null means the connection takes no webhooks.
+ * stored); null means the connection takes no webhooks. GitHub signs the body with an HMAC of its
+ * secret, so a GitHub connection keeps the secret itself, sealed with the same data key as the token
+ * (`webhook_secret_enc`, bound to a different context); null means it takes no webhooks either.
  */
 export const connections = pgTable(
   "connections",
@@ -32,6 +34,7 @@ export const connections = pgTable(
     dekKeyId: text().notNull(),
     dekWrapped: bytea().notNull(),
     webhookSecretHash: text(),
+    webhookSecretEnc: bytea(),
     ...timestamps(),
   },
   (t) => [

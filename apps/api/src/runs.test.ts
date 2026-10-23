@@ -6,11 +6,13 @@ import {
   createProject,
   createRun,
   createSession,
+  getRun,
   moveRunStack,
   type NewStack,
   runs,
   setCostLimit,
   storePlanSummary,
+  storePolicyVerdict,
   syncStacks,
   upsertUser,
 } from "@orch/db";
@@ -214,6 +216,21 @@ describe("creating a run", () => {
     const gone = "00000000-0000-4000-8000-000000000002";
     expect((await call("alice", "POST", runsPath(ids.o1, gone), valid())).status).toBe(404);
     expect((await call("alice", "GET", runsPath(ids.o1, gone))).status).toBe(404);
+  });
+
+  test("a zone made into a run by hand is one that does not prune; a Terraform stack is not a zone (DNS-7)", async () => {
+    const p5 = (await createProject(t.db, { organizationId: ids.o1, name: "p5" })).id;
+    await syncStacks(t.db, ids.o1, p5, [{ ...stack("zone"), tool: "dnscontrol" }, stack("net")], {
+      prune: false,
+    });
+    const made = (
+      await call("carol", "POST", runsPath(ids.o1, p5), valid({ stacks: ["zone", "net"] }))
+    ).json;
+    const run = await getRun(t.db, ids.o1, p5, made.id);
+    expect(Object.fromEntries((run?.stacks ?? []).map((s) => [s.stack, s.dnsPrune]))).toEqual({
+      net: null,
+      zone: false,
+    });
   });
 
   test("a stack the project does not have is refused, also one only another project has", async () => {
@@ -528,5 +545,130 @@ describe("reading runs", () => {
     }
     expect((await call("nobody", "GET", runsPath())).status).toBe(401);
     expect((await call("nobody", "POST", runsPath(), valid())).status).toBe(401);
+  });
+});
+
+// DNS-16: what a run says of a DNS zone, for the screen that lists plans
+describe("what a run says of a DNS zone", () => {
+  const read = async (id: string) => (await call("bob", "GET", `${runsPath()}/${id}`)).json;
+  const of = (run: { stacks: { name: string }[] }, name: string) =>
+    run.stacks.find((s) => s.name === name) as Record<string, unknown>;
+
+  test("a zone says it is one, whether it may delete, the lint's counts and what the gate said; a stack that is not a zone says null", async () => {
+    const run = await createRun(t.db, {
+      organizationId: ids.o1,
+      projectId: ids.p1,
+      ref: "feature/dns",
+      sha: SHA,
+      stacks: ["zone", "net"],
+      uncosted: ["zone"],
+      dnsPrune: { zone: false },
+    });
+    await storePlanSummary(t.db, ids.o1, ids.p1, run.id, "zone", {
+      add: 0,
+      change: 0,
+      destroy: 1,
+      resources: [{ address: "example.com/_canary-secret/TXT", actions: ["delete"] }],
+      lint: { errors: 1, warnings: 2 },
+    });
+    await storePolicyVerdict(t.db, ids.o1, ids.p1, run.id, "zone", {
+      evaluated: true,
+      denied: ["dns-delete-without-prune:example.com"],
+      warned: ["dns-lint-ttl-range:example.com"],
+    });
+
+    const got = await read(run.id);
+    expect(of(got, "zone").dns).toEqual({ prune: false, lint: { errors: 1, warnings: 2 } });
+    expect(of(got, "zone").policy).toEqual({
+      verdict: "deny",
+      denied: ["dns-delete-without-prune:example.com"],
+      warned: ["dns-lint-ttl-range:example.com"],
+    });
+    expect(of(got, "net").dns).toBeNull();
+    expect(of(got, "net").policy).toBeNull();
+    // a record's name is in the plan and in neither answer
+    expect(JSON.stringify(got)).not.toContain("canary");
+    const listed = (await call("bob", "GET", `${runsPath()}?limit=100`)).json.items;
+    expect(listed.find((r: { id: string }) => r.id === run.id)).toEqual(got);
+  });
+
+  test("a zone whose plan was not linted says so, and one that may delete says so", async () => {
+    const run = await createRun(t.db, {
+      organizationId: ids.o1,
+      projectId: ids.p1,
+      ref: "feature/dns",
+      sha: SHA,
+      stacks: ["zone"],
+      uncosted: ["zone"],
+      dnsPrune: { zone: true },
+    });
+    await storePlanSummary(t.db, ids.o1, ids.p1, run.id, "zone", {
+      add: 1,
+      change: 0,
+      destroy: 0,
+      resources: [],
+    });
+    expect(of(await read(run.id), "zone").dns).toEqual({ prune: true, lint: null });
+  });
+});
+
+describe("what order a run's stacks go in (FLW-1)", () => {
+  const chain = (name: string, dependsOn: string[] = []): NewStack => ({
+    ...stack(name),
+    dependsOn,
+  });
+  // a project of its own, so the stacks the other tests make do not matter
+  const project = async (name: string, stacks: NewStack[]) => {
+    const p = await createProject(t.db, { organizationId: ids.o1, name });
+    await syncStacks(t.db, ids.o1, p.id, stacks, { prune: false });
+    return p.id;
+  };
+  const post = async (projectId: string, names: string[]) =>
+    (await call("carol", "POST", runsPath(ids.o1, projectId), valid({ stacks: names }))).json;
+  const order = (run: { stacks: { name: string; dependsOn: string[]; wave: number }[] }) =>
+    Object.fromEntries(run.stacks.map((s) => [s.name, [s.wave, s.dependsOn]]));
+
+  test("each stack says its column and whom it waits for, the same when made, read and listed", async () => {
+    const p = await project("ordered", [
+      chain("vpc"),
+      chain("db", ["vpc"]),
+      chain("app", ["db", "vpc"]),
+    ]);
+    const made = await post(p, ["app", "db", "vpc"]);
+    expect(order(made)).toEqual({ vpc: [0, []], db: [1, ["vpc"]], app: [2, ["db", "vpc"]] });
+    for (const who of ["alice", "bob", "carol"] as const) {
+      expect((await call(who, "GET", `${runsPath(ids.o1, p)}/${made.id}`)).json).toEqual(made);
+    }
+    const listed = (await call("bob", "GET", runsPath(ids.o1, p))).json.items;
+    expect(listed).toEqual([made]);
+  });
+
+  test("a stack outside the run orders it, and the run's stacks are joined through it", async () => {
+    const p = await project("through", [chain("a"), chain("b", ["a"]), chain("c", ["b"])]);
+    expect(order(await post(p, ["c", "a"]))).toEqual({ a: [0, []], c: [1, ["a"]] });
+  });
+
+  test("a stack the registry lost and a registry that is not a graph answer 200 with no order", async () => {
+    const p = await project("lost", [chain("a"), chain("b", ["a"])]);
+    const run = await post(p, ["a", "b"]);
+    await syncStacks(t.db, ids.o1, p, [chain("a")], { prune: true });
+    const gone = await call("alice", "GET", `${runsPath(ids.o1, p)}/${run.id}`);
+    expect([gone.status, order(gone.json)]).toEqual([200, { a: [0, []], b: [0, []] }]);
+    // two stacks that wait for each other: the scan refuses them, a writer other than the scan may not
+    await syncStacks(t.db, ids.o1, p, [chain("a", ["b"]), chain("b", ["a"])], { prune: false });
+    const cyclic = await call("alice", "GET", `${runsPath(ids.o1, p)}/${run.id}`);
+    expect([cyclic.status, order(cyclic.json)]).toEqual([200, { a: [0, []], b: [0, []] }]);
+    expect((await call("alice", "GET", runsPath(ids.o1, p))).status).toBe(200);
+  });
+
+  test("a stranger and another project's reader still find nothing", async () => {
+    const p = await project("hidden", [chain("a"), chain("b", ["a"])]);
+    const run = await post(p, ["a", "b"]);
+    for (const who of ["dave", "nobody"] as const) {
+      expect([who, (await call(who, "GET", `${runsPath(ids.o1, p)}/${run.id}`)).status]).toEqual([
+        who,
+        who === "nobody" ? 401 : 404,
+      ]);
+    }
   });
 });

@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { type Manifest, manifestSchema } from "./manifest";
-import { checkPipeline } from "./pipeline";
+import { checkPipeline, checkWorkflow } from "./pipeline";
 
 export const TEMPLATES_DIR = join(import.meta.dir, "..", "templates");
 
@@ -9,6 +9,8 @@ export interface Template {
   manifest: Manifest;
   /** `pipeline.yml` as written; `render` parses it. */
   pipeline: string;
+  /** `workflow.yml` as written, the same jobs as a GitHub Actions workflow (FRG-16); a template without one cannot be delivered to GitHub. */
+  workflow?: string;
 }
 
 /** Every problem found in the templates, one line each, so a bad catalog is fixed in one pass. */
@@ -32,8 +34,8 @@ export const byVersion = (a: string, b: string) => {
 };
 
 /**
- * Loads `<root>/<name>/<version>/{manifest.json,pipeline.yml}` and checks each: the manifest against
- * its schema and against the directory it lives in, the pipeline for existing and being sound (`checkPipeline`).
+ * Loads `<root>/<name>/<version>/{manifest.json,pipeline.yml}` (and `workflow.yml`, when there is one) and checks each: the manifest against
+ * its schema and against the directory it lives in, the pipeline for existing and being sound (`checkPipeline`), the workflow for being (`checkWorkflow`).
  * Sorted by name, then version. Throws a `TemplateError` listing every template that is wrong.
  */
 export async function loadTemplates(root = TEMPLATES_DIR): Promise<Template[]> {
@@ -72,7 +74,11 @@ export async function loadTemplates(root = TEMPLATES_DIR): Promise<Template[]> {
 
       const pipeline = await pipelineFile.text();
       for (const why of checkPipeline(manifest, pipeline)) fail(`pipeline.yml: ${why}`);
-      found.push({ manifest, pipeline });
+      const workflowFile = Bun.file(join(dir, "workflow.yml"));
+      const workflow = (await workflowFile.exists()) ? await workflowFile.text() : undefined;
+      if (workflow !== undefined)
+        for (const why of checkWorkflow(manifest, workflow)) fail(`workflow.yml: ${why}`);
+      found.push({ manifest, pipeline, ...(workflow === undefined ? {} : { workflow }) });
     }
   }
   if (problems.length > 0) throw new TemplateError(problems);

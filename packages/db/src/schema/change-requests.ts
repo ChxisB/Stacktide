@@ -71,7 +71,10 @@ export const changeRequests = pgTable(
     index("change_requests_expiry_idx")
       .on(t.expiresAt)
       .where(sql`${t.status} in ('open', 'approved')`),
-    check("change_requests_kind_check", sql`${t.kind} in ('variables', 'sync_apply', 'iac_apply')`),
+    check(
+      "change_requests_kind_check",
+      sql`${t.kind} in ('variables', 'sync_apply', 'iac_apply', 'deploy')`,
+    ),
     check(
       "change_requests_status_check",
       sql`${t.status} in ('open', 'approved', 'applied', 'rejected', 'expired')`,
@@ -81,9 +84,10 @@ export const changeRequests = pgTable(
       "change_requests_ops_check",
       sql`case when ${t.kind} = 'variables' then (${t.status} in ('open', 'approved')) = (${t.opsEnc} is not null) else ${t.opsEnc} is null end`,
     ),
+    // An approval to apply is for a run; a request for edits or to deploy has none.
     check(
       "change_requests_subject_check",
-      sql`(${t.kind} = 'variables') = (${t.subjectId} is null)`,
+      sql`(${t.kind} in ('variables', 'deploy')) = (${t.subjectId} is null)`,
     ),
     index("change_requests_subject_idx")
       .on(t.projectId, t.subjectId)

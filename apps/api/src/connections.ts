@@ -1,7 +1,15 @@
 import { DomainError, type Logger } from "@orch/core";
 import { CryptoError, type KeyProvider } from "@orch/crypto";
 import { type Connection, type Db, openConnection } from "@orch/db";
-import { createGitlab, GitlabError, type GitlabErrorKind } from "@orch/gitlab";
+import { type Forge, githubForge, gitlabForge } from "@orch/forge";
+import { createGithubClient, PERMISSIONS, probePermissions } from "@orch/github";
+import {
+  type Capability,
+  capabilitiesOf,
+  createGitlab,
+  GitlabError,
+  type GitlabErrorKind,
+} from "@orch/gitlab";
 import {
   AWS_ASSUME_ROLE,
   type AwsCreds,
@@ -9,6 +17,7 @@ import {
   assumedSession,
   awsConfigSchema,
   type Check,
+  type CheckReason,
   checkAwsAssumeRole,
   checkKubernetes,
   checkVaultAppRole,
@@ -31,6 +40,10 @@ export type ConnectionTest =
       scopes: string[] | null;
       /** The token's expiry date (`2027-01-31`), `null` for none or unknown. */
       expiresAt: string | null;
+      /** The release (`17.3.2-ee`); `null` when `/version` would not answer. */
+      version: string | null;
+      /** What that release can and cannot do for the platform; empty when the version is unknown. */
+      capabilities: Capability[];
     }
   | { ok: false; reason: GitlabErrorKind; message: string };
 
@@ -74,6 +87,8 @@ export async function testGitlab(input: {
     const me = await api.users.current();
     if (!me.active) return fail("forbidden");
     const info = await api.users.tokenInfo().catch(() => undefined);
+    // Like the scopes, best effort: a proxy that hides /version must not fail a token that works.
+    const instance = await api.instance.info().catch(() => undefined);
     // Known scopes must allow reading the API; unknown ones (an older GitLab) are let through.
     if (info && !info.scopes.some((s) => s === "api" || s === "read_api")) return fail("forbidden");
     return {
@@ -81,10 +96,70 @@ export async function testGitlab(input: {
       user: { gitlabId: me.gitlabId, username: me.username, name: me.name },
       scopes: info?.scopes ?? null,
       expiresAt: info?.expiresAt ?? null,
+      version: instance?.version ?? null,
+      capabilities: instance ? capabilitiesOf(instance) : [],
     };
   } catch (error) {
     if (error instanceof GitlabError) return fail(error.kind);
     throw error;
+  }
+}
+
+// Fixed texts, as GitLab's above: GitHub's own error text can name the URL, and a user typed the URL.
+export const GITHUB_WHY: Record<GitlabErrorKind, string> = {
+  unauthorized: "GitHub rejected the token: it is wrong, expired or revoked.",
+  forbidden:
+    "GitHub refused the token: it is not allowed to use the API, or the account is suspended.",
+  not_found: "GitHub has no API at this URL: check the base URL.",
+  conflict: "The URL answered, but not like GitHub: check the base URL.",
+  invalid: "The URL answered, but not like GitHub: check the base URL.",
+  unexpected: "The URL answered, but not like GitHub: check the base URL.",
+  rate_limited: "GitHub is rate limiting requests: try again in a minute.",
+  server: "GitHub failed with a server error: try again later.",
+  timeout: "GitHub did not answer in time: check the base URL and the network.",
+  network: "GitHub could not be reached: check the base URL and the network.",
+};
+const NEEDS_CONTENTS =
+  "GitHub refused the token: it needs read access to Contents on the repositories to connect.";
+const labelOf = (ids: string[]) =>
+  ids.map((id) => PERMISSIONS.find((p) => p.id === id)?.label ?? id).join(", ") || "none";
+
+/**
+ * Asks GitHub who the token is and which permissions it holds. A fine-grained token cannot be asked for its
+ * permissions, so each is tried with a read on the first repository the token sees (`probePermissions`). Reading
+ * Contents is what connecting needs; the others are reported, not required, since what a project uses depends on
+ * its features. The answer names the login and repository GitHub gave, and nothing the person typed.
+ */
+export async function testGithub(input: { baseUrl: string; token: string }): Promise<Check> {
+  const client = createGithubClient({
+    baseUrl: input.baseUrl,
+    token: input.token,
+    timeoutMs: 10_000,
+    maxRetries: 1,
+    maxRetryDelayMs: 2_000,
+  });
+  try {
+    const found = await probePermissions(client);
+    if (found.refused.includes("contents")) {
+      return { ok: false, reason: "forbidden", message: NEEDS_CONTENTS };
+    }
+    if (found.repo === null) {
+      return {
+        ok: true,
+        summary: `GitHub accepted the token of ${found.login}, but it sees no repository yet, so its permissions were not checked.`,
+      };
+    }
+    const parts = [
+      `GitHub accepted the token of ${found.login}. On ${found.repo}: allowed ${labelOf(found.granted)}.`,
+      ...(found.refused.length ? [`Not allowed: ${labelOf(found.refused)}.`] : []),
+      ...(found.unknown.length ? [`Not clear: ${labelOf(found.unknown)}.`] : []),
+      "Only reads were tried; write access is not checked.",
+    ];
+    return { ok: true, summary: parts.join(" ") };
+  } catch (error) {
+    if (!(error instanceof GitlabError)) throw error;
+    const reason: CheckReason = error.kind === "conflict" ? "invalid" : error.kind;
+    return { ok: false, reason, message: GITHUB_WHY[error.kind] };
   }
 }
 
@@ -200,6 +275,46 @@ export async function openGitlabConnection(
   }
   const { baseUrl } = z.object({ baseUrl: z.string() }).parse(opened.connection.config);
   return { connection: opened.connection, baseUrl, token: opened.token };
+}
+
+/** A GitHub connection, opened. */
+export async function openGithubConnection(
+  deps: { db: Db; keys?: KeyProvider; logger: Logger },
+  orgId: string,
+  connectionId: string,
+  requestId: unknown,
+): Promise<{ connection: Connection; baseUrl: string; token: string }> {
+  const opened = await openAnyConnection(deps, orgId, connectionId, requestId);
+  // The type is free-form: another kind's secret must not be sent to a GitHub URL.
+  if (opened.connection.type !== "github") {
+    throw new DomainError("connection_type", 422, "This is not a GitHub connection");
+  }
+  const { baseUrl } = storedConfig(z.object({ baseUrl: z.string() }), opened.connection.config);
+  return { connection: opened.connection, baseUrl, token: opened.token };
+}
+
+/**
+ * The forge a stored connection talks to (ADR-0019): the adapter for its type, opened with the token already in hand.
+ * A type that is no forge, or one nobody has written an adapter for, is a 422 and never reaches a network call.
+ */
+export function forgeFor(
+  connection: { type: string; config: Record<string, unknown> },
+  token: string,
+  tuning: { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs?: number } = {},
+): Forge {
+  switch (connection.type) {
+    case "gitlab": {
+      const { baseUrl } = storedConfig(z.object({ baseUrl: z.string() }), connection.config);
+      return gitlabForge(
+        createGitlab({ baseUrl, auth: { type: "private-token", token }, ...tuning }),
+      );
+    }
+    case "github": {
+      const { baseUrl } = storedConfig(z.object({ baseUrl: z.string() }), connection.config);
+      return githubForge(createGithubClient({ baseUrl, token, ...tuning }));
+    }
+  }
+  throw new DomainError("connection_type", 422, "This type of connection is not a forge");
 }
 
 /** A Kubernetes connection, opened: the server, the namespaces it allows, and the service-account token. */

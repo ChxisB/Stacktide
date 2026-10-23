@@ -13,6 +13,8 @@ import type { Roles } from "./session";
 export interface MembershipOptions {
   db: Db;
   gitlab: Pick<Gitlab, "members">;
+  /** The address of the GitLab `gitlab` talks to: only its links are asked about (see `gitlabLinks`). */
+  baseUrl: string;
   logger?: Logger;
   /** How long a user's roles are kept before GitLab is asked again. Default 5 minutes. */
   ttlMs?: number;
@@ -25,7 +27,7 @@ export interface MembershipOptions {
 
 /**
  * Where roles come from: the user's GitLab access level on every organization's linked group and
- * every project's linked GitLab project (inherited membership included), mapped by `orgRoleOf` /
+ * every project's linked GitLab project on this instance (inherited membership included), mapped by `orgRoleOf` /
  * `projectRoleOf`. One lookup per link, so a user's roles cost as many GitLab calls as there are
  * links, then none until the TTL ends.
  *
@@ -38,16 +40,15 @@ export interface MembershipOptions {
 export function gitlabRoles({
   db,
   gitlab,
+  baseUrl,
   logger,
   ttlMs = 5 * 60_000,
   concurrency = 8,
   maxUsers = 10_000,
   now = Date.now,
 }: MembershipOptions) {
-  const cache = new Map<number, { until: number; roles: Promise<Roles> }>();
-
   async function lookup(user: { gitlabId: number }): Promise<Roles> {
-    const links = await gitlabLinks(db);
+    const links = await gitlabLinks(db, baseUrl);
     const orgRoles: Record<string, OrgRole> = {};
     const projectRoles: Record<string, ProjectRole> = {};
     const level = (owner: Parameters<Gitlab["members"]["accessLevel"]>[0]) =>
@@ -65,11 +66,8 @@ export function gitlabRoles({
     return { orgRoles, projectRoles };
   }
 
-  return (user: { gitlabId: number }): Promise<Roles> => {
-    const at = now();
-    const hit = cache.get(user.gitlabId);
-    if (hit && hit.until > at) return hit.roles;
-    const roles = lookup(user).catch((error: unknown) => {
+  const cached = rolesCache<number>({ ttlMs, maxUsers, now }, (gitlabId) =>
+    lookup({ gitlabId }).catch((error: unknown) => {
       if (!(error instanceof GitlabError)) throw error;
       // The message names the method, path and status; never a token.
       logger?.[error.kind === "unauthorized" || error.kind === "forbidden" ? "error" : "warn"](
@@ -81,24 +79,43 @@ export function gitlabRoles({
         503,
         "GitLab membership could not be checked",
       );
-    });
-    cache.delete(user.gitlabId); // re-inserted last: Map order is age
-    for (const [key, entry] of cache) {
+    }),
+  );
+  return (user: { gitlabId: number }): Promise<Roles> => cached(user.gitlabId);
+}
+
+/**
+ * Keeps each key's answer for `ttlMs`, and one lookup in flight per key. The oldest keys go first when more than
+ * `maxUsers` are kept. A failed lookup is forgotten, so the next request asks again; an expired answer is never
+ * served in place of a new one.
+ */
+export function rolesCache<K>(
+  { ttlMs, maxUsers, now }: { ttlMs: number; maxUsers: number; now: () => number },
+  load: (key: K) => Promise<Roles>,
+): (key: K) => Promise<Roles> {
+  const cache = new Map<K, { until: number; roles: Promise<Roles> }>();
+  return (key) => {
+    const at = now();
+    const hit = cache.get(key);
+    if (hit && hit.until > at) return hit.roles;
+    const roles = load(key);
+    cache.delete(key); // re-inserted last: Map order is age
+    for (const [oldKey, entry] of cache) {
       if (cache.size < maxUsers && entry.until > at) break;
-      cache.delete(key);
+      cache.delete(oldKey);
     }
     const entry = { until: at + ttlMs, roles };
-    cache.set(user.gitlabId, entry);
+    cache.set(key, entry);
     // A failure is forgotten, so the next request asks again.
     roles.catch(() => {
-      if (cache.get(user.gitlabId) === entry) cache.delete(user.gitlabId);
+      if (cache.get(key) === entry) cache.delete(key);
     });
     return roles;
   };
 }
 
 /** Runs the tasks, `limit` at a time; after the first failure no new task starts. */
-async function inParallel(limit: number, tasks: readonly (() => Promise<void>)[]) {
+export async function inParallel(limit: number, tasks: readonly (() => Promise<void>)[]) {
   let next = 0;
   let failed = false;
   const worker = async () => {

@@ -60,18 +60,43 @@ export function useOrgState(): OrgState {
   return state;
 }
 
-/** The part of a page that is about an organization: waits for the list, and says so when the user has none. */
-export function RequireOrg({ children }: { children: (org: Org) => ReactNode }) {
+/**
+ * The part of a page that is about an organization: waits for the list, and says so when the user has none.
+ * `head` is the page's header for a page that draws it itself once it has an organization: shown above these messages.
+ */
+export function RequireOrg({
+  head,
+  children,
+}: {
+  head?: ReactNode;
+  children: (org: Org) => ReactNode;
+}) {
   const { orgs, org } = useOrgState();
-  if (orgs.isPending) return <Loading what="Loading organizations" />;
-  if (orgs.error) return <ErrorPanel error={orgs.error} retry={() => void orgs.refetch()} />;
+  if (orgs.isPending)
+    return (
+      <>
+        {head}
+        <Loading what="Loading organizations" />
+      </>
+    );
+  if (orgs.error) {
+    return (
+      <>
+        {head}
+        <ErrorPanel error={orgs.error} retry={() => void orgs.refetch()} />
+      </>
+    );
+  }
   if (!org) {
     return (
-      <p>
-        You are not in an organization here. An organization is linked to a GitLab group, and its
-        members get their roles from that group: ask a platform admin to create one for your group,
-        then sign in again.
-      </p>
+      <>
+        {head}
+        <p>
+          You are not in an organization here. An organization is linked to a GitLab group, and its
+          members get their roles from that group: ask a platform admin to create one for your
+          group, then sign in again.
+        </p>
+      </>
     );
   }
   return children(org);

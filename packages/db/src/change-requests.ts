@@ -1,6 +1,7 @@
 import {
   type ApplyKind,
   type ApplySubject,
+  address,
   type BulkOp,
   type ChangeRequestStatus,
   type DiffEntry,
@@ -8,6 +9,7 @@ import {
 } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import { and, desc, eq, getTableColumns, inArray, lt, sql } from "drizzle-orm";
+import { FolderNotFoundError } from "./folders";
 import { type Executor, lockEnvironment, type Page } from "./repo";
 import { changeRequests, environments } from "./schema";
 import { type Bulked, bulkLevel, bulkPlan, openPending, sealPending } from "./variables";
@@ -100,6 +102,34 @@ export async function createApplyRequest(
       diff: input.diff,
       subjectId: runId,
       subject: rest,
+      authorKind: input.author.kind,
+      authorId: input.author.id,
+      authorRef: input.author.ref,
+      expiresAt: input.expiresAt,
+    })
+    .returning(visible);
+  if (!row) throw new Error("insert returned no row");
+  return row as ChangeRequest;
+}
+
+/**
+ * Stores a request for leave to deploy `sha` to the environment (DEP-16), open until `expiresAt`.
+ * Nothing is sealed and there is no run: `subject` is the commit. The caller has checked that the
+ * environment is protected and that the build is one that has succeeded.
+ */
+export async function createDeployRequest(
+  db: Executor,
+  input: At & { sha: string; diff: DiffEntry[]; author: Person; expiresAt: Date },
+): Promise<ChangeRequest> {
+  const [row] = await db
+    .insert(changeRequests)
+    .values({
+      organizationId: input.organizationId,
+      projectId: input.projectId,
+      environmentId: input.environmentId,
+      kind: "deploy",
+      diff: input.diff,
+      subject: { sha: input.sha },
       authorKind: input.author.kind,
       authorId: input.author.id,
       authorRef: input.author.ref,
@@ -221,20 +251,34 @@ export async function approveChangeRequest(
     projectId: at.projectId,
     environmentId: at.environmentId,
   };
-  const deleting = new Set(ops.flatMap((o) => (o.op === "delete" ? [o.key] : [])));
+  const addressOf = (c: { folder?: string; key: string }) => address(c.folder, c.key);
+  const deleting = new Set(ops.flatMap((o) => (o.op === "delete" ? [addressOf(o)] : [])));
   // shortcut: bulkLevel plans again (every secret of the level is opened twice), when approvals are slow enough to matter make it report what it refused
   const wrong = (await bulkPlan(tx, keys, scope, ops)).filter(
     (c) =>
       c.change === "conflict" ||
       c.change === "kind_mismatch" ||
-      (c.change === "missing" && !deleting.has(c.key)),
+      (c.change === "missing" && !deleting.has(addressOf(c))),
   );
-  if (wrong.length > 0) return { result: "conflict", keys: wrong.map((c) => c.key) };
+  // Keys are named as an address when they are not at the root, as in a bulk edit (a plan's change has a folder only then).
+  const named = (c: { folder?: string; key: string }) => (c.folder ? addressOf(c) : c.key);
+  if (wrong.length > 0) return { result: "conflict", keys: wrong.map(named) };
 
-  const changes = await bulkLevel(tx, keys, scope, ops, {
-    actor: { kind: approver.kind, id: approver.id },
-    reason: `change request ${id}`,
-  });
+  // A folder deleted since the proposal: bulkLevel's savepoint undoes what it did, and the sets
+  // that were headed there are the conflict.
+  let changes: Bulked[];
+  try {
+    changes = await bulkLevel(tx, keys, scope, ops, {
+      actor: { kind: approver.kind, id: approver.id },
+      reason: `change request ${id}`,
+    });
+  } catch (e) {
+    if (!(e instanceof FolderNotFoundError)) throw e;
+    return {
+      result: "conflict",
+      keys: ops.filter((o) => o.op === "set" && o.folder === e.path).map(named),
+    };
+  }
   const [applied] = await tx
     .update(changeRequests)
     .set({
@@ -341,7 +385,44 @@ export async function consumeApproval(
   return used as ChangeRequest;
 }
 
-// shortcut: only the oldest 20 approvals of a run are looked at; a run with more than that approved and unused wants some rejected
+/**
+ * Uses up the approval to deploy `sha` to this environment: an approved, unexpired `deploy` request for exactly
+ * that commit, the oldest first. Undefined when there is none. It is spent inside the caller's transaction, so a
+ * start that fails rolls it back and leaves it for the next try; two starts at once find it for one of them (the
+ * rows are locked, and the other sees it taken). The commit is compared here, not in SQL: a jsonb column written
+ * through the driver is a string to the database.
+ */
+export async function consumeDeployApproval(
+  tx: Executor,
+  at: At,
+  sha: string,
+): Promise<ChangeRequest | undefined> {
+  const candidates = await tx
+    .select(visible)
+    .from(changeRequests)
+    .where(
+      and(
+        inEnv(at),
+        eq(changeRequests.kind, "deploy"),
+        eq(changeRequests.status, "approved"),
+        sql`${changeRequests.expiresAt} > now()`,
+      ),
+    )
+    .orderBy(changeRequests.id)
+    .limit(APPROVALS_LOOKED_AT)
+    .for("update");
+  const found = (candidates as ChangeRequest[]).find((c) => c.subject?.sha === sha);
+  if (!found) return undefined;
+  const [used] = await tx
+    .update(changeRequests)
+    .set({ status: "applied", appliedAt: sql`now()` })
+    .where(eq(changeRequests.id, found.id))
+    .returning(visible);
+  if (!used) throw new Error("change request vanished while locked");
+  return used as ChangeRequest;
+}
+
+// shortcut: only the oldest 20 approvals of a run (or of an environment, for a deploy) are looked at; more than that approved and unused wants some rejected
 const APPROVALS_LOOKED_AT = 20;
 
 /** The slugs among `slugs` that are environments of the project and protected. */

@@ -4,7 +4,12 @@ import { fileURLToPath } from "node:url";
 import type { BulkOp } from "@orch/core";
 import { CryptoError, envKeyProvider, type KeyProvider } from "@orch/crypto";
 import { sql } from "drizzle-orm";
-import { connectionKeyContext, createConnection, openConnection } from "./connections";
+import {
+  connectionKeyContext,
+  createConnection,
+  openConnection,
+  openWebhookSecret,
+} from "./connections";
 import { createSink, openSink } from "./notifications";
 import { createEnvironment, createOrganization, createProject } from "./repo";
 import { KEY_TABLES, keyUsage, rewrapAll, stillOnOldKeys } from "./rewrap";
@@ -30,6 +35,7 @@ const fresh = async () => {
 const VALUE = "project-value-SECRET-1";
 const ORG_VALUE = "org-value-SECRET-2";
 const TOKEN = "glpat-TOKEN-SECRET-3";
+const HOOK = "whsec-HOOK-SECRET-3";
 const SINK = "https://hooks.example.com/SECRET-4";
 const PENDING = "pending-value-SECRET-5";
 const IDP = "idp-client-SECRET-6";
@@ -71,6 +77,7 @@ async function seed(t: TestDb, keys: KeyProvider) {
     type: "gitlab",
     name: "c",
     token: TOKEN,
+    webhookSecret: HOOK,
   });
   const sink = await createSink(t.db, keys, {
     organizationId,
@@ -119,6 +126,7 @@ async function readAll(t: TestDb, keys: KeyProvider, w: World) {
     org: (await revealVariable(t.db, keys, { organizationId: w.organizationId }, w.orgVariable.id))
       ?.value,
     connection: (await openConnection(t.db, keys, w.organizationId, w.connection.id))?.token,
+    hook: await openWebhookSecret(t.db, keys, w.organizationId, w.connection.id),
     sink: (await openSink(t.db, keys, w.organizationId, w.sink.id))?.secret,
     idp: await openSsoSecret(t.db, keys, w.idp.id),
     pending: await openPending(t.db, keys, w.at, w.pending),
@@ -140,6 +148,7 @@ const EXPECTED = {
   project: VALUE,
   org: ORG_VALUE,
   connection: TOKEN,
+  hook: HOOK,
   sink: SINK,
   idp: IDP,
   pending: OPS,

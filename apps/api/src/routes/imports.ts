@@ -1,11 +1,12 @@
 import { DomainError, detectProjectTypes, type Logger } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import { importProject, linkedProjects, pgConstraint } from "@orch/db";
-import { createGitlab, GitlabError, type GitlabErrorKind, type Project } from "@orch/gitlab";
+import type { Forge } from "@orch/forge";
+import { GitlabError, type GitlabErrorKind, type Project } from "@orch/gitlab";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { auditPlugin } from "../audit";
-import { openGitlabConnection, WHY } from "../connections";
+import { forgeFor, GITHUB_WHY, openAnyConnection, WHY } from "../connections";
 import { guardPlugin } from "../guard";
 import { projectDto, projectSchema } from "./projects";
 import {
@@ -71,21 +72,24 @@ const importBody = z.strictObject({
 });
 const gitlabDown = { ...readErrors, 502: problemSchema } as const;
 
-const FAILED = {
-  not_found: "GitLab has no such project, or the token cannot see it.",
-  forbidden: "GitLab refused the token for this project.",
-  unsupported: "The project's path or default branch is not one this platform accepts.",
-  name_taken: "Another project of this organization already has this name.",
-} as const;
-type Failed = keyof typeof FAILED;
+type Failed = "not_found" | "forbidden" | "unsupported" | "name_taken";
 
-/** What GitLab said that is about one project, not about the connection. */
+const SYSTEM = { gitlab: "GitLab", github: "GitHub" } as const;
+const failedText = (forge: Forge, reason: Failed) =>
+  ({
+    not_found: `${SYSTEM[forge.kind]} has no such project, or the token cannot see it.`,
+    forbidden: `${SYSTEM[forge.kind]} refused the token for this project.`,
+    unsupported: "The project's path or default branch is not one this platform accepts.",
+    name_taken: "Another project of this organization already has this name.",
+  })[reason];
+
+/** What the forge said that is about one project, not about the connection. */
 const aboutProject = (kind: GitlabErrorKind): Failed | undefined =>
   kind === "not_found" ? "not_found" : kind === "forbidden" ? "forbidden" : undefined;
 
-const unreachable = (e: unknown) =>
+const unreachable = (e: unknown, forge: Forge) =>
   e instanceof GitlabError && !aboutProject(e.kind)
-    ? new DomainError("gitlab_failed", 502, WHY[e.kind])
+    ? new DomainError("gitlab_failed", 502, (forge.kind === "github" ? GITHUB_WHY : WHY)[e.kind])
     : e;
 
 type Detected = Awaited<ReturnType<typeof detect>>;
@@ -96,7 +100,7 @@ type Read = { project: Project; scan: Detected } | { failed: Failed };
  * repository. The top level is read first, so the markers that matter most are found however big
  * the rest is; `truncated` says a scan hit the entry cap and the tags may be incomplete.
  */
-async function detect(api: ReturnType<typeof createGitlab>, project: Project) {
+async function detect(api: Pick<Forge, "repository">, project: Project) {
   const ref = project.defaultBranch;
   const paths = new Set<string>();
   let truncated = false;
@@ -121,7 +125,8 @@ async function detect(api: ReturnType<typeof createGitlab>, project: Project) {
 }
 
 /**
- * Discovery and import of GitLab projects through a connection (GL-7). The connection's token is
+ * Discovery and import of projects through a connection (GL-7), a GitLab or a GitHub one (FRG-15; the routes and the
+ * body keep their GitLab names, and a GitHub repository's id is the number). The connection's token is
  * opened for the call and never leaves it; only paths, ids and tags come back. Re-importing a
  * project refreshes it. Org admins only.
  */
@@ -137,13 +142,13 @@ export const importRoutes = ({
     .get(
       "/gitlab-projects",
       async ({ params: { orgId, connectionId }, query, set }) => {
-        const { baseUrl, token } = await openGitlabConnection(
+        const opened = await openAnyConnection(
           { db, keys, logger },
           orgId,
           connectionId,
           set.headers["x-request-id"],
         );
-        const api = createGitlab({ baseUrl, auth: { type: "private-token", token } });
+        const api = forgeFor(opened.connection, opened.token);
         return paged(query, {
           key: z.tuple([gitlabId]),
           keyOf: (p: Found) => [p.gitlabProjectId],
@@ -160,7 +165,7 @@ export const importRoutes = ({
                 if (found.length >= limit) break;
               }
             } catch (e) {
-              throw unreachable(e);
+              throw unreachable(e, api);
             }
             const linked = new Map(
               (
@@ -168,6 +173,7 @@ export const importRoutes = ({
                   db,
                   orgId,
                   found.map((p) => p.id),
+                  connectionId,
                 )
               ).map((l) => [l.gitlabProjectId, l.id]),
             );
@@ -196,15 +202,13 @@ export const importRoutes = ({
     .post(
       "/imports",
       async ({ params: { orgId, connectionId }, body, audit, set }) => {
-        const { connection, baseUrl, token } = await openGitlabConnection(
+        const { connection, token } = await openAnyConnection(
           { db, keys, logger },
           orgId,
           connectionId,
           set.headers["x-request-id"],
         );
-        const api = createGitlab({
-          baseUrl,
-          auth: { type: "private-token", token },
+        const api = forgeFor(connection, token, {
           timeoutMs: 15_000,
           maxRetries: 1,
           maxRetryDelayMs: 2_000,
@@ -225,7 +229,7 @@ export const importRoutes = ({
             );
           } catch (e) {
             const failed = e instanceof GitlabError ? aboutProject(e.kind) : undefined;
-            if (!failed) throw unreachable(e);
+            if (!failed) throw unreachable(e, api);
             read.set(id, { failed });
           }
         };
@@ -242,7 +246,12 @@ export const importRoutes = ({
           };
           const fail = (id: number, reason: Failed) => {
             touched.failed.push(id);
-            out.push({ gitlabProjectId: id, outcome: "failed", reason, message: FAILED[reason] });
+            out.push({
+              gitlabProjectId: id,
+              outcome: "failed",
+              reason,
+              message: failedText(api, reason),
+            });
           };
           for (const id of ids) {
             const r = read.get(id);
@@ -255,6 +264,7 @@ export const importRoutes = ({
               .transaction((sp) =>
                 importProject(sp, {
                   organizationId: orgId,
+                  connectionId,
                   gitlabProjectId: id,
                   name: r.project.path,
                   defaultBranch: r.project.defaultBranch,
@@ -274,7 +284,7 @@ export const importRoutes = ({
             out.push({
               gitlabProjectId: id,
               outcome: kind,
-              project: projectDto(done.project),
+              project: projectDto(done.project, api.kind),
               truncated: r.scan.truncated,
             });
           }

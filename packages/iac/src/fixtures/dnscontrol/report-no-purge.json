@@ -1,0 +1,12 @@
+[
+  {
+    "domain": "example.test",
+    "corrections": 0,
+    "provider": "bind"
+  },
+  {
+    "domain": "example.test",
+    "corrections": 0,
+    "registrar": "none"
+  }
+]

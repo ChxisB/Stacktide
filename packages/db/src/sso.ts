@@ -250,6 +250,62 @@ export async function signInSso(
   return signInSso(db, providerId, who);
 }
 
+/**
+ * The person behind a GitHub account, made on a first sign-in (no GitLab id) and refreshed on later ones (FRG-25).
+ * The match is the identity `(github, the GitHub user id)` and nothing else: never the login, which GitHub lets a
+ * person change and hand to someone else, nor an email. Run it in a transaction, like `signInSso`.
+ */
+export async function signInGithub(
+  db: Executor,
+  who: { githubId: number; login: string; name: string },
+): Promise<User> {
+  const subject = String(who.githubId);
+  const [found] = await db
+    .select({ userId: userIdentities.userId })
+    .from(userIdentities)
+    .where(and(eq(userIdentities.provider, "github"), eq(userIdentities.subject, subject)));
+  if (found) {
+    // A person who also signs in with GitLab keeps the username and name GitLab gave, as with `signInSso`.
+    const [hasGitlab] = await db
+      .select({ id: userIdentities.id })
+      .from(userIdentities)
+      .where(and(eq(userIdentities.userId, found.userId), eq(userIdentities.provider, "gitlab")));
+    const [user] = await db
+      .update(users)
+      .set({
+        ...(!hasGitlab && { username: who.login, name: who.name }),
+        lastLoginAt: sql`now()`,
+      })
+      .where(eq(users.id, found.userId))
+      .returning();
+    if (!user) throw new Error("update returned no row");
+    return user;
+  }
+  const [created] = await db
+    .insert(users)
+    .values({ username: who.login, name: who.name })
+    .returning();
+  if (!created) throw new Error("insert returned no row");
+  const linked = await db
+    .insert(userIdentities)
+    .values({ userId: created.id, provider: "github", subject, ssoProviderId: null })
+    .onConflictDoNothing()
+    .returning({ id: userIdentities.id });
+  if (linked.length > 0) return created;
+  // A sign-in at the same moment made the person first: use theirs.
+  await db.delete(users).where(eq(users.id, created.id));
+  return signInGithub(db, who);
+}
+
+/** The GitHub user id of a person who signs in with GitHub, or nothing: the id their project roles are read for. */
+export async function githubIdOf(db: Executor, userId: string): Promise<number | undefined> {
+  const [row] = await db
+    .select({ subject: userIdentities.subject })
+    .from(userIdentities)
+    .where(and(eq(userIdentities.userId, userId), eq(userIdentities.provider, "github")));
+  return row ? Number(row.subject) : undefined;
+}
+
 export type LinkResult = "linked" | "already" | "taken";
 
 /**
@@ -290,8 +346,8 @@ export function listOwnIdentities(db: Executor, userId: string) {
     .select({
       id: userIdentities.id,
       kind: sql<
-        "gitlab" | "sso"
-      >`case when ${userIdentities.ssoProviderId} is null then 'gitlab' else 'sso' end`,
+        "gitlab" | "github" | "sso"
+      >`case when ${userIdentities.ssoProviderId} is not null then 'sso' when ${userIdentities.provider} = 'github' then 'github' else 'gitlab' end`,
       organizationSlug: organizations.slug,
       organizationName: organizations.name,
       email: userIdentities.email,
@@ -308,11 +364,13 @@ export type Unlinked =
   | { status: "unlinked"; ssoProviderId: string; organizationId: string }
   | { status: "not_found" }
   | { status: "gitlab" }
+  | { status: "github" }
   | { status: "last" };
 
 /**
  * A person gives up one of their SSO identities, and the role it gave goes with it. Not found: no such identity, or
- * it is another person's. Refused: the GitLab one (it is the account's own id) and the last way to sign in. Run it in
+ * it is another person's. Refused: the GitLab and the GitHub one (each is the account's own id) and the last way to
+ * sign in. Run it in
  * a transaction: the person's row is locked, so two given up at once cannot both see another one left.
  */
 export async function unlinkIdentity(
@@ -324,6 +382,7 @@ export async function unlinkIdentity(
   const own = await db
     .select({
       id: userIdentities.id,
+      provider: userIdentities.provider,
       ssoProviderId: userIdentities.ssoProviderId,
       organizationId: ssoProviders.organizationId,
     })
@@ -332,6 +391,8 @@ export async function unlinkIdentity(
     .where(eq(userIdentities.userId, userId));
   const mine = own.find((i) => i.id === identityId);
   if (!mine) return { status: "not_found" };
+  // shortcut: a GitHub identity is not removable, like the GitLab one; a person who wants it gone has nothing to do it with. Upgrade when a person can hold both and drop one.
+  if (mine.provider === "github") return { status: "github" };
   if (!mine.ssoProviderId || !mine.organizationId) return { status: "gitlab" };
   if (own.length < 2) return { status: "last" };
   await db.delete(userIdentities).where(eq(userIdentities.id, mine.id));

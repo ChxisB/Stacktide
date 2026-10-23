@@ -1,6 +1,6 @@
 import type { Logger } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
-import type { Gitlab } from "@orch/gitlab";
+import type { Forge } from "@orch/forge";
 import type { Template } from "@orch/pipelines";
 import type { GuardrailConfig } from "@orch/sync";
 import { Elysia } from "elysia";
@@ -16,7 +16,7 @@ import {
   listFleet,
   upgradeFleet,
 } from "../pipeline-fleet";
-import { catalogOf, gitlabFor, recordApplied } from "./pipeline";
+import { catalogOf, forgeOf, recordApplied } from "./pipeline";
 import { type RouteDeps, readErrors, writeErrors } from "./shared";
 
 const params = z.object({ orgId: z.uuid() });
@@ -88,14 +88,14 @@ export const pipelineFleetRoutes = ({
     record: FleetDeps["record"],
   ): Promise<FleetDeps> => {
     // one client per connection for the whole call: the token is opened once, and a connection that cannot be opened fails each of its projects at once
-    const clients = new Map<string, Promise<Gitlab>>();
+    const clients = new Map<string, Promise<Forge>>();
     return {
       db,
       catalog: await templates(),
-      gitlab: (connectionId) => {
+      forge: (connectionId) => {
         const open =
           clients.get(connectionId) ??
-          gitlabFor({ db, keys, logger }, orgId, connectionId, requestId);
+          forgeOf({ db, keys, logger }, orgId, connectionId, requestId);
         clients.set(connectionId, open);
         return open;
       },

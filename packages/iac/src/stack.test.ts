@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_MANIFEST_BYTES, parseManifest } from "./stack";
+import { MAX_MANIFEST_BYTES, MAX_ZONE, parseManifest, ZONE } from "./stack";
 
 const ok = (text: string) => {
   const r = parseManifest(text);
@@ -84,7 +84,44 @@ describe("stack.yml", () => {
     expect(bad("name: a\ntool: tofu\ndepends_on: [B]\n")[0]).toContain("depends_on");
   });
 
-  test("the tool is one of three, and required", () => {
+  describe("dnscontrol", () => {
+    test("a zone is a stack: it needs a version, and keeps unmanaged records unless it says prune", () => {
+      expect(ok("name: zone\ntool: dnscontrol\nversion: 5.5.0\n")).toEqual({
+        name: "zone",
+        tool: "dnscontrol",
+        version: "5.5.0",
+        tags: [],
+        depends_on: [],
+        watch: [],
+        apply_on: "command",
+      });
+      expect(
+        ok("name: z\ntool: dnscontrol\nversion: 5.5.0\nenvironment: dns\ndns:\n  prune: true\n"),
+      ).toMatchObject({ environment: "dns", dns: { prune: true } });
+      expect(ok("name: z\ntool: dnscontrol\nversion: 5.5.0\ndns: {}\n").dns).toEqual({});
+      expect(bad("name: z\ntool: dnscontrol\n")[0]).toContain("version");
+    });
+
+    test("there is no Terraform state to keep: state is refused, whatever it says", () => {
+      for (const s of ["gitlab", "orch"]) {
+        expect(bad(`name: z\ntool: dnscontrol\nversion: 5.5.0\nstate: ${s}\n`)[0]).toContain(
+          "state",
+        );
+      }
+    });
+
+    test("dns is strict, a boolean, and only for dnscontrol", () => {
+      const zone = "name: z\ntool: dnscontrol\nversion: 5.5.0\n";
+      expect(bad(`${zone}dns: { pune: true }\n`)[0]).toContain("pune");
+      for (const v of ['"yes"', "1", "null"]) {
+        expect(bad(`${zone}dns: { prune: ${v} }\n`)[0], v).toContain("prune");
+      }
+      expect(bad(`${zone}dns: [prune]\n`)[0]).toContain("dns");
+      expect(bad("name: a\ntool: tofu\ndns: { prune: true }\n")[0]).toContain("dns");
+    });
+  });
+
+  test("the tool is one of four, and required", () => {
     expect(bad("name: a\ntool: pulumi\n")[0]).toContain("tool");
     expect(bad("name: a\n")[0]).toContain("tool");
     expect(bad("tool: tofu\n")[0]).toContain("name");
@@ -267,5 +304,42 @@ describe("stack.yml", () => {
 
   test("the size limit is a few KiB beyond a real file", () => {
     expect(MAX_MANIFEST_BYTES).toBe(65536);
+  });
+});
+
+describe("ZONE", () => {
+  const label = (n: number) => "a".repeat(n);
+  test("accepts a name of lowercase labels, punycode included", () => {
+    for (const z of [
+      "example.com",
+      "sub.example.co.uk",
+      "xn--bcher-kva.example",
+      "10.in-addr.arpa",
+      "a-b.c1.io",
+      `${label(63)}.com`,
+    ])
+      expect(ZONE.test(z), z).toBe(true);
+  });
+  test("refuses what a claim could never be", () => {
+    for (const z of [
+      "",
+      "com", // one label
+      "Example.com", // not lowercase
+      "*.example.com", // wildcard
+      "example.com.", // trailing dot
+      ".example.com",
+      "a..com",
+      "-a.com",
+      "a-.com",
+      "a_b.com",
+      "bücher.example", // not punycode
+      "exa mple.com",
+      "example.com\n",
+      `${label(64)}.com`,
+    ])
+      expect(ZONE.test(z), JSON.stringify(z)).toBe(false);
+  });
+  test("a name is at most 253 characters, which the pattern leaves to MAX_ZONE", () => {
+    expect(MAX_ZONE).toBe(253);
   });
 });

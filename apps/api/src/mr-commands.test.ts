@@ -644,3 +644,13 @@ describe("notes that are not commands", () => {
     expect(lines.join("\n")).not.toContain("CANARY-NOTE-TEXT");
   });
 });
+
+describe("where the roles source is not set", () => {
+  test("a GitLab note is ignored: nothing is planned or said", async () => {
+    const w = await world();
+    const bare = mrCommandHandler({ db: t.db, gitlab: async () => client(), config });
+    await bare(w.note("orch plan", DEV));
+    expect(await w.runs()).toBe(0);
+    expect(w.replies()).toEqual([]);
+  });
+});

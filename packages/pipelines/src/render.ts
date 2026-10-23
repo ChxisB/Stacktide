@@ -4,7 +4,7 @@ import { parseAllDocuments, stringify } from "yaml";
 import { z } from "zod";
 import type { Template } from "./loader";
 import { type Manifest, paramsSchema } from "./manifest";
-import { isMap, PLACEHOLDER, parsePipeline, type Tree } from "./pipeline";
+import { foreignKeys, isMap, PLACEHOLDER, parsePipeline, type Tree } from "./pipeline";
 
 /** Why a pipeline could not be rendered, one line each. They name parameters, never what was given. */
 export class RenderError extends Error {
@@ -74,12 +74,12 @@ const WRITE = { version: "1.1", lineWidth: 0, indent: 2, aliasDuplicateObjects: 
 /** GitLab's own template for the secret detection job (SCAN-5): included from GitLab, so nothing of it is copied into a repository. */
 export const SECRET_DETECTION_TEMPLATE = "Jobs/Secret-Detection.gitlab-ci.yml";
 
-/** The template's pipeline as a tree; what is wrong with it is a `RenderError`. */
-function treeOf(template: Template): Tree {
+/** The template's pipeline (or the `workflow` file's text, when that is given) as a tree; what is wrong with it is a `RenderError`. */
+function treeOf(template: Template, text = template.pipeline, file = "pipeline.yml"): Tree {
   try {
-    return parsePipeline(template.pipeline);
+    return parsePipeline(text);
   } catch (e) {
-    throw new RenderError([`pipeline.yml: ${e instanceof Error ? e.message : "cannot be read"}`]);
+    throw new RenderError([`${file}: ${e instanceof Error ? e.message : "cannot be read"}`]);
   }
 }
 
@@ -137,6 +137,11 @@ function resolve(template: Template, layers: Layer[]) {
   return { params: checked.data, clean, secretDetection: secretDetection === true };
 }
 
+/** Throws a `RenderError` for a layer the template refuses (an unknown or invalid parameter, a bad override); renders nothing. Cheap, so a caller can refuse before it reaches anywhere. */
+export function checkLayers(template: Template, layers: Layer[] = []): void {
+  resolve(template, layers);
+}
+
 /** Every document of `text`, read as YAML 1.1 and 1.2, must be the one that was written; otherwise a reader would see another pipeline. */
 function readBack(text: string, ...written: unknown[]) {
   for (const version of ["1.1", "1.2"] as const) {
@@ -169,6 +174,39 @@ export function render(template: Template, layers: Layer[] = []): string {
   for (const layer of clean) if (layer.overrides) result = merge(result, layer.overrides);
 
   const { name, version } = template.manifest;
+  const text = `${GENERATED} ${name}@${version}. Change the pipeline there: edits here are overwritten.\n${stringify(result, WRITE)}`;
+  readBack(text, result);
+  return text;
+}
+
+/**
+ * Renders a template as the text of a GitHub Actions workflow (FRG-16): the template's `workflow.yml`, filled and
+ * overridden exactly as `render` does its pipeline, and written the same way. Only GitHub's own keys may be in it,
+ * the template's and the overrides' alike: an `include:` or a `stages:` would be a file GitHub refuses, and is
+ * refused here instead. A template with no `workflow.yml` has no form for GitHub and is refused by name. Secret
+ * detection is GitLab's analyzer and is refused too: dropping it silently would say a scan runs that does not.
+ */
+export function renderWorkflow(template: Template, layers: Layer[] = []): string {
+  const { name, version } = template.manifest;
+  if (template.workflow === undefined)
+    throw new RenderError([`${name}@${version} has no GitHub Actions form yet`]);
+  const { params, clean, secretDetection } = resolve(template, layers);
+  if (secretDetection)
+    throw new RenderError([
+      "param secretDetection: is GitLab's analyzer, which a workflow does not run",
+    ]);
+  const missing = new Set<string>();
+  let result = fill(
+    treeOf(template, template.workflow, "workflow.yml"),
+    params as Record<string, Scalar | undefined>,
+    missing,
+  );
+  if (missing.size > 0)
+    throw new RenderError([...missing].map((n) => `param ${n}: has no value and no default`));
+  for (const layer of clean) if (layer.overrides) result = merge(result, layer.overrides);
+  const foreign = isMap(result) ? foreignKeys(result) : undefined;
+  if (foreign) throw new RenderError([foreign]);
+
   const text = `${GENERATED} ${name}@${version}. Change the pipeline there: edits here are overwritten.\n${stringify(result, WRITE)}`;
   readBack(text, result);
   return text;

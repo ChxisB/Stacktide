@@ -5,8 +5,10 @@ import { eq, sql } from "drizzle-orm";
 import {
   approveChangeRequest,
   consumeApproval,
+  consumeDeployApproval,
   createApplyRequest,
   createChangeRequest,
+  createDeployRequest,
   expireChangeRequests,
   getChangeRequest,
   listChangeRequests,
@@ -1094,5 +1096,160 @@ describe("approvals to apply (GOV-3)", () => {
     const closed = await t.db.transaction((tx) => expireChangeRequests(tx, 100));
     expect(closed.map((r) => r.id)).toContain(cr.id);
     expect((await rowOf(cr.id))?.status).toBe("expired");
+  });
+});
+
+describe("approvals to deploy (DEP-16)", () => {
+  const SHA = "a".repeat(40);
+  const ask = (w: World, over: { sha?: string; expiresAt?: Date; by?: Person } = {}) =>
+    createDeployRequest(t.db, {
+      ...w.at,
+      sha: over.sha ?? SHA,
+      diff: [{ action: "apply", key: "prod" }],
+      author: over.by ?? author,
+      expiresAt: over.expiresAt ?? new Date(Date.now() + 7 * DAY),
+    });
+
+  test("is stored open with no sealed edits and no run, and shows the commit it is for", async () => {
+    const w = await world();
+    const cr = await ask(w);
+    expect(cr).toMatchObject({
+      status: "open",
+      kind: "deploy",
+      subjectId: null,
+      subject: { sha: SHA },
+      diff: [{ action: "apply", key: "prod" }],
+      authorRef: "user:author",
+    });
+    expect((await rowOf(cr.id))?.opsEnc).toBeNull();
+    expect(await getChangeRequest(t.db, w.at, cr.id)).toMatchObject({ kind: "deploy" });
+  });
+
+  test("is approved by someone else, stays approved, and a rejection revokes it", async () => {
+    const w = await world();
+    const cr = await ask(w);
+    expect(await approve(w, cr.id, author)).toEqual({ result: "self" });
+    const out = await approve(w, cr.id);
+    if (out.result !== "approved") throw new Error(`not approved: ${out.result}`);
+    expect(out.request).toMatchObject({ status: "approved", decidedById: "approver" });
+    const revoked = await t.db.transaction((tx) =>
+      rejectChangeRequest(tx, w.at, cr.id, person("third")),
+    );
+    expect(revoked).toMatchObject({ result: "rejected", request: { status: "rejected" } });
+  });
+
+  test("the expiry job closes one that was never used, approved or not", async () => {
+    const w = await world();
+    const open = await ask(w, { expiresAt: new Date(Date.now() + 50) });
+    const approved = await ask(w, { expiresAt: new Date(Date.now() + 50) });
+    await approve(w, approved.id);
+    await Bun.sleep(80);
+    const closed = await t.db.transaction((tx) => expireChangeRequests(tx, 100));
+    expect(closed.map((r) => r.id)).toEqual(expect.arrayContaining([open.id, approved.id]));
+  });
+
+  describe("below the application", () => {
+    const insert = async (w: World, over: { ops?: boolean; subject?: boolean }) => {
+      try {
+        await t.db.execute(sql`
+          insert into change_requests (organization_id, project_id, environment_id, kind, status, diff, ops_enc, subject_id, subject, author_kind, author_id, author_ref, expires_at)
+          values (${w.org.id}, ${w.project.id}, ${w.env.id}, 'deploy', 'open', '[]'::jsonb,
+            ${over.ops ? sql`'\\x00'::bytea` : sql`null`}, ${over.subject ? sql`${crypto.randomUUID()}::uuid` : sql`null`},
+            ${sql.raw(`'${JSON.stringify({ sha: SHA })}'::jsonb`)}, 'user', 'a', 'user:a', now())`);
+        return undefined;
+      } catch (e) {
+        return pgCode(e);
+      }
+    };
+
+    test("a deploy request has no run and no sealed edits", async () => {
+      const w = await world();
+      expect(await insert(w, {})).toBeUndefined();
+      expect(await insert(w, { subject: true })).toBe("23514");
+      expect(await insert(w, { ops: true })).toBe("23514");
+    });
+
+    test("the commit it was approved for cannot be edited", async () => {
+      const w = await world();
+      const cr = await ask(w);
+      let code: string | undefined;
+      try {
+        await t.db.execute(
+          sql`update change_requests set subject = ${sql.raw(`'${JSON.stringify({ sha: "b".repeat(40) })}'::jsonb`)} where id = ${cr.id}`,
+        );
+      } catch (e) {
+        code = pgCode(e);
+      }
+      expect(code).toBe("55000");
+    });
+  });
+});
+
+describe("taking an approval to deploy (DEP-17)", () => {
+  const SHA = "a".repeat(40);
+  const ask = (w: World, over: { sha?: string; environmentId?: string; expiresAt?: Date } = {}) =>
+    createDeployRequest(t.db, {
+      ...w.at,
+      ...(over.environmentId ? { environmentId: over.environmentId } : {}),
+      sha: over.sha ?? SHA,
+      diff: [{ action: "apply", key: "prod" }],
+      author,
+      expiresAt: over.expiresAt ?? new Date(Date.now() + 7 * DAY),
+    });
+  const approved = async (w: World, over: Parameters<typeof ask>[1] = {}) => {
+    const cr = await ask(w, over);
+    await t.db.transaction((tx) =>
+      approveChangeRequest(tx, keys, { ...w.at, environmentId: cr.environmentId }, cr.id, approver),
+    );
+    return cr;
+  };
+  const take = (w: World, sha = SHA, environmentId = w.env.id) =>
+    t.db.transaction((tx) => consumeDeployApproval(tx, { ...w.at, environmentId }, sha));
+
+  test("an approved request for this environment and commit is spent, once", async () => {
+    const w = await world();
+    const cr = await approved(w);
+    const used = await take(w);
+    expect(used).toMatchObject({ id: cr.id, status: "applied" });
+    expect((await rowOf(cr.id))?.appliedAt).toBeInstanceOf(Date);
+    expect(await take(w)).toBeUndefined();
+  });
+
+  test("another commit, another environment, one not yet approved, rejected, lapsed or of another project is not taken", async () => {
+    const w = await world();
+    await approved(w, { sha: "b".repeat(40) });
+    await approved(w, { environmentId: w.other.id });
+    await ask(w);
+    const rejected = await ask(w);
+    await t.db.transaction((tx) => rejectChangeRequest(tx, w.at, rejected.id, person("third")));
+    await approved(w, { expiresAt: new Date(Date.now() + 50) });
+    const elsewhere = await world();
+    await approved(elsewhere);
+    await Bun.sleep(80);
+    expect(await take(w)).toBeUndefined();
+    // the others are untouched: each is still what it was
+    expect(await take(w, "b".repeat(40))).toMatchObject({ status: "applied" });
+    expect(await take(w, SHA, w.other.id)).toMatchObject({ status: "applied" });
+    expect(await take(elsewhere)).toMatchObject({ status: "applied" });
+  });
+
+  test("is kept when the transaction that took it rolls back", async () => {
+    const w = await world();
+    const cr = await approved(w);
+    await t.db
+      .transaction(async (tx) => {
+        expect(await consumeDeployApproval(tx, w.at, SHA)).toBeDefined();
+        throw new Error("the start failed");
+      })
+      .catch(() => undefined);
+    expect((await rowOf(cr.id))?.status).toBe("approved");
+    expect(await take(w)).toMatchObject({ id: cr.id });
+  });
+
+  test("two at once find one approval for one of them", async () => {
+    const w = await world();
+    await approved(w);
+    const got = await Promise.all([take(w), take(w)]);
+    expect(got.filter(Boolean)).toHaveLength(1);
   });
 });

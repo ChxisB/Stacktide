@@ -170,6 +170,17 @@ const drifts = (w: World) =>
     .from(auditEvents)
     .where(and(eq(auditEvents.projectId, w.project.id), eq(auditEvents.action, "run.create")));
 
+const ZONES: Record<string, string> = {
+  ".gitlab-ci.yml": "noop:\n  script: [echo]\n",
+  "zones/example/stack.yml":
+    "name: example-com\ntool: dnscontrol\nversion: 5.5.0\ndrift_every: 1d\n",
+  "zones/example/dnsconfig.js": 'D("example.com", REG, DnsProvider(DNS), NO_PURGE);\n',
+  "zones/example/creds.json": "{}",
+};
+const DNSCONTROL = [
+  { tag: "dnscontrol" as const, confidence: "high" as const, evidence: ["dnsconfig.js"] },
+];
+
 describe("the schedule's tick", () => {
   test("asks for a check of each project with stacks", async () => {
     const w = await world();
@@ -373,6 +384,31 @@ describe("checking a project", () => {
     const names = latest?.stacks.map((s) => s.stack) ?? [];
     expect(names).toContain("zz-last");
     expect(names).not.toContain("s099");
+  });
+});
+
+describe("a project that holds only DNS zones (DNS-12)", () => {
+  test("is checked like any other: its zone is planned on the default branch, and never applied", async () => {
+    setNow(0);
+    const w = await world({ files: ZONES, detectedTypes: DNSCONTROL });
+    await w.run();
+    const [run, ...more] = await w.runs();
+    expect(more).toEqual([]);
+    expect(run).toMatchObject({ kind: "drift", ref: "main" });
+    expect(run?.stacks.map((s) => [s.stack, s.status])).toEqual([["example-com", "queued"]]);
+    const [pipeline] = await planPipelinesOfRun(t.db, org, w.project.id, run?.id as string);
+    const yaml = mock.pipelineVariables(pipeline as number)?.[0]?.value ?? "";
+    expect(yaml).toContain("plan:example-com");
+    expect(yaml).toContain("summary:example-com");
+    expect(yaml).not.toContain("apply:example-com");
+    expect((await w.known()).map((k) => [k.stack, k.status])).toEqual([["example-com", "unknown"]]);
+  });
+
+  test("a repo with a dnsconfig.js that the import has not tagged is left alone, as any untagged project is", async () => {
+    const w = await world({ files: ZONES, detectedTypes: [] });
+    await w.run();
+    expect(await w.runs()).toEqual([]);
+    expect(w.posts()).toBe(0);
   });
 });
 

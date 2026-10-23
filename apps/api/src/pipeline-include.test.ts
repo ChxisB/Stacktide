@@ -9,6 +9,7 @@ import {
   savePipelineConfig,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
+import { gitlabForge } from "@orch/forge";
 import { createGitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import {
@@ -89,7 +90,7 @@ async function world(published: readonly Template[] = v1) {
     return { remote, project };
   };
   const { remote, project } = await make();
-  const deps: PipelineDeps = { db: t.db, catalog: v1, gitlab: async () => api };
+  const deps: PipelineDeps = { db: t.db, catalog: v1, forge: async () => gitlabForge(api) };
   const run = async (request: PipelineRequest, on = project) => {
     const applied = await applyPipeline(deps, org.id, on.id, connection.id, request);
     await savePipelineConfig(t.db, applied.config); // what the route's transaction does
@@ -526,7 +527,7 @@ describe("a fleet upgrade", () => {
   const fleet = (w: Awaited<ReturnType<typeof world>>): FleetDeps => ({
     db: t.db,
     catalog: v2,
-    gitlab: async () => w.api,
+    forge: async () => gitlabForge(w.api),
     record: async (_projectId, applied) => {
       await savePipelineConfig(t.db, applied.config);
     },

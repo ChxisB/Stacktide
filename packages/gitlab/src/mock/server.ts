@@ -1,6 +1,6 @@
 /**
  * In-process fake of the GitLab endpoints the platform uses (GL-2..4), for tests everywhere.
- * It follows GitLab's documented behaviour; the contract suite (`../contract.ts`) is what keeps it
+ * It follows GitLab's documented behaviour; the contract suite (`packages/forge/src/contract.ts`) is what keeps it
  * honest, by running the same assertions against a real sandbox group when one is configured.
  */
 
@@ -23,6 +23,10 @@ export interface MockOptions {
   maxPerPage?: number;
   /** Turns on `/oauth/authorize` and `/oauth/token` for this application. */
   oauth?: { clientId: string; clientSecret?: string; redirectUri: string };
+  /** What `GET /version` reports; default `18.1.1-ee`. */
+  version?: string;
+  /** Its `enterprise` field; default true. `setVersion` without it leaves the field out, like an older release. */
+  enterprise?: boolean;
   /** Warnings the CI lint endpoint gives a valid config (GitLab's come from its own linter; the mock has none). */
   lintWarnings?: string[];
 }
@@ -66,6 +70,23 @@ interface MockJob {
   status: string;
   allow_failure: boolean;
   failure_reason?: string;
+  /** Null until the job runs, and `finished_at` and `duration` until it ends, as GitLab sends them. */
+  started_at: string | null;
+  finished_at: string | null;
+  duration: number | null;
+}
+/** Plays a runner's clock: a job starts when it first runs, ends with a duration, and is blank again when it is pending or retried. */
+function play(j: MockJob, status: string) {
+  j.status = status;
+  const now = new Date();
+  if (status === "running" || status === "success" || status === "failed") {
+    j.started_at ??= now.toISOString();
+  } else if (status !== "canceled") {
+    j.started_at = null;
+  }
+  const ended = status === "success" || status === "failed" || status === "canceled";
+  j.finished_at = ended ? now.toISOString() : null;
+  j.duration = ended && j.started_at ? (now.getTime() - Date.parse(j.started_at)) / 1000 : null;
 }
 interface Pipe {
   id: number;
@@ -74,8 +95,14 @@ interface Pipe {
   sha: string;
   status: string;
   jobs: MockJob[];
-  /** Trigger jobs: the child pipelines this one started (`addDownstream`). */
-  bridges: { name: string; downstream: number }[];
+  /** Trigger jobs, and the pipeline each started, if any, in this project or another (`addDownstream`). */
+  bridges: {
+    id: number;
+    name: string;
+    stage: string;
+    downstream: number | null;
+    omitProject?: boolean;
+  }[];
   /** Kept for tests; GitLab never returns trigger variables, and neither does the mock. */
   variables: { key: string; value: string; type: "env_var" | "file" }[];
 }
@@ -115,6 +142,23 @@ interface Membership {
   level: number;
   state: string;
 }
+interface MockDeployment {
+  id: number;
+  iid: number;
+  ref: string;
+  sha: string;
+  status: string;
+  environment: string;
+  job: number | null;
+  pipeline: number | null;
+  at: string;
+  finishedAt: string | null;
+}
+interface MockEnvironment {
+  id: number;
+  name: string;
+  state: string;
+}
 interface Proj {
   id: number;
   path: string;
@@ -125,6 +169,8 @@ interface Proj {
   tags: Map<string, Branch>;
   mrs: Mr[];
   pipelines: Pipe[];
+  deployments: MockDeployment[];
+  environments: MockEnvironment[];
   /** Files a job's artifacts hold, by `<job id>/<path>` (`addArtifact`). */
   artifacts: Map<string, string>;
   /** GitLab-managed Terraform state, by name: the newest version's text (`addTerraformState`). */
@@ -331,6 +377,10 @@ const sha = () => Bun.randomUUIDv7().replaceAll("-", "").padEnd(40, "0").slice(0
 export function createMockGitlab(opts: MockOptions = {}) {
   const token = opts.token ?? "mock-token-0123456789";
   const maxPerPage = opts.maxPerPage ?? 100;
+  let instance: { version: string; extra: { enterprise?: boolean } } = {
+    version: opts.version ?? "18.1.1-ee",
+    extra: { enterprise: opts.enterprise ?? true },
+  };
   const projects: Proj[] = [];
   const readInclude: IncludeReader = (path, file, ref) => {
     const found = projects.find((p) => p.path === path);
@@ -406,6 +456,8 @@ export function createMockGitlab(opts: MockOptions = {}) {
   // The signing keys `/oauth/discovery/keys` publishes (job id_tokens).
   let jwks: unknown[] = [];
   let seq = 0;
+  /** Current GitLab lists a pipeline's jobs newest first (and names no stage order); off by default so older tests keep the order jobs were made in. */
+  let jobsNewestFirst = false;
 
   const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
     new Response(JSON.stringify(data), {
@@ -522,6 +574,9 @@ export function createMockGitlab(opts: MockOptions = {}) {
       const rest = u.pathname.slice("/api/v4".length);
       const q = (k: string) => u.searchParams.get(k) ?? undefined;
       if (req.method === "GET" && rest === "/user") return json({ ...tokenUser, state: "active" });
+      if (req.method === "GET" && rest === "/version") {
+        return json({ version: instance.version, revision: "mock", ...instance.extra });
+      }
       if (req.method === "GET" && rest === "/personal_access_tokens/self") {
         return json({
           id: 1,
@@ -879,6 +934,9 @@ export function createMockGitlab(opts: MockOptions = {}) {
           stage: j.stage,
           status: j.manual ? "manual" : "pending",
           allow_failure: j.manual,
+          started_at: null,
+          finished_at: null,
+          duration: null,
         }));
         const p: Pipe = {
           id: ++seq,
@@ -923,29 +981,107 @@ export function createMockGitlab(opts: MockOptions = {}) {
         return new Response(state, { headers: { "content-type": "application/json" } });
       }
 
+      // GitLab sends the user and the commit with a deployment: the mock does too, so a parser that kept them is seen
+      const deployJson = (d: MockDeployment) => ({
+        id: d.id,
+        iid: d.iid,
+        ref: d.ref,
+        sha: d.sha,
+        status: d.status,
+        created_at: d.at,
+        updated_at: d.at,
+        ...(d.finishedAt && { finished_at: d.finishedAt }),
+        user: { id: 1, username: "mock-deployer", name: "Mock Deployer" },
+        commit: { id: d.sha, title: "mock commit title", author_email: "mock@example.test" },
+        environment: {
+          id: proj.environments.find((e) => e.name === d.environment)?.id,
+          name: d.environment,
+          slug: d.environment,
+        },
+        deployable:
+          d.job === null
+            ? null
+            : {
+                id: d.job,
+                finished_at: d.finishedAt,
+                pipeline:
+                  d.pipeline === null
+                    ? null
+                    : {
+                        id: d.pipeline,
+                        web_url: `${origin}/${proj.path}/-/pipelines/${d.pipeline}`,
+                      },
+              },
+      });
+      if (req.method === "GET" && sub === "/deployments") {
+        const env = q("environment");
+        const st = q("status");
+        const by = q("order_by") ?? "id";
+        const key = (d: MockDeployment) => (by === "id" || by === "iid" ? d.id : d.at); // one stamp stands for the three times
+        const listed = proj.deployments
+          .filter(
+            (d) =>
+              (env === undefined || d.environment === env) && (st === undefined || d.status === st),
+          )
+          .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : a.id - b.id));
+        return page((q("sort") === "desc" ? listed.reverse() : listed).map(deployJson));
+      }
+      const dm = /^\/deployments\/(\d+)$/.exec(sub);
+      if (dm && req.method === "GET") {
+        const d = proj.deployments.find((x) => x.id === Number(dm[1]));
+        return d ? json(deployJson(d)) : fail(404, "404 Not Found");
+      }
+      if (req.method === "GET" && sub === "/environments") {
+        return page(
+          proj.environments.map((e) => ({
+            id: e.id,
+            name: e.name,
+            slug: e.name,
+            state: e.state,
+            external_url: null,
+          })),
+        );
+      }
+
       const pm = /^\/pipelines\/(\d+)(\/jobs|\/bridges|\/retry|\/cancel)?$/.exec(sub);
       if (pm) {
         const p = proj.pipelines.find((x) => x.id === Number(pm[1]));
         if (!p) return fail(404, "404 Pipeline Not Found");
         if (!pm[2] && req.method === "GET") return json(pipeJson(p));
         if (pm[2] === "/jobs" && req.method === "GET") {
+          const listed = jobsNewestFirst ? [...p.jobs].reverse() : p.jobs;
           return page(
-            p.jobs.map((j) => ({ ...j, web_url: `${origin}/${proj.path}/-/jobs/${j.id}` })),
+            listed.map((j) => ({ ...j, web_url: `${origin}/${proj.path}/-/jobs/${j.id}` })),
           );
         }
         if (pm[2] === "/bridges" && req.method === "GET") {
           return page(
-            p.bridges.map((b) => ({
-              name: b.name,
-              status: proj.pipelines.find((x) => x.id === b.downstream)?.status ?? "pending",
-              downstream_pipeline: { id: b.downstream },
-            })),
+            p.bridges.map((b) => {
+              const down = projects
+                .flatMap((x) => x.pipelines.map((d) => ({ d, owner: x })))
+                .find((x) => x.d.id === b.downstream);
+              return {
+                id: b.id,
+                name: b.name,
+                stage: b.stage,
+                status: down?.d.status ?? "pending",
+                web_url: `${origin}/${proj.path}/-/jobs/${b.id}`,
+                downstream_pipeline: down
+                  ? {
+                      id: down.d.id,
+                      project_id: b.omitProject ? undefined : down.owner.id,
+                      status: down.d.status,
+                      web_url: `${origin}/${down.owner.path}/-/pipelines/${down.d.id}`,
+                    }
+                  : null,
+              };
+            }),
           );
         }
         if (pm[2] === "/retry" && req.method === "POST") {
           const again = p.jobs.filter((j) => ["failed", "canceled"].includes(j.status));
           for (const j of again) {
-            j.status = "pending";
+            play(j, "pending");
             delete j.failure_reason;
           }
           if (again.length) p.status = derive(p.jobs);
@@ -955,7 +1091,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
           const live = p.jobs.filter((j) =>
             ["pending", "running", "manual", "created"].includes(j.status),
           );
-          for (const j of live) j.status = "canceled";
+          for (const j of live) play(j, "canceled");
           if (live.length) p.status = "canceled"; // a finished pipeline stays as it is
           return json(pipeJson(p));
         }
@@ -1193,6 +1329,10 @@ export function createMockGitlab(opts: MockOptions = {}) {
       users.set(u.id, u);
       return u;
     },
+    /** What `GET /version` reports from now on; without `enterprise` the field is left out, as older releases do. */
+    setVersion(version: string, enterprise?: boolean) {
+      instance = { version, extra: enterprise === undefined ? {} : { enterprise } };
+    },
     /** Replaces the keys `/oauth/discovery/keys` publishes. */
     setJwks(keys: unknown[]) {
       jwks = keys;
@@ -1256,6 +1396,8 @@ export function createMockGitlab(opts: MockOptions = {}) {
         tags: new Map(),
         mrs: [],
         pipelines: [],
+        deployments: [],
+        environments: [],
         artifacts: new Map(),
         terraformStates: new Map(),
         variables: [],
@@ -1334,7 +1476,7 @@ export function createMockGitlab(opts: MockOptions = {}) {
       const p = projects.flatMap((x) => x.pipelines).find((x) => x.id === id);
       if (!p) throw new Error(`no pipeline ${id}`);
       for (const j of p.jobs) {
-        j.status = passing.includes(j.name) ? "success" : status;
+        play(j, passing.includes(j.name) ? "success" : status);
         if (j.status === "failed") j.failure_reason = reason;
         else delete j.failure_reason;
       }
@@ -1345,10 +1487,21 @@ export function createMockGitlab(opts: MockOptions = {}) {
       const p = projects.flatMap((x) => x.pipelines).find((x) => x.id === pipelineId);
       const j = p?.jobs.find((x) => x.name === name);
       if (!j) throw new Error(`no job ${name} in pipeline ${pipelineId}`);
-      j.status = status;
+      play(j, status);
       if (status === "failed") j.failure_reason = reason;
       else delete j.failure_reason;
       return j.id;
+    },
+    /** Lists every pipeline's jobs newest first, as current GitLab does, or in the order they were made (the default). */
+    listJobsNewestFirst(on: boolean) {
+      jobsNewestFirst = on;
+    },
+    /** Extra fields on a job as GitLab sends them (a trace, a runner, a user...): lets a test prove a caller does not pass them on. */
+    addJobFields(pipelineId: number, jobName: string, fields: Record<string, unknown>) {
+      const p = projects.flatMap((x) => x.pipelines).find((x) => x.id === pipelineId);
+      const j = p?.jobs.find((x) => x.name === jobName);
+      if (!j) throw new Error(`no job ${jobName} in pipeline ${pipelineId}`);
+      Object.assign(j, fields);
     },
     /** A file in a job's artifacts, as the runner uploads it. */
     addArtifact(pipelineId: number, jobName: string, path: string, content: string) {
@@ -1372,11 +1525,24 @@ export function createMockGitlab(opts: MockOptions = {}) {
       if (!p) throw new Error(`no pipeline ${pipelineId}`);
       return Object.fromEntries(p.jobs.map((j) => [j.name, j.id]));
     },
-    /** A child pipeline of `parentId` (what a trigger job `bridge` starts) with one pending job per name, on the parent's ref and commit; returns its id. */
-    addDownstream(parentId: number, bridge: string, jobs: string[]) {
-      const owner = projects.find((x) => x.pipelines.some((p) => p.id === parentId));
-      const parent = owner?.pipelines.find((p) => p.id === parentId);
-      if (!owner || !parent) throw new Error(`no pipeline ${parentId}`);
+    /**
+     * A pipeline started by a trigger job `bridge` (in `stage`, default `deploy`) of `parentId`, with one pending
+     * job per name, on the parent's ref and commit; returns its id. It is a child in the parent's project unless
+     * `project` (a path) names another, as with a multi-project pipeline; `omitProject` leaves the project number
+     * out of what GitLab says about it.
+     */
+    addDownstream(
+      parentId: number,
+      bridge: string,
+      jobs: string[],
+      o: { stage?: string; project?: string; omitProject?: boolean } = {},
+    ) {
+      const parentOwner = projects.find((x) => x.pipelines.some((p) => p.id === parentId));
+      const parent = parentOwner?.pipelines.find((p) => p.id === parentId);
+      if (!parentOwner || !parent) throw new Error(`no pipeline ${parentId}`);
+      const owner =
+        o.project === undefined ? parentOwner : projects.find((x) => x.path === o.project);
+      if (!owner) throw new Error(`no project ${o.project}`);
       const child: Pipe = {
         id: ++seq,
         iid: owner.pipelines.length + 1,
@@ -1389,13 +1555,28 @@ export function createMockGitlab(opts: MockOptions = {}) {
           stage: "test",
           status: "pending",
           allow_failure: false,
+          started_at: null,
+          finished_at: null,
+          duration: null,
         })),
         bridges: [],
         variables: [],
       };
       owner.pipelines.push(child);
-      parent.bridges.push({ name: bridge, downstream: child.id });
+      parent.bridges.push({
+        id: ++seq,
+        name: bridge,
+        stage: o.stage ?? "deploy",
+        downstream: child.id,
+        omitProject: o.omitProject,
+      });
       return child.id;
+    },
+    /** A trigger job of `parentId` that has started nothing (yet): its `downstream_pipeline` is null. */
+    addBridge(parentId: number, bridge: string, stage: string) {
+      const parent = projects.flatMap((x) => x.pipelines).find((p) => p.id === parentId);
+      if (!parent) throw new Error(`no pipeline ${parentId}`);
+      parent.bridges.push({ id: ++seq, name: bridge, stage, downstream: null });
     },
     /** The notes (not system ones) on a merge request, oldest first. */
     mrNotes(path: string, iid: number) {
@@ -1435,6 +1616,61 @@ export function createMockGitlab(opts: MockOptions = {}) {
       const mr = projects.find((p) => p.path === path)?.mrs.find((m) => m.iid === iid);
       if (!mr) throw new Error(`no merge request ${iid} in ${path}`);
       mr.notes = mr.notes.filter((n) => n.id !== noteId);
+    },
+    /** An environment with no deployment yet (a deployment makes its own). Returns its id. */
+    addEnvironment(path: string, name: string) {
+      const proj = projects.find((p) => p.path === path);
+      if (!proj) throw new Error(`no project ${path}`);
+      const known = proj.environments.find((e) => e.name === name);
+      if (known) return known.id;
+      const env = { id: ++seq, name, state: "available" };
+      proj.environments.push(env);
+      return env.id;
+    },
+    /**
+     * A deployment, as GitLab records one when a job with `environment:` runs. `status` defaults to `success`,
+     * `job` and `pipeline` to none (an API-made deployment), `at` to now. A deployment makes its environment.
+     */
+    addDeployment(
+      path: string,
+      d: {
+        environment: string;
+        sha: string;
+        status?: string;
+        ref?: string;
+        job?: number;
+        pipeline?: number;
+        at?: string;
+      },
+    ) {
+      const proj = projects.find((p) => p.path === path);
+      if (!proj) throw new Error(`no project ${path}`);
+      this.addEnvironment(path, d.environment);
+      const status = d.status ?? "success";
+      const at = d.at ?? new Date().toISOString();
+      const row = {
+        id: ++seq,
+        iid: proj.deployments.length + 1,
+        ref: d.ref ?? proj.defaultBranch ?? "main",
+        sha: d.sha,
+        status,
+        environment: d.environment,
+        job: d.job ?? null,
+        pipeline: d.pipeline ?? null,
+        at,
+        finishedAt: ["success", "failed", "canceled", "skipped"].includes(status) ? at : null,
+      };
+      proj.deployments.push(row);
+      return row.id;
+    },
+    /** Moves a deployment to another status, as its job finishing does; a finished one gets its finish time. */
+    setDeploymentStatus(id: number, status: string) {
+      const d = projects.flatMap((x) => x.deployments).find((x) => x.id === id);
+      if (!d) throw new Error(`no deployment ${id}`);
+      d.status = status;
+      d.finishedAt = ["success", "failed", "canceled", "skipped"].includes(status)
+        ? new Date().toISOString()
+        : null;
     },
     /** Sets the status of the pipeline itself, as GitLab derives it from the jobs. */
     setPipelineStatus(pipelineId: number, status: string) {

@@ -1,4 +1,4 @@
-import { DomainError, type Logger, VARIABLE_LEVELS } from "@orch/core";
+import { address, DomainError, type Logger, ROOT, VARIABLE_LEVELS } from "@orch/core";
 import type { KeyProvider } from "@orch/crypto";
 import { type ChainEntry, type Db, getConnectionByName } from "@orch/db";
 import {
@@ -29,21 +29,30 @@ export const MAX_REFERENCES = 50;
 /** A message names this many variables, then counts the rest. */
 const MAX_NAMED = 10;
 
-/** The entries that win their key: the most specific level that has it (several at that level all stay, they are a duplicate). */
-function winners<T extends Pick<ChainEntry, "key" | "level">>(chain: readonly T[]): Set<T> {
+type Keyed = Pick<ChainEntry, "key" | "level" | "folder">;
+
+/** The entries that win their address: the most specific level that has it (several at that level all stay, they are a duplicate). */
+function winners<T extends Keyed>(chain: readonly T[]): Set<T> {
   const best = new Map<string, number>();
   for (const e of chain) {
-    best.set(e.key, Math.max(best.get(e.key) ?? -1, VARIABLE_LEVELS.indexOf(e.level)));
+    const at = address(e.folder, e.key);
+    best.set(at, Math.max(best.get(at) ?? -1, VARIABLE_LEVELS.indexOf(e.level)));
   }
-  return new Set(chain.filter((e) => VARIABLE_LEVELS.indexOf(e.level) === best.get(e.key)));
+  return new Set(
+    chain.filter((e) => VARIABLE_LEVELS.indexOf(e.level) === best.get(address(e.folder, e.key))),
+  );
 }
+
+/** How a message names a variable: its key at the root, its address in a folder. */
+const labelOf = (e: Pick<ChainEntry, "key" | "folder">) =>
+  e.folder === undefined || e.folder === ROOT ? e.key : address(e.folder, e.key);
 
 /**
  * The chain with the references of its winning entries replaced by what they resolved to. A value that
  * was `plain` becomes a `secret`: it came out of a secret store. The text is escaped so that a `${` in
  * it stays literal when the variables are resolved; a `file` is not read for references anyway.
  */
-export function substitute<T extends Pick<ChainEntry, "key" | "level" | "kind" | "value">>(
+export function substitute<T extends Keyed & Pick<ChainEntry, "kind" | "value">>(
   chain: readonly T[],
   resolved: ReadonlyMap<string, string>,
 ): T[] {
@@ -108,7 +117,7 @@ export async function resolveReferences(
   deps: ReferenceDeps,
   organizationId: string,
   requestId: unknown,
-  chains: readonly (readonly Pick<ChainEntry, "key" | "level" | "value">[])[],
+  chains: readonly (readonly (Keyed & Pick<ChainEntry, "value">)[])[],
 ): Promise<Map<string, string>> {
   /** Reference → the keys that hold it. */
   const wanted = new Map<string, Set<string>>();
@@ -116,7 +125,7 @@ export async function resolveReferences(
     for (const e of winners(chain)) {
       if (!isReference(e.value)) continue;
       const keys = wanted.get(e.value) ?? new Set<string>();
-      wanted.set(e.value, keys.add(e.key));
+      wanted.set(e.value, keys.add(labelOf(e)));
     }
   }
   const resolved = new Map<string, string>();

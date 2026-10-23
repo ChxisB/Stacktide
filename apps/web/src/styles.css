@@ -1,37 +1,124 @@
-/* Design tokens: every colour in the app comes from here, in a light and a dark set. REVIEW (UI-1):
-   the visual direction is a neutral first pass, to be confirmed before more screens are built. */
+/* Design tokens (Carebell, feature 22): every colour in the app comes from here, in a light and a dark set.
+   Dark is written twice: for a dark system unless light was chosen, and for dark chosen on the page. A test
+   pins the two equal. Status and text colours are the text-safe values, so a glyph and a word share them. */
+/* Fonts are served from this origin (no third-party request). shortcut: Latin only, as the packages' other
+   subsets are 8 more files each; a glyph outside it falls back to the system font in the stacks below. */
+@font-face {
+  font-family: "Plus Jakarta Sans Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 200 800;
+  src: url("../node_modules/@fontsource-variable/plus-jakarta-sans/files/plus-jakarta-sans-latin-wght-normal.woff2")
+    format("woff2-variations");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2")
+    format("woff2-variations");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
+    U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
 :root {
   color-scheme: light dark;
-  --bg: #f6f7f9;
+  --bg: #e7edf3;
   --surface: #ffffff;
-  --text: #1a1d21;
-  --muted: #566170;
-  --border: #d5dae1;
-  --accent: #1b5bc4;
+  --raised: #ffffff;
+  --text: #16232e;
+  --muted: #4a6173;
+  --border: rgba(22, 35, 46, 0.12);
+  --line-strong: rgba(22, 35, 46, 0.24);
+  --field-line: #7d8e9e;
+  --accent: #b8350f;
   --accent-text: #ffffff;
-  --danger: #b3261e;
+  --action: #1f4438;
+  --on-action: #ffffff;
+  --danger: #b42318;
   --ok: #1d6b3a;
   --warn: #8a5a00;
-  --focus: #1b5bc4;
+  --active: #0b6f61;
+  --idle: #58687a;
+  --hl: #e9552b;
+  --focus: #b8350f;
+  --slate-tint: #e7edf3;
+  --mint: #e0f3e6;
+  --sun-tint: #fff1cc;
+  --aqua-tint: #d8f2ee;
+  --danger-tint: #fdecea;
+  --scrim: rgba(14, 23, 31, 0.5);
   --radius: 8px;
+  --radius-field: 14px;
+  --radius-tile: 28px;
+  --radius-pill: 999px;
   --gap: 16px;
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* the one gutter a drawer's header, body and footer share, so their text starts at one edge */
+  --drawer-pad: 28px;
+  --font: "Plus Jakarta Sans Variable", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111418;
-    --surface: #1a1f26;
-    --text: #e8eaed;
-    --muted: #a3adba;
-    --border: #353d48;
-    --accent: #7aa7ff;
-    --accent-text: #0b1220;
+  :root:not([data-theme="light"]) {
+    --bg: #0e171f;
+    --surface: #16232e;
+    --raised: #1f303d;
+    --text: #e7edf3;
+    --muted: #a9b9c6;
+    --border: rgba(231, 237, 243, 0.12);
+    --line-strong: rgba(231, 237, 243, 0.24);
+    --field-line: #7d8e9e;
+    --accent: #ff9470;
+    --accent-text: #16232e;
+    --action: #e0f3e6;
+    --on-action: #1f4438;
     --danger: #ff8a80;
-    --ok: #6fd391;
-    --warn: #f0b95a;
-    --focus: #7aa7ff;
+    --ok: #74d68f;
+    --warn: #ffc83d;
+    --active: #4fc3b3;
+    --idle: #8497a8;
+    --hl: #ff865c;
+    --focus: #ff865c;
+    --slate-tint: #1f303d;
+    --mint: #1a2e2c;
+    --sun-tint: #303023;
+    --aqua-tint: #172f34;
+    --danger-tint: #352429;
   }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e171f;
+  --surface: #16232e;
+  --raised: #1f303d;
+  --text: #e7edf3;
+  --muted: #a9b9c6;
+  --border: rgba(231, 237, 243, 0.12);
+  --line-strong: rgba(231, 237, 243, 0.24);
+  --field-line: #7d8e9e;
+  --accent: #ff9470;
+  --accent-text: #16232e;
+  --action: #e0f3e6;
+  --on-action: #1f4438;
+  --danger: #ff8a80;
+  --ok: #74d68f;
+  --warn: #ffc83d;
+  --active: #4fc3b3;
+  --idle: #8497a8;
+  --hl: #ff865c;
+  --focus: #ff865c;
+  --slate-tint: #1f303d;
+  --mint: #1a2e2c;
+  --sun-tint: #303023;
+  --aqua-tint: #172f34;
+  --danger-tint: #352429;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 *,
@@ -43,9 +130,19 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 16px / 1.5 var(--font);
+  font: 14px / 1.5 var(--font);
+  font-variant-numeric: tabular-nums;
 }
 a {
+  color: var(--accent);
+}
+a:hover {
+  text-decoration-thickness: 2px;
+}
+summary {
+  cursor: pointer;
+}
+summary:hover {
   color: var(--accent);
 }
 :focus-visible {
@@ -53,18 +150,33 @@ a {
   outline-offset: 2px;
 }
 h1 {
-  font-size: 1.5rem;
+  font-size: 1.75rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
   margin: 0 0 var(--gap);
 }
 h2 {
   font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+h3 {
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   margin: 0 0 8px;
 }
 code {
   font-family: var(--mono);
+  font-size: 0.93em;
 }
 .muted {
   color: var(--muted);
+}
+time {
+  white-space: nowrap;
 }
 .skip {
   position: absolute;
@@ -78,49 +190,237 @@ code {
   z-index: 10;
 }
 
-.shell-bar {
+.app {
+  display: grid;
+  grid-template-columns: 16.5rem minmax(0, 1fr);
+  min-height: 100vh;
+}
+.side {
+  position: sticky;
+  top: 0;
+  align-self: start;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--gap);
-  padding: 12px var(--gap);
+  flex-direction: column;
+  gap: 20px;
+  height: 100vh;
+  padding: 20px 16px;
+  overflow-y: auto;
   background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
 }
-.brand {
-  font-weight: 700;
-}
-.shell-bar nav {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  flex: 1;
-}
-.shell-bar nav a {
-  padding: 6px 12px;
-  border-radius: var(--radius);
-  text-decoration: none;
-  color: var(--text);
-}
-.shell-bar nav a[aria-current="page"] {
-  background: var(--accent);
-  color: var(--accent-text);
-}
-.who {
+.brandrow {
   display: flex;
   align-items: center;
   gap: 12px;
+  padding: 0 4px;
+  color: var(--text);
+  text-decoration: none;
+}
+.brandrow:hover {
+  color: var(--accent);
+}
+.mark {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  fill: none;
+  stroke: var(--action);
+  stroke-width: 2;
+}
+.mark .dot {
+  fill: var(--hl);
+  stroke: none;
+}
+.wordmark {
+  display: flex;
+  flex-direction: column;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.wordmark small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.navwrap {
+  display: grid;
+  gap: 20px;
+}
+.nav {
+  display: grid;
+  gap: 2px;
+}
+.nav-label {
+  margin: 0 0 4px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: var(--radius-pill);
+  font-weight: 700;
+  text-decoration: none;
+  color: var(--text);
+}
+.nav-item:hover {
+  background: var(--slate-tint);
+}
+.nav-item[aria-current="page"] {
+  background: var(--action);
+  color: var(--on-action);
+}
+.ico {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* a name with its mark: they never part, however narrow the column */
+.key-name {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+/* a secret's mark before its name: quiet, and as tall as the text */
+.key-mark {
+  display: inline-flex;
+  width: 16px;
+  margin-right: 2px;
+  vertical-align: middle;
+  color: var(--muted);
+}
+.key-mark .ico {
+  width: 16px;
+  height: 16px;
+}
+.side-foot {
+  display: grid;
+  gap: 12px;
+  margin-top: auto;
+}
+.me {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 700;
+}
+.av {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--slate-tint);
+  font-size: 13px;
+  font-weight: 800;
+}
+.trunc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.content {
+  min-width: 0;
+}
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 64px;
+  padding: 8px clamp(16px, 2.4vw, 32px);
+  border-bottom: 1px solid var(--border);
+}
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-weight: 600;
+}
+.crumbs li + li::before {
+  content: "\203a";
+  margin-right: 8px;
+}
+.crumbs [aria-current="page"] {
+  color: var(--text);
+  font-weight: 800;
+}
+/* a list and the details of the row opened from it: side by side where there is room */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .side {
+    position: static;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .navwrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .nav {
+    display: contents;
+  }
+  .nav-label {
+    display: none;
+  }
+  .side-foot {
+    grid-auto-flow: column;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 0;
+  }
 }
 main {
-  max-width: 1100px;
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 24px var(--gap);
+  padding: 24px clamp(16px, 2.4vw, 32px);
 }
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--gap);
+  border-radius: var(--radius-tile);
+  padding: 28px;
+  position: relative;
+  overflow-x: auto;
+}
+@media (max-width: 600px) {
+  .card {
+    padding: 16px;
+  }
 }
 .center {
   max-width: 420px;
@@ -129,25 +429,59 @@ main {
 }
 button,
 .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 18px;
   font: inherit;
-  padding: 8px 14px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--surface);
+  font-weight: 700;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--field-line);
+  background: transparent;
   color: var(--text);
   cursor: pointer;
   text-decoration: none;
-  display: inline-block;
+}
+/* a table has many of them: smaller and quieter, still above the 24px target size */
+td button,
+td .button {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+  border-color: var(--line-strong);
+}
+button:hover:not(:disabled),
+.button:hover {
+  background: var(--slate-tint);
 }
 button.primary,
 .button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-text);
+  background: var(--action);
+  border-color: var(--action);
+  color: var(--on-action);
+}
+button.primary:hover:not(:disabled),
+.button.primary:hover {
+  background: var(--action);
+  filter: brightness(1.12);
 }
 button.danger {
   color: var(--danger);
   border-color: var(--danger);
+}
+button.danger:hover:not(:disabled) {
+  background: var(--danger-tint);
+}
+/* a cell holds up to five actions: plain words, so a row of them does not read as a row of pills; only Delete has a colour */
+button.quiet {
+  border-color: transparent;
+  color: var(--text);
+  padding: 0 6px;
+}
+button.quiet.danger {
+  color: var(--danger);
 }
 button:disabled {
   opacity: 0.6;
@@ -155,6 +489,16 @@ button:disabled {
 }
 .error {
   color: var(--danger);
+}
+@media (prefers-reduced-motion: no-preference) {
+  button,
+  .button,
+  .nav-item,
+  tbody tr {
+    transition:
+      background-color 0.15s,
+      filter 0.15s;
+  }
 }
 
 /* forms, lists and tables */
@@ -168,8 +512,18 @@ button:disabled {
 }
 .stack {
   display: grid;
-  gap: var(--gap);
+  gap: 24px;
   max-width: 40rem;
+}
+/* a paragraph or list in a stack would have its browser margin on top of the gap; the column is as wide as the stack, not
+   its widest child, so a wide table scrolls in its box and the page does not widen */
+.stack > * {
+  margin: 0;
+  min-width: 0;
+}
+/* a stack that is a card (a wizard step, a form) keeps the card's rhythm */
+.stack.card {
+  gap: 20px;
 }
 .row {
   display: flex;
@@ -177,31 +531,53 @@ button:disabled {
   align-items: end;
   gap: var(--gap);
 }
+/* text beside a button, not a field above one */
+.row.middle {
+  align-items: center;
+}
+td .row {
+  align-items: center;
+}
+/* a link and buttons in a table row: each stays whole, and the last go to a line of their own when the column is squeezed */
+.row.actions {
+  white-space: nowrap;
+}
+/* on a phone the table scrolls in its card anyway: one line to a row, as before */
+@media (max-width: 600px) {
+  .row.actions {
+    flex-wrap: nowrap;
+  }
+}
 label,
 .field {
   display: grid;
   gap: 4px;
+  font-weight: 600;
 }
 input,
 select,
 textarea {
   font: inherit;
+  font-weight: 400;
   color: var(--text);
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 6px 10px;
+  border: 1.5px solid var(--field-line);
+  border-radius: var(--radius-field);
+  min-height: 44px;
+  max-width: 30rem;
+  padding: 8px 14px;
 }
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-button:focus-visible,
-a:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+textarea {
+  min-height: 5.5rem;
+  max-width: none;
 }
-input[type="checkbox"] {
+input[type="checkbox"],
+input[type="radio"] {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
   padding: 0;
+  accent-color: var(--action);
 }
 fieldset.bare {
   border: 0;
@@ -210,8 +586,8 @@ fieldset.bare {
   min-width: 0;
 }
 fieldset.list {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-field);
   padding: 0;
   max-height: 24rem;
   overflow: auto;
@@ -230,65 +606,170 @@ fieldset.list legend {
 .item:first-of-type {
   border-top: 0;
 }
+/* a title over its hint: the stack's 24px gap would pull them apart */
+.item > .stack {
+  gap: 4px;
+}
+fieldset.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
+  gap: 12px;
+  max-height: none;
+  overflow: visible;
+  border: 0;
+}
+.cards .item {
+  align-items: flex-start;
+  padding: 16px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-tile);
+}
+.cards .item:has(input:checked) {
+  border-color: var(--action);
+  background: var(--slate-tint);
+}
 .tags {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 4px;
 }
 .tag {
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0 8px;
-  font-size: 0.85em;
+  display: inline-block;
+  border-radius: var(--radius-pill);
+  padding: 2px 10px;
+  background: var(--slate-tint);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
 }
 table {
   border-collapse: collapse;
   width: 100%;
-  max-width: 60rem;
 }
 th,
 td {
   text-align: left;
-  padding: 8px 12px;
+  height: 56px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border);
+}
+th {
+  height: 40px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+tbody th {
+  color: var(--text);
+  font-size: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+/* the first and last cell line up with the card's own edges */
+th:first-child,
+td:first-child {
+  padding-left: 0;
+}
+th:last-child,
+td:last-child {
+  padding-right: 0;
+}
+tbody tr:hover {
+  background: var(--slate-tint);
 }
 .results {
   padding-left: 1.2em;
   display: grid;
   gap: 6px;
 }
-.checklist {
-  list-style: none;
-  padding: 0;
-  display: grid;
-  gap: 8px;
-}
-.checklist .done a {
-  color: var(--ok);
+.org {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  font-weight: 700;
 }
 .org select {
-  max-width: 14rem;
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-weight: 700;
 }
 .stack.wide {
   max-width: none;
 }
-.matrix {
+/* a name that opens details reads as the name it is: the row header's weight, no border */
+th button.quiet {
+  font-weight: inherit;
+  min-height: 32px;
+}
+.matrix,
+.scroll {
   overflow-x: auto;
 }
-.matrix table {
-  max-width: none;
+/* the names stay in view while the columns scroll under them; the background is the card's, or the columns would show through */
+.matrix th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface);
 }
-.cell {
-  display: grid;
-  gap: 6px;
-  min-width: 11rem;
+.matrix tbody tr:hover th:first-child {
+  background: var(--slate-tint);
+}
+/* an environment's name and its menu, in one line of the matrix head */
+.col-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
 }
 button.small {
-  padding: 2px 8px;
-  font-size: 0.85em;
+  padding: 0 14px;
+  font-size: 13px;
+}
+/* the Changes card: a sentence, its time, where it was made and why, wrapping on a narrow screen */
+.changes {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.changes li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
 }
 code.revealed {
   overflow-wrap: anywhere;
+  padding: 2px 8px;
+  border-radius: var(--radius-field);
+  background: var(--slate-tint);
+}
+.mask {
+  font-family: var(--mono);
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+mark {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--sun-tint);
+  color: var(--warn);
+  font-family: var(--mono);
 }
 .warn {
   color: var(--warn);
@@ -296,14 +777,27 @@ code.revealed {
 .steps {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--gap);
+  gap: 8px;
   list-style: none;
   padding: 0;
   margin: 0;
 }
+.steps li {
+  padding: 8px 16px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  font-weight: 700;
+}
+.steps li.done {
+  border-color: var(--mint);
+  background: var(--mint);
+  color: var(--ok);
+}
 .steps [aria-current="step"] {
-  font-weight: 600;
-  border-bottom: 2px solid var(--accent);
+  border-color: var(--action);
+  background: var(--action);
+  color: var(--on-action);
 }
 .diff,
 .changes {
@@ -311,12 +805,34 @@ code.revealed {
 }
 .diff {
   overflow-x: auto;
-  padding: 8px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  padding: 12px 16px;
+  background: var(--slate-tint);
+  border-radius: var(--radius-field);
   font-family: var(--mono);
-  font-size: 0.9em;
+  font-size: 12.5px;
+}
+.op {
+  width: 22px;
+  height: 22px;
+  margin-right: 10px;
+  vertical-align: middle;
+  border-radius: 6px;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.op-create {
+  background: var(--mint);
+  stroke: var(--ok);
+}
+.op-update {
+  background: var(--sun-tint);
+  stroke: var(--warn);
+}
+.op-delete {
+  background: var(--danger-tint);
+  stroke: var(--danger);
 }
 .diff-add {
   color: var(--ok);
@@ -324,19 +840,1076 @@ code.revealed {
 .diff-del {
   color: var(--danger);
 }
-.status-ok {
-  color: var(--ok);
-  border-color: var(--ok);
+
+.seg {
+  display: inline-flex;
+  margin: 0;
+  min-width: 0;
+  padding: 3px;
+  gap: 2px;
+  border: 1.5px solid var(--field-line);
+  border-radius: var(--radius-pill);
 }
-.status-bad {
-  color: var(--danger);
+.seg button {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  font-size: 13px;
+}
+.seg button[aria-pressed="true"] {
+  background: var(--action);
+  color: var(--on-action);
+}
+
+/* shared components */
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--gap);
+  margin-bottom: 24px;
+}
+.head h1 {
+  margin: 0;
+  font-size: clamp(1.6rem, 3vw, 2.25rem);
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.eyebrow::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--hl);
+}
+.lede {
+  max-width: 40rem;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+  text-wrap: pretty;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.card-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+/* the card's gap is the only space between its parts; a paragraph or list brings none of its own */
+.card-flow > * {
+  margin: 0;
+}
+/* a sub-heading starts a section */
+.card-flow > h3 {
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.stack.card > h3 {
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.card-flow > .stack {
+  max-width: none;
+}
+.card-flow > .stack > h3:first-child {
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 24px;
+  margin: 0;
+}
+dt {
+  color: var(--muted);
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.card-head h2 {
+  margin: 0;
+}
+.card-sub {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+.st {
+  display: inline-flex;
+  vertical-align: middle; /* not the baseline: that is the bottom of its picture, and the words beside it sit lower */
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.glyph {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+/* the stacks of one plan, one to a line */
+.plan-stacks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.plan-stacks li {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+}
+/* what is deployed where (DEP-7): a box for each environment, as many to a line as fit, never wider than the card */
+.deploy-boxes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(18rem, 100%), 1fr));
+  gap: 12px;
+}
+.deploy-box {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 16px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-tile);
+}
+.deploy-name {
+  margin: 0;
+}
+.deploy-box p {
+  margin: 0;
+}
+/* the last attempt under what is deployed, set off by a rule */
+.deploy-last {
+  display: grid;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+/* what a promotion or a rollback would do: the lines of the dialog's dry-run answer, close together (DEP-14) */
+.deploy-plan {
+  display: grid;
+  gap: 6px;
+}
+.deploy-plan p {
+  margin: 0;
+}
+/* the order a plan's stacks go in (FLW-3): boxes placed by the page, lines under them, scrolling in a box of its own */
+.plan-order {
+  margin-top: 12px;
+}
+.plan-order > summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.run-graph {
+  max-width: 100%;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+.run-graph-canvas {
+  position: relative;
+}
+.run-graph-edges {
+  position: absolute;
+  inset: 0;
+}
+.run-graph-edge {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 2;
+}
+.run-graph-box {
+  position: absolute;
+  box-sizing: border-box;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--raised);
+  overflow: hidden;
+}
+.run-graph-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+}
+.run-graph-box .row {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.sync-flow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+.sync-box {
+  display: grid;
+  gap: 2px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--raised);
+  min-width: 0;
+}
+.sync-name {
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+.sync-lines {
+  flex: 1;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* the words sit on a rule, as a label sits on a line between two boxes */
+.sync-lines li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 12px;
+  padding-bottom: 4px;
+  border-bottom: 2px solid var(--line-strong);
+}
+@media (max-width: 600px) {
+  .sync-flow {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+/* the jobs of a pipeline, opened under its row (FLW-9): drawn as nodes by stage (NOD-2 below), inside a panel that never widens the table */
+/* the table scrolls inside its card on a phone: the panel is as wide as what shows and stays at the left, so its lines wrap in view */
+.jobs-host {
+  container-type: inline-size;
+}
+.jobs-panel {
+  position: sticky;
+  left: 0;
+  width: 100cqw;
+  box-sizing: border-box;
+  display: grid;
+  gap: 8px;
+  padding: 4px 0 4px 12px;
+  border-left: 2px solid var(--line-strong);
+  white-space: normal;
+}
+.jobs-stage {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.jobs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.jobs-list code {
+  overflow-wrap: anywhere;
+}
+.checklist {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 14px;
+}
+.checklist li {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 12px;
+  align-items: start;
+}
+/* the link, then its hint on the line below */
+.checklist li > span {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+}
+.checklist .glyph {
+  margin-top: 0.15em;
+}
+.checklist a {
+  font-weight: 700;
+}
+.g-ring {
+  fill: none;
+  stroke-width: 1.7;
+}
+.g-half {
+  stroke: none;
+}
+.g-mark {
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.st-ok .g-ring {
+  fill: var(--ok);
+  stroke: var(--ok);
+}
+.st-bad .g-ring {
+  fill: var(--danger);
+  stroke: var(--danger);
+}
+.st-warn .g-ring {
+  fill: var(--warn);
+  stroke: var(--warn);
+}
+.st-ok .g-mark,
+.st-bad .g-mark,
+.st-warn .g-mark {
+  stroke: var(--surface);
+}
+.st-active .g-ring {
+  stroke: var(--active);
+}
+.st-active .g-half {
+  fill: var(--active);
+}
+.st-manual .g-ring,
+.st-manual .g-mark {
+  stroke: var(--warn);
+}
+.st-quiet .g-ring,
+.st-quiet .g-mark {
+  stroke: var(--idle);
+}
+/* the jobs as nodes (NOD-2): placed by the page (sizes in job-flow-layout.ts), lines under them, scrolling in a box of its own */
+.job-flow {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+.job-flow-canvas {
+  position: relative;
+}
+.job-flow-edges {
+  position: absolute;
+  inset: 0;
+}
+.job-flow-edge {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 2;
+}
+.job-flow-junction,
+.job-flow-arrow path {
+  fill: var(--line-strong);
+}
+.job-stage {
+  position: absolute;
+}
+.job-flow .jobs-stage {
+  box-sizing: border-box;
+  margin: 0;
+  padding-top: 8px;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.job-flow .jobs-list {
+  display: flex;
+  flex-direction: column;
+}
+/* a node is a fixed box: its square, then its words, so the lines meet the square whatever the words are */
+.job-flow .jobs-list li {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  overflow: hidden;
+  text-align: center;
+  font-size: 12px;
+  line-height: 14px;
+}
+.job-flow .st {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 16px;
+}
+/* 36 + 2 * 12 + 2 * 2 = the 64 of SQUARE, the part the lines point at */
+.job-flow .glyph {
+  box-sizing: content-box;
+  width: 36px;
+  height: 36px;
+  padding: 12px;
+  border: 2px solid var(--border);
+  border-radius: 16px;
+  background: var(--raised);
+}
+.job-flow .st-bad .glyph {
   border-color: var(--danger);
 }
-.status-active {
-  color: var(--accent);
-  border-color: var(--accent);
+/* a trigger starts another pipeline (NOD-7): a dashed ring, its kind in small capitals, what it started in a note */
+.job-flow .job-trigger .glyph {
+  border-style: dashed;
 }
-.status-quiet {
+.job-flow .job-kind {
   color: var(--muted);
-  border-color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.job-flow .job-note {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+}
+.job-flow .job-lane-title {
+  border-bottom: 1px dashed var(--border);
+  font-weight: 600;
+  text-align: left;
+}
+.job-flow code {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  max-width: 100%;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 15px;
+}
+.job-flow .error {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  max-width: 100%;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .job-flow .st-active .g-half {
+    transform-box: view-box;
+    transform-origin: 9px 9px;
+    animation: job-spin 1.4s linear infinite;
+  }
+}
+@keyframes job-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr));
+  gap: 20px;
+  margin-bottom: 24px;
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 20px 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-tile);
+  background: var(--surface);
+}
+.kpi-label {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+.kpi-value {
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+}
+.kpi-value small {
+  margin-left: 4px;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.kpi-foot {
+  color: var(--muted);
+  font-size: 13px;
+}
+fieldset.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.chip {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+.chip .n {
+  font: 500 12px var(--mono);
+}
+.chip[aria-pressed="true"],
+.chip[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--action);
+  border-color: transparent;
+  color: var(--on-action);
+}
+/* a last row of the list: a name, a value and a button, on one line while there is room */
+.quick-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.quick-add input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: none;
+}
+/* the other environments a new variable is also made in: ticks that read as chips */
+fieldset.also {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+fieldset.also legend {
+  padding: 0;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.also label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  font-weight: 500;
+  cursor: pointer;
+}
+.also label:has(input:checked) {
+  border-color: var(--action);
+  background: var(--slate-tint);
+}
+/* options most people leave alone: closed, with a heading that is a whole line to press (list-item keeps the arrow) */
+details.advanced > summary {
+  display: list-item;
+  min-height: 44px;
+  line-height: 44px;
+  font-weight: 600;
+  cursor: pointer;
+}
+/* a tick with its words: the box beside the text */
+label.tick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 500;
+}
+/* a value box with a button beside it: the box takes what the button leaves */
+.with-action {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 30rem;
+}
+.with-action input,
+.with-action textarea {
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* the controls above a list: one row that wraps only when the room is gone, the search taking what the rest leaves */
+.toolbar {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.toolbar .search {
+  position: relative;
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+.toolbar .search input {
+  width: 100%;
+  max-width: none;
+  padding-left: 42px;
+}
+.toolbar .search .ico {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+/* a button that is only a picture: as wide as it is tall */
+button.icon {
+  width: 44px;
+  padding: 0;
+}
+.popover {
+  position: relative;
+}
+.popover-panel {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 16rem;
+  margin: 0;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-field);
+}
+@media (max-width: 600px) {
+  .toolbar .search {
+    order: -1;
+    flex-basis: 100%;
+  }
+  /* no room beside a button on a phone: the panel is as wide as the toolbar, below it */
+  .popover {
+    position: static;
+  }
+  .popover-panel {
+    right: 0;
+  }
+}
+/* the strip above the table: where the list is on the left, what acts on all of it on the right */
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.strip .path {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+/* the select boxes of the list: a column no wider than its box */
+th.select,
+td.select {
+  width: 1%;
+  padding-right: 0;
+}
+/* a row's own buttons: there for a Tab, shown for the row that is pointed at or worked in (and always where nothing hovers) */
+td.row-actions {
+  text-align: right;
+  white-space: nowrap;
+  opacity: 0;
+}
+tr:hover td.row-actions,
+tr:focus-within td.row-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  td.row-actions {
+    opacity: 1;
+  }
+}
+.row-actions button.icon {
+  width: 32px;
+}
+/* a picture button and a text button on one line share a middle, not a baseline */
+.row-actions button {
+  vertical-align: middle;
+}
+.row-menu {
+  display: inline-block;
+  vertical-align: middle;
+}
+/* fixed at the button (set from its box): the table scrolls inside its card and would cut an absolute menu off */
+.menu {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  min-width: 12rem;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-field);
+  text-align: left;
+}
+.menu button {
+  justify-content: flex-start;
+  width: 100%;
+  border-color: transparent;
+  border-radius: var(--radius-field);
+}
+.menu button.danger {
+  color: var(--danger);
+}
+/* a panel from the right edge over the page (VUI-6): the whole screen on a phone; the page behind is locked by the component */
+.drawer-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+button.drawer-scrim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--scrim);
+  cursor: default;
+}
+button.drawer-scrim:hover:not(:disabled) {
+  background: var(--scrim);
+}
+/* a <dialog> brings a border, padding, margin and colours of its own */
+.drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  width: min(36rem, 100%);
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+.drawer:focus {
+  outline: none;
+}
+.drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px var(--drawer-pad) 16px;
+  border-bottom: 1px solid var(--border);
+}
+.drawer-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.drawer-sub {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+/* the X sits on the title's first line, and its picture (not its box) is at the gutter */
+.drawer-head button.icon {
+  flex: none;
+  margin: -9px -11px -9px 0;
+}
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px var(--drawer-pad);
+  overflow-y: auto;
+}
+.drawer-body > * + * {
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.drawer .card {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+@media (max-width: 600px) {
+  .drawer {
+    --drawer-pad: 16px;
+  }
+}
+/* the environment menu (VUI-8): the choice is one line, cut short with an ellipsis when it is long */
+button .shown {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 14rem;
+}
+/* above the list and the matrix alike, so the menu in it is the same element for both and stays open between them */
+.env-bar {
+  position: relative;
+}
+.env-menu {
+  display: grid;
+  gap: 4px;
+}
+.env-menu label.tick {
+  min-height: 44px;
+}
+.env-menu .hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+/* a drawer in the middle of the screen: a form of one field does not need the height of the page */
+.drawer.centered {
+  inset: 0;
+  margin: auto;
+  width: min(28rem, calc(100% - 32px));
+  height: fit-content;
+  max-height: calc(100% - 32px);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-field);
+}
+/* the matrix of marks (VUI-9): a tick where an environment has the key, a circle where it has not, a cross where it does not resolve */
+.cell-mark {
+  display: inline-flex;
+  align-items: center;
+}
+.cell-mark.set {
+  color: var(--ok);
+}
+.cell-mark.missing {
+  color: var(--warn);
+}
+.cell-mark.broken {
+  color: var(--danger);
+}
+/* the key opens its row: the arrow points right when shut and down when open */
+.chev {
+  display: inline-flex;
+  transform: rotate(-90deg);
+}
+button[aria-expanded="true"] .chev {
+  transform: none;
+}
+/* the open row: one line for each environment, under the key's name and past its arrow */
+tr.env-open > td {
+  height: auto;
+  padding: 0 16px 8px 42px;
+}
+ul.env-rows {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* the lines hold the visible edge while the columns scroll under them, as the names do: the box is the container, and the lines are as wide as it is less the cell's padding (42px before, 16px after) */
+.matrix {
+  container-type: inline-size;
+}
+tr.env-open ul.env-rows {
+  position: sticky;
+  left: 42px;
+  width: calc(100cqw - 58px);
+}
+.env-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  min-height: 44px;
+  border-top: 1px solid var(--border);
+}
+.env-name {
+  flex: 0 0 7rem;
+  font-weight: 600;
+}
+/* a long value is cut short with an ellipsis; the details drawer has all of it */
+button.env-value {
+  flex: 1 1 12rem;
+  justify-content: flex-start;
+  min-width: 0;
+  max-width: 100%;
+}
+button.env-value code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* a line's own buttons: there for a Tab, shown for the line that is pointed at or worked in (and always where nothing hovers) */
+.line-actions {
+  margin-left: auto;
+  white-space: nowrap;
+  opacity: 0;
+}
+.env-line:hover .line-actions,
+.env-line:focus-within .line-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .line-actions {
+    opacity: 1;
+  }
+}
+.line-actions button.icon {
+  width: 32px;
+}
+/* a form in a drawer fills what is left under the other parts, so its footer is at the bottom of the drawer even when the form is short (VUI-18) */
+.drawer-body > form.stack {
+  flex: 1;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+}
+/* the actions of a form: one row at the bottom of the drawer, Cancel and then the one that does it, kept in view while the form scrolls */
+.drawer-foot {
+  position: sticky;
+  bottom: -24px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+  margin: auto calc(var(--drawer-pad) * -1) -24px;
+  padding: 16px var(--drawer-pad);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+/* a centered dialog is as high as its form, and the form clips: the footer stays inside it instead of hanging 24px below (DEP-22) */
+.drawer.centered .drawer-body {
+  padding-bottom: 0;
+}
+.drawer.centered .drawer-foot {
+  bottom: 0;
+  margin-bottom: 0;
+}
+/* what a variable's details can do: one row from the left edge of the list above it, and Delete apart at the far end */
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.detail-actions button.danger {
+  margin-left: auto;
+}
+/* the version history as a timeline: a dot on a line for each version, its head, the value box, who changed it (VUI-15) */
+ol.timeline {
+  position: relative;
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tl-item {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 0 0 20px 28px;
+}
+.tl-item::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.tl-item::after {
+  content: "";
+  position: absolute;
+  top: 20px;
+  bottom: -6px;
+  left: 4px;
+  width: 2px;
+  background: var(--border);
+}
+.tl-item:last-child::after {
+  display: none;
+}
+.tl-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-height: 32px;
+}
+.tl-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tl-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.tl-value {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  overflow-wrap: anywhere;
+}
+.tl-by {
+  margin: 0;
 }

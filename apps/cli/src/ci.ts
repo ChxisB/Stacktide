@@ -3,7 +3,8 @@ import { call, clientFor, resolveApi } from "./api";
 import { CliError, type Command, parse, say } from "./cli";
 import { formatVariables } from "./format";
 
-const USAGE = "usage: orch ci login [--state] [--api-url <url>] [--id-token-env <NAME>]";
+const USAGE =
+  "usage: orch ci login [--state] [--api-url <url>] [--id-token-env <NAME>] [--audience <aud>]";
 const DEFAULT_VARIABLE = "ORCH_ID_TOKEN";
 const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,254}$/;
 /** header.payload.signature, each base64url: all that is checked before the value leaves this machine. */
@@ -12,7 +13,52 @@ const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const MAX_ID_TOKEN = 8192;
 
 const REFUSED =
-  "the id_token was refused: its aud must be the audience this API is set up for (ORCH_CI_AUDIENCE), it must come from this API's GitLab, and it must not have expired";
+  "the id_token was refused: its aud must be the audience this API is set up for (ORCH_CI_AUDIENCE), it must come from this API's GitLab or a GitHub repository linked to a project, and it must not have expired";
+
+/** What a GitHub Actions runner answers a request for an identity token with. */
+const issued = z.object({ value: z.string().max(MAX_ID_TOKEN).regex(JWT) });
+
+/**
+ * A GitHub Actions job's identity token for an audience, from the runner's own endpoint (FRG-23). Its request token
+ * is sent only to a https address (or a loopback one, for a test): the address comes from the job's environment,
+ * and nothing it says reaches the output.
+ */
+async function fromRunner(env: Record<string, string | undefined>, audience: string) {
+  const [address, bearer] = [env.ACTIONS_ID_TOKEN_REQUEST_URL, env.ACTIONS_ID_TOKEN_REQUEST_TOKEN];
+  if (!address) return undefined;
+  if (!bearer) {
+    throw new CliError(
+      "the job cannot ask for an identity token: give the workflow the permission id-token: write",
+      2,
+    );
+  }
+  let url: URL;
+  try {
+    url = new URL(address);
+  } catch {
+    throw new CliError("ACTIONS_ID_TOKEN_REQUEST_URL is not an address", 2);
+  }
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    throw new CliError("ACTIONS_ID_TOKEN_REQUEST_URL is not a https address", 2);
+  }
+  url.searchParams.set("audience", audience);
+  let value: unknown;
+  try {
+    const res = await fetch(url, {
+      headers: { authorization: `Bearer ${bearer}`, accept: "application/json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    value = await res.json();
+  } catch {
+    throw new CliError("the runner would not give the job an identity token");
+  }
+  const got = issued.safeParse(value);
+  if (!got.success) throw new CliError("the runner did not answer with an identity token");
+  return got.data.value;
+}
 
 const exchanged = z.object({
   token: z.string().min(1),
@@ -25,7 +71,7 @@ const exchanged = z.object({
 });
 
 /**
- * `orch ci login`, for a GitLab CI job: trades the job's `id_token` for a short-lived token for its
+ * `orch ci login`, for a GitLab CI job or a GitHub Actions one: trades the job's `id_token` for a short-lived token for its
  * project and environment. It prints `export` lines, so `eval "$(orch ci login)"` signs the rest of the
  * job in: `orch run`, `pull` and `export` then find the API, the token and the environment in the
  * job's environment. Nothing is written to disk, and the id_token is read from the environment, never
@@ -39,11 +85,12 @@ const exchanged = z.object({
 export function ciCommands(): Record<string, Command> {
   return {
     ci: {
-      summary: `sign a GitLab CI job in from its id_token: eval "$(orch ci login)"`,
+      summary: `sign a GitLab CI or GitHub Actions job in from its id_token: eval "$(orch ci login)"`,
       async run(ctx, args) {
         const { values, positionals } = parse(args, {
           "api-url": { type: "string" },
           "id-token-env": { type: "string" },
+          audience: { type: "string" },
           state: { type: "boolean" },
         });
         if (positionals.length !== 1 || positionals[0] !== "login") throw new CliError(USAGE, 2);
@@ -52,7 +99,18 @@ export function ciCommands(): Record<string, Command> {
         if (!NAME.test(variable)) {
           throw new CliError("--id-token-env must be the name of an environment variable", 2);
         }
-        const idToken = ctx.env[variable]?.trim();
+        let idToken = ctx.env[variable]?.trim();
+        if (!idToken && ctx.env.ACTIONS_ID_TOKEN_REQUEST_URL) {
+          // a GitHub Actions job has no token waiting: it asks the runner, for the platform's audience
+          const audience = values.audience ?? ctx.env.ORCH_AUDIENCE;
+          if (!audience) {
+            throw new CliError(
+              "no audience: give --audience or ORCH_AUDIENCE (ORCH_CI_AUDIENCE of the API)",
+              2,
+            );
+          }
+          idToken = await fromRunner(ctx.env, audience);
+        }
         if (!idToken) {
           throw new CliError(
             `no id_token: give the job an id_tokens: entry named ${variable} (see docs/ci.md)`,

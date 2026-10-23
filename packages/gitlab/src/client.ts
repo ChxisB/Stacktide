@@ -167,22 +167,22 @@ async function readCapped(res: Response, max: number): Promise<string | undefine
   return text + decoder.decode();
 }
 
-/** Validates the instance URL. Never echoes the input: it may carry credentials. */
-export function parseBaseUrl(baseUrl: string, allowInsecureHttp = false): URL {
+/** Validates the instance URL. Never echoes the input: it may carry credentials. `system` is only the word the errors use. */
+export function parseBaseUrl(baseUrl: string, allowInsecureHttp = false, system = "GitLab"): URL {
   let base: URL;
   try {
     base = new URL(baseUrl);
   } catch {
-    throw new TypeError("GitLab baseUrl is not a valid URL");
+    throw new TypeError(`${system} baseUrl is not a valid URL`);
   }
   if (base.protocol !== "https:" && base.protocol !== "http:") {
-    throw new TypeError("GitLab baseUrl must be an http(s) URL");
+    throw new TypeError(`${system} baseUrl must be an http(s) URL`);
   }
   if (base.username || base.password) {
-    throw new TypeError("GitLab baseUrl must not contain credentials");
+    throw new TypeError(`${system} baseUrl must not contain credentials`);
   }
   if (base.protocol === "http:" && !allowInsecureHttp && !LOOPBACK.has(base.hostname)) {
-    throw new TypeError("GitLab baseUrl must use https (allowInsecureHttp overrides)");
+    throw new TypeError(`${system} baseUrl must use https (allowInsecureHttp overrides)`);
   }
   return base;
 }

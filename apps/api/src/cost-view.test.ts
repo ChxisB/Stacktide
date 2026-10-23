@@ -5,6 +5,7 @@ import { type CostStack, costViewOf } from "./cost-view";
 const NOW = new Date("2026-10-19T00:00:00Z");
 const stack = (over: Partial<CostStack> = {}): CostStack => ({
   tags: [],
+  costed: true,
   summarizedAt: NOW,
   costMonthlyDelta: null,
   costMonthlyTotal: null,
@@ -34,6 +35,12 @@ describe("what a stack's plan costs, as it is shown", () => {
     expect(costViewOf(stack({ summarizedAt: null }), [limit()])).toBeNull();
     expect(costViewOf(stack(), [])).toBeNull();
     expect(costViewOf(stack(), [limit({ tag: "prod" })])).toBeNull();
+  });
+
+  test("a stack that has no price to estimate (a DNS zone) is judged by no limit: nothing to show", () => {
+    const zone = stack({ costed: false });
+    expect(costViewOf(zone, [limit(), limit({ tag: "prod" })])).toBeNull();
+    expect(costViewOf({ ...zone, tags: ["prod"] }, [limit({ tag: "prod" })])).toBeNull();
   });
 
   test("an estimate with no limit is shown and judges nothing", () => {

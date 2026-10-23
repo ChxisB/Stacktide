@@ -357,7 +357,20 @@ describe("pipelines", () => {
     expect(await collect(api.pipelines.bridges("g/p", parent.id))).toEqual([]);
     const child = mock.addDownstream(parent.id, "orch-run", ["plan:a", "summary:a"]);
     expect(await collect(api.pipelines.bridges("g/p", parent.id))).toEqual([
-      { name: "orch-run", status: "pending", downstreamPipelineId: child },
+      {
+        id: expect.any(Number),
+        name: "orch-run",
+        stage: "deploy",
+        status: "pending",
+        webUrl: expect.stringContaining(`${mock.url}/g/p/-/jobs/`),
+        downstreamPipelineId: child,
+        downstream: {
+          pipelineId: child,
+          projectId: (await api.projects.get("g/p")).id,
+          status: "pending",
+          webUrl: `${mock.url}/g/p/-/pipelines/${child}`,
+        },
+      },
     ]);
     const names = async (id: number) =>
       (await collect(api.pipelines.jobs("g/p", id))).map((j) => j.name);

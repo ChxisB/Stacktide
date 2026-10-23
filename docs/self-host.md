@@ -31,6 +31,8 @@ of the machine (any reverse proxy; the stack itself listens on `127.0.0.1` only)
 `deploy/smoke.sh` runs steps 2 to 7 with throwaway values and a placeholder GitLab address, and checks everything up to
 the redirect to GitLab's sign-in page. It does not sign in: that needs the real application from step 4.
 
+Which GitLab it works with, and what each connection's token needs: [forges.md](forges.md).
+
 ## Settings
 
 Set in `deploy/.env`. "Used by" is the process that reads it; `DATABASE_URL`, `HOST`, `PORT`, `NODE_ENV` and the image
@@ -43,6 +45,7 @@ are set by the compose file and the image, not by you.
 | `GITLAB_URL` | api, worker | none | Your GitLab. With the next three, all or none. |
 | `GITLAB_OAUTH_CLIENT_ID`, `GITLAB_OAUTH_CLIENT_SECRET` | api | none | The GitLab application. |
 | `GITLAB_OAUTH_REDIRECT_URI` | api | none | `https://<host>/auth/callback`. |
+| `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `GITHUB_OAUTH_REDIRECT_URI` | api | none | Sign in with GitHub, all three or none: an OAuth app on github.com asking `read:user`, redirect `https://<host>/auth/github/callback` (https, or http on loopback only, and exactly that path, or the API will not start). Needs `ORCH_MASTER_KEYS`, because roles are read through the tokens of the projects' GitHub connections; a person with no role in any linked repository is refused. Works without the GitLab settings. See [forges.md](forges.md). Unset: `/auth/github/*` answers 503. |
 | `ORCH_SSO_REDIRECT_URI` | api | none | `https://<host>/auth/sso/callback` (https, or http on loopback only, and exactly that path, or the API will not start): turns on sign-in through an organization's identity provider ([ADR-0016](adr/0016-external-identity-providers.md), set-up in [sso.md](sso.md)). Works without the GitLab settings; an `https` address makes the session cookies `Secure`. Unset: `/auth/sso/*` answers 503. |
 | `GITLAB_MEMBERSHIP_TOKEN` | api, worker | none | `read_api` token that decides who holds a role. Unset: nobody does. |
 | `ORCH_PLATFORM_ADMIN_GITLAB_IDS` | api | none | GitLab user ids (comma separated) that may create organizations. |
@@ -50,7 +53,7 @@ are set by the compose file and the image, not by you.
 | `ORCH_API_URL` | api, worker | none | Where CI jobs reach this API. The API needs it to start the apply of a stack whose state is on the platform. (The web container has its own, set by the compose file.) |
 | `ORCH_HELPER_IMAGE`, `ORCH_POLICY_IMAGE` | worker | none | Images with `orch`, `curl`, `jq` (and `tar`, `conftest` for policy) for the jobs the worker generates ([iac.md](iac.md)). |
 | `ORCH_COST_IMAGE` | worker | none | An image with `infracost` and `jq`, for the estimate job of a stack a cost limit reaches ([iac.md](iac.md)). |
-| `ORCH_TERRAGRUNT_IMAGE`, `ORCH_TERRAFORM_IMAGE`, `ORCH_TOFU_IMAGE` | api, worker | none | Image repositories (no tag) for stacks of that tool. |
+| `ORCH_TERRAGRUNT_IMAGE`, `ORCH_TERRAFORM_IMAGE`, `ORCH_TOFU_IMAGE`, `ORCH_DNSCONTROL_IMAGE` | api, worker | none | Image repositories (no tag) for stacks of that tool. A DNS zone's apply, and its manual import job, need `ORCH_DNSCONTROL_IMAGE`: an image with `dnscontrol`, `jq` and `wget` (and `orch` for a zone with an `environment`). |
 | `STACK_DRIFT_CHECK_SECONDS` | worker | 3600 | How often stacks are looked at for drift. 0 is off, otherwise at least 60. |
 | `AUDIT_PURGE_SECONDS` | worker | 3600 | How often events past their retention are deleted. 0 is off, otherwise at least 60. |
 | `CHANGE_REQUEST_EXPIRE_SECONDS` | worker | 300 | How often undecided change requests are closed. 0 is off, otherwise at least 60. |
@@ -68,6 +71,40 @@ are set by the compose file and the image, not by you.
 
 **Never set `ORCH_DEV_AUTH`.** It turns authentication off; the API refuses it outside development and on a non-loopback
 `HOST`, so the container would not start.
+
+## Private CA
+
+A GitLab (or an identity provider) whose certificate comes from your own certificate authority is trusted by giving the
+platform the authority's certificate. No setting of ours is needed: it is the runtime's own variable, which every
+outgoing HTTPS call of the process obeys (the GitLab client, the CI token's key fetch, single sign-on discovery).
+
+```yaml
+# deploy/ca.yml, used as: docker compose -f deploy/compose.yml -f deploy/ca.yml up -d
+x-ca: &ca
+  environment:
+    NODE_EXTRA_CA_CERTS: /ca/ca.crt # the authority's certificate (or a bundle of them), PEM
+  volumes:
+    - ./ca.crt:/ca/ca.crt:ro
+services:
+  api: *ca
+  worker: *ca
+```
+
+Put the certificate at `deploy/ca.crt` (the mount path is relative to `compose.yml`). `docker compose -f deploy/compose.yml -f deploy/ca.yml config` shows `api` and `worker` with the variable and the mount, and `migrate` without. The `web` and `migrate` services make no outgoing calls and need nothing. The variable **adds** to the usual roots, so
+public sites still verify. The file is read once, when the process starts: restart after changing it.
+
+**What was tried** (Bun 1.4.2, on 2026-10-22, a throwaway authority and a `localhost` certificate made by hand, nothing
+of it kept): a plain `fetch` to a TLS server with that certificate fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`; with
+`NODE_EXTRA_CA_CERTS` set to the authority's certificate it succeeds; with it set to the wrong file it still fails; with
+a file that is not there it still fails and prints one warning (`ignoring extra certs … load failed`), so **read the
+log if a trusted authority is still refused**. A compiled binary (`bun build --compile`) behaves the same. A file with the
+authority's certificate twice (a bundle) works. Public sites (`example.com`) verify with and without the variable.
+
+**Not checked:** the real CLI binary against a private-CA platform address (the same variable is the expected way; a
+compiled probe was checked, not the CLI); the runner's own trust, which is the runner's setting, not ours (a job that
+calls the platform or GitLab over your CA needs `CI_SERVER_TLS_CA_FILE` or the runner's `tls-ca-file`; read GitLab's
+runner docs for your version); a GitLab behind a CA that needs client certificates (not supported); a certificate that
+is expired or for another name (still refused, as it should be).
 
 ## Upgrading and backing up
 

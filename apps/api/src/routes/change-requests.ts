@@ -15,6 +15,7 @@ import {
   type ChangeRequest,
   createApplyRequest,
   createChangeRequest,
+  createDeployRequest,
   getChangeRequest,
   getEnvironment,
   getRun,
@@ -30,6 +31,7 @@ import { auditPlugin } from "../audit";
 import { noKeys } from "../connections";
 import { guardPlugin, unauthenticated } from "../guard";
 import { type Principal, personOf } from "../principal";
+import { assertKnownBuild, assertSha } from "../promotion";
 import {
   iso,
   mapDbError,
@@ -43,7 +45,7 @@ import {
   stamps,
   writeErrors,
 } from "./shared";
-import { bulkEvents, bulkOps, failing } from "./variables";
+import { bulkEvents, bulkOps, failing, foldersNamed } from "./variables";
 
 const person = z.object({ kind: z.string(), id: z.string() });
 const requestSchema = z.object({
@@ -58,16 +60,19 @@ const requestSchema = z.object({
     z.object({
       action: z.enum(["set", "rename", "delete", "apply"]),
       key: z.string(),
+      /** Where the variable is; left out at the root. */
+      folder: z.string().optional(),
       kind: z.string().optional(),
       to: z.string().optional(),
     }),
   ),
-  /** What an approval to apply is for: the run, and its target or its stacks at their plan jobs. */
+  /** What an approval to apply is for: the run, and its target or its stacks at their plan jobs; for a deploy, the commit. */
   subject: z
     .object({
-      runId: z.uuid(),
+      runId: z.uuid().optional(),
       targetId: z.uuid().optional(),
       stacks: z.record(z.string(), z.number().int()).optional(),
+      sha: z.string().optional(),
     })
     .nullable(),
   author: person,
@@ -85,7 +90,7 @@ const requestDto = (r: ChangeRequest): z.infer<typeof requestSchema> => ({
   kind: z.enum(CHANGE_REQUEST_KINDS).parse(r.kind),
   status: z.enum(CHANGE_REQUEST_STATUSES).parse(r.status),
   diff: r.diff,
-  subject: r.subjectId ? { runId: r.subjectId, ...r.subject } : null,
+  subject: r.subjectId ? { runId: r.subjectId, ...r.subject } : r.subject,
   author: { kind: r.authorKind, id: r.authorId },
   decidedBy: r.decidedById && r.decidedByKind ? { kind: r.decidedByKind, id: r.decidedById } : null,
   decidedAt: r.decidedAt ? iso(r.decidedAt) : null,
@@ -115,7 +120,8 @@ const iacAsk = z.strictObject({
     .refine((names) => new Set(names).size === names.length, "a stack is named twice")
     .optional(),
 });
-const create = z.union([edits, syncAsk, iacAsk]);
+const deployAsk = z.strictObject({ kind: z.literal("deploy"), sha: z.string().max(255) });
+const create = z.union([edits, syncAsk, iacAsk, deployAsk]);
 const unavailable = { ...writeErrors, 500: problemSchema, 503: problemSchema } as const;
 
 type Params = z.infer<typeof params>;
@@ -146,7 +152,7 @@ const conflict = (code: string, message: string) => new DomainError(code, 409, m
  *
  * The same requests carry leave to apply a sync plan or the stacks of an IaC run that a protected
  * environment guards (GOV-3). Approving one applies nothing: it stays approved until the apply, by
- * plan id as ever, uses it up.
+ * plan id as ever, uses it up. So does leave to deploy a commit to a protected environment (DEP-16).
  */
 export const changeRequestRoutes = ({
   db,
@@ -159,19 +165,33 @@ export const changeRequestRoutes = ({
     return keys;
   };
   const failingWith = failing(logger);
-  /** What a request to apply is for and what its approver is shown. It must name a plan that could still be applied. */
-  const applying = async (
-    p: Params,
-    env: { slug: string; protected: boolean },
-    body: z.infer<typeof syncAsk> | z.infer<typeof iacAsk>,
-  ): Promise<{ kind: ApplyKind; subject: ApplySubject; diff: DiffEntry[] }> => {
-    // asked where the approvers will look: the environment that guards the apply
+  // asked where the approvers will look: the environment that guards the apply
+  const guarding = (env: { protected: boolean }) => {
     if (!env.protected) {
       throw conflict(
         "environment_not_protected",
         "A request to apply is made in a protected environment",
       );
     }
+  };
+  /** What a request to deploy is for: a build that exists, into the environment it is made in. */
+  const deploying = async (
+    p: Params,
+    env: { slug: string; protected: boolean },
+    body: z.infer<typeof deployAsk>,
+  ) => {
+    guarding(env);
+    assertSha(body.sha);
+    await assertKnownBuild(db, { id: p.projectId, organizationId: p.orgId }, body.sha);
+    return { sha: body.sha, diff: [{ action: "apply", key: env.slug }] satisfies DiffEntry[] };
+  };
+  /** What a request to apply is for and what its approver is shown. It must name a plan that could still be applied. */
+  const applying = async (
+    p: Params,
+    env: { slug: string; protected: boolean },
+    body: z.infer<typeof syncAsk> | z.infer<typeof iacAsk>,
+  ): Promise<{ kind: ApplyKind; subject: ApplySubject; diff: DiffEntry[] }> => {
+    guarding(env);
     if (body.kind === "sync_apply") {
       const target = await getSyncTarget(db, p.orgId, p.projectId, body.targetId);
       if (!target) throw notFound("Sync target");
@@ -272,7 +292,11 @@ export const changeRequestRoutes = ({
         const author = who(caller);
         const env = await getEnvironment(db, p.orgId, p.projectId, p.envId);
         if (!env) throw notFound("Environment");
-        const ask = "ops" in body ? undefined : await applying(p, env, body);
+        if ("ops" in body) await foldersNamed(db, p.projectId, body.ops);
+        const deploy =
+          "ops" in body || body.kind !== "deploy" ? undefined : await deploying(p, env, body);
+        const ask =
+          "ops" in body || body.kind === "deploy" ? undefined : await applying(p, env, body);
         const expiresAt = new Date(Date.now() + CHANGE_REQUEST_TTL_DAYS * 86_400_000);
         const made = await db
           .transaction(async (tx) => {
@@ -289,6 +313,18 @@ export const changeRequestRoutes = ({
                 409,
                 `This environment already has ${CHANGE_REQUEST_MAX_OPEN} open change requests: decide some first`,
               );
+            }
+            if (deploy) {
+              const r = await createDeployRequest(tx, { ...atOf(p), ...deploy, author, expiresAt });
+              await audit(
+                tx,
+                audited("change_request.create", p, r.id, {
+                  kind: "deploy",
+                  count: deploy.diff.length,
+                  sha: deploy.sha,
+                }),
+              );
+              return r;
             }
             if (ask) {
               const r = await createApplyRequest(tx, { ...atOf(p), ...ask, author, expiresAt });

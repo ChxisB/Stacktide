@@ -297,13 +297,14 @@ describe("asking for checks", () => {
     expect(STACK_DRIFT_CHECK_QUEUE).toBe("stack.drift");
   });
 
-  test("a job for each linked project that holds Terraform or Terragrunt, ids only, and asking again adds none", async () => {
+  test("a job for each linked project that holds Terraform, Terragrunt or DNS zones, ids only, and asking again adds none", async () => {
     const tf = await world([tag("bun"), tag("terraform")]);
     const tg = await world([tag("terragrunt")]);
+    const dns = await world([tag("dnscontrol")]);
     const other = await world([tag("bun"), tag("docker")]);
     const bare = await world([]);
     const unlinked = await world([tag("terraform")], null);
-    const ids = [tf, tg, other, bare, unlinked].map((w) => w.project.id);
+    const ids = [tf, tg, dns, other, bare, unlinked].map((w) => w.project.id);
 
     // 2 per page: the walk has to continue past a page
     expect(await queueStackDriftChecks(t.db, 2)).toBeGreaterThanOrEqual(2);
@@ -316,6 +317,7 @@ describe("asking for checks", () => {
       [
         { organizationId: tf.org.id, projectId: tf.project.id },
         { organizationId: tg.org.id, projectId: tg.project.id },
+        { organizationId: dns.org.id, projectId: dns.project.id },
       ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     );
     for (const j of jobsFor) {
@@ -323,7 +325,7 @@ describe("asking for checks", () => {
     }
 
     expect(await queueStackDriftChecks(t.db, 2)).toBe(0);
-    expect(await queued(ids)).toHaveLength(2);
+    expect(await queued(ids)).toHaveLength(3);
   });
 
   test("a project's jobs are asked for again once the earlier one has run", async () => {

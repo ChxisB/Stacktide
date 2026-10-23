@@ -570,13 +570,69 @@ describe("reading runs", () => {
     expect(ids(await call("alice", "GET", url("ref=dev&status=failed")))).toEqual([102]);
   });
 
-  test.each(["limit=0", "limit=101", "limit=x", "before=0", "before=x", "status=Failed", "ref="])(
-    "?%s is refused",
-    async (qs) => {
-      const w = await world();
-      expect((await call("alice", "GET", `${w.base}/pipeline-runs?${qs}`)).status).toBe(422);
-    },
-  );
+  // NOD-10: the run of one GitLab pipeline, found by its number in this project (the web matches a trigger's downstream pipeline)
+  test("by GitLab's number of the pipeline, in this project only", async () => {
+    const w = await seeded();
+    const url = (qs: string) => `${w.base}/pipeline-runs?${qs}`;
+    const found = await call("alice", "GET", url("pipelineId=103"));
+    expect(ids(found)).toEqual([103]);
+    expect(found.json.next).toBeNull();
+    expect(found.json.runs[0]).toMatchObject({ ref: "main", status: "running" });
+    expect(ids(await call("alice", "GET", url("pipelineId=999")))).toEqual([]);
+    // the other project has a pipeline of its own (and one that is numbered like this project's): each finds only its own
+    const other = await world();
+    for (const id of [101, 777]) {
+      await recordPipelineRun(t.db, {
+        organizationId: o1,
+        projectId: other.project.id,
+        connectionId: conn1,
+        gitlabPipelineId: id,
+        iid: 1,
+        status: "success",
+        ref: "elsewhere",
+        sha: "c".repeat(40),
+        webUrl: `https://gitlab.example/other/-/pipelines/${id}`,
+        failureReason: null,
+        failedJob: null,
+        observedAt: new Date(),
+      });
+    }
+    expect(ids(await call("alice", "GET", url("pipelineId=777")))).toEqual([]);
+    const theirs = await call("alice", "GET", `${other.base}/pipeline-runs?pipelineId=777`);
+    expect(theirs.json.runs.map((r: { ref: string }) => r.ref)).toEqual(["elsewhere"]);
+    expect((await call("alice", "GET", url("pipelineId=101"))).json.runs[0].ref).toBe("main");
+    // with the other filters, all of them hold
+    expect(ids(await call("alice", "GET", url("pipelineId=103&ref=dev")))).toEqual([]);
+    expect(ids(await call("alice", "GET", url("pipelineId=103&ref=main")))).toEqual([103]);
+  });
+
+  test("by the pipeline's number: who may, as for the rest of the list", async () => {
+    const w = await seeded();
+    const path = `${w.base}/pipeline-runs?pipelineId=103`;
+    for (const who of ["alice", "bob", "carol", "dave"] as const) {
+      const res = await call(who, "GET", path);
+      expect([who, res.status, ids(res)]).toEqual([who, 200, [103]]);
+    }
+    const stranger = await call("erin", "GET", path);
+    expect([stranger.status, stranger.text]).toEqual([404, expect.not.stringContaining("103")]);
+    expect((await call(null, "GET", path)).status).toBe(401);
+  });
+
+  test.each([
+    "limit=0",
+    "limit=101",
+    "limit=x",
+    "before=0",
+    "before=x",
+    "status=Failed",
+    "ref=",
+    "pipelineId=0",
+    "pipelineId=x",
+    "pipelineId=1.5",
+  ])("?%s is refused", async (qs) => {
+    const w = await world();
+    expect((await call("alice", "GET", `${w.base}/pipeline-runs?${qs}`)).status).toBe(422);
+  });
 
   test("the latest run of each ref", async () => {
     const w = await seeded();
@@ -809,6 +865,515 @@ describe("retrying a pipeline", () => {
     );
     const res = await retry(f.base, gone.id);
     expect([res.status, res.json.code]).toEqual([422, "gitlab_pipeline_gone"]);
+  });
+});
+
+/** A CI file of `count` jobs in one stage, all in GitLab's order of definition. */
+const manyJobs = (count: number) =>
+  Array.from(
+    { length: count },
+    (_, i) => `j${String(i).padStart(3, "0")}:\n  script:\n    - echo\n`,
+  ).join("");
+const JOB_KEYS = [
+  "allowFailure",
+  "duration",
+  "failureReason",
+  "finishedAt",
+  "id",
+  "name",
+  "stage",
+  "startedAt",
+  "status",
+  "webUrl",
+].sort();
+const jobsOf = (base: string, id: string, who: Who | null = "alice", a = app) =>
+  call(who, "GET", `${base}/pipeline-runs/${id}/jobs`, a);
+
+describe("the jobs of a pipeline", () => {
+  const STAGES =
+    "build:\n  stage: build\n  script:\n    - make\nunit:\n  stage: test\n  script:\n    - make test\nlint:\n  stage: test\n  script:\n    - make lint\n";
+
+  test("answers each job in the order they were made, stage by stage, with what a page needs, read live and written nowhere", async () => {
+    const f = await failedRun(STAGES);
+    mock.finishPipeline(f.p, "failed", "script_failure", ["build"]);
+    const audits = (await t.db.select().from(auditEvents)).length;
+    mock.requests.splice(0);
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.status).toBe(200);
+    expect(res.json.truncated).toBe(false);
+    expect(
+      // biome-ignore lint/suspicious/noExplicitAny: a response body
+      res.json.jobs.map((j: any) => [j.name, j.stage, j.status, j.failureReason, j.allowFailure]),
+    ).toEqual([
+      ["build", "build", "success", null, false],
+      ["unit", "test", "failed", "script_failure", false],
+      ["lint", "test", "failed", "script_failure", false],
+    ]);
+    for (const j of res.json.jobs) {
+      expect(Object.keys(j).sort()).toEqual(JOB_KEYS);
+      expect(typeof j.startedAt).toBe("string");
+      expect(typeof j.finishedAt).toBe("string");
+      expect(j.duration).toBeGreaterThanOrEqual(0);
+      expect(j.webUrl).toBe(`${mock.url}/${f.gl.path}/-/jobs/${j.id}`);
+    }
+    // only reads, and nothing is stored: a look at the jobs leaves no trace here
+    expect(mock.requests.map((r) => r.method)).toEqual(mock.requests.map(() => "GET"));
+    expect(requestsTo(/\/pipelines\/\d+\/jobs/).length).toBeGreaterThan(0);
+    expect((await t.db.select().from(auditEvents)).length).toBe(audits);
+  });
+
+  test("is oldest first even when GitLab lists the newest first, as it does now: that is the stages' order", async () => {
+    const f = await failedRun(STAGES);
+    mock.listJobsNewestFirst(true);
+    try {
+      const raw = await fetch(`${mock.url}/api/v4/projects/${f.gl.id}/pipelines/${f.p}/jobs`, {
+        headers: { "private-token": mock.token },
+      }).then((r) => r.json() as Promise<{ name: string }[]>);
+      // the mock does list them backwards (or this test would pass for nothing)
+      expect(raw.map((j) => j.name)).toEqual(["lint", "unit", "build"]);
+      const res = await jobsOf(f.base, f.run.id);
+      // biome-ignore lint/suspicious/noExplicitAny: a response body
+      expect(res.json.jobs.map((j: any) => j.name)).toEqual(["build", "unit", "lint"]);
+    } finally {
+      mock.listJobsNewestFirst(false);
+    }
+  });
+
+  test("a job that has not run has no times", async () => {
+    const w = await world(STAGES);
+    const p = await w.trigger();
+    await handler(job(w.event(p)));
+    const [run] = await w.runs();
+    const res = await jobsOf(w.base, run?.id ?? "");
+    expect(
+      // biome-ignore lint/suspicious/noExplicitAny: a response body
+      res.json.jobs.map((j: any) => [j.status, j.startedAt, j.finishedAt, j.duration]),
+    ).toEqual([
+      ["pending", null, null, null],
+      ["pending", null, null, null],
+      ["pending", null, null, null],
+    ]);
+  });
+
+  test("only the allow-listed keys leave, whatever GitLab sends on a job", async () => {
+    const f = await failedRun(STAGES);
+    mock.addJobFields(f.p, "unit", {
+      trace: "$ echo TRACE-SECRET-VALUE",
+      variables: [{ key: "TOKEN", value: "VARIABLE-SECRET-VALUE" }],
+      runner: { id: 7, description: "RUNNER-DESCRIPTION", token: "RUNNER-SECRET-VALUE" },
+      user: { id: 3, username: "USERNAME-OF-TRIGGERER" },
+      artifacts: [{ filename: "ARTIFACT-NAME.zip" }],
+    });
+    // the mock does send them (or this test would pass for nothing)
+    const raw = await fetch(`${mock.url}/api/v4/projects/${f.gl.id}/pipelines/${f.p}/jobs`, {
+      headers: { "private-token": mock.token },
+    }).then((r) => r.text());
+    expect(raw).toContain("TRACE-SECRET-VALUE");
+    expect(raw).toContain("USERNAME-OF-TRIGGERER");
+
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.status).toBe(200);
+    for (const j of res.json.jobs) expect(Object.keys(j).sort()).toEqual(JOB_KEYS);
+    for (const word of [
+      "TRACE-SECRET-VALUE",
+      "VARIABLE-SECRET-VALUE",
+      "RUNNER-DESCRIPTION",
+      "RUNNER-SECRET-VALUE",
+      "USERNAME-OF-TRIGGERER",
+      "ARTIFACT-NAME",
+    ]) {
+      expect(res.text).not.toContain(word);
+      expect(lines.join("\n")).not.toContain(word);
+    }
+  });
+
+  test("names and reasons are clipped as the stored run's are", async () => {
+    const long = "n".repeat(300);
+    const f = await failedRun(`${long}:\n  script:\n    - echo\n`);
+    mock.finishPipeline(f.p, "failed", "r".repeat(300));
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.json.jobs[0].name).toHaveLength(200);
+    expect(res.json.jobs[0].failureReason).toHaveLength(200);
+  });
+
+  test("at most 200 jobs, and it says when there were more", async () => {
+    const over = await failedRun(manyJobs(201));
+    const a = await jobsOf(over.base, over.run.id);
+    expect([a.status, a.json.jobs.length, a.json.truncated]).toEqual([200, 200, true]);
+    expect(a.json.jobs[0].name).toBe("j000");
+    const exact = await failedRun(manyJobs(200));
+    const b = await jobsOf(exact.base, exact.run.id);
+    expect([b.status, b.json.jobs.length, b.json.truncated]).toEqual([200, 200, false]);
+  });
+
+  test("not when the connection that read it is gone, and GitLab is not asked", async () => {
+    const f = await failedRun();
+    await recordPipelineRun(t.db, restate(f.run, { connectionId: null }));
+    mock.requests.splice(0);
+    const res = await jobsOf(f.base, f.run.id);
+    expect([res.status, res.json.code]).toEqual([409, "no_connection"]);
+    expect(mock.requests).toEqual([]);
+  });
+
+  test("not for a project that is not from GitLab", async () => {
+    const project = await createProject(t.db, { organizationId: o1, name: `bare${++n}` });
+    const run = await recordPipelineRun(t.db, {
+      organizationId: o1,
+      projectId: project.id,
+      connectionId: conn1,
+      gitlabPipelineId: 6,
+      iid: 1,
+      status: "success",
+      ref: "main",
+      sha: "c".repeat(40),
+      webUrl: "https://gitlab.example/-/pipelines/6",
+      failureReason: null,
+      failedJob: null,
+      observedAt: new Date(),
+    });
+    const res = await jobsOf(`/organizations/${o1}/projects/${project.id}`, run.run.id);
+    expect([res.status, res.json.code]).toEqual([422, "not_linked"]);
+  });
+
+  test("needs the master key, as every use of a connection's token does", async () => {
+    const f = await failedRun();
+    mock.requests.splice(0);
+    const res = await jobsOf(f.base, f.run.id, "alice", makeApp(undefined));
+    expect([res.status, res.json.code]).toEqual([503, "secrets_unavailable"]);
+    expect(mock.requests).toEqual([]);
+  });
+
+  test("GitLab failing is a 502, and its words are about reading the jobs", async () => {
+    const f = await failedRun();
+    // a read is tried once more (`gitlabFor`: one retry), so the failure outlasts it
+    mock.inject({ method: "GET", path: /\/jobs$/, status: 500, times: 2 });
+    const failed = await jobsOf(f.base, f.run.id);
+    expect([failed.status, failed.json.code]).toEqual([502, "gitlab_failed"]);
+    mock.inject({ method: "GET", path: /\/jobs$/, status: 403, times: 1 });
+    const refused = await jobsOf(f.base, f.run.id);
+    expect([refused.status, refused.json.code]).toEqual([422, "gitlab_refused"]);
+    expect(refused.json.detail ?? refused.json.message ?? refused.text).not.toMatch(/retry/i);
+    const { run: gone } = await recordPipelineRun(
+      t.db,
+      restate(f.run, { gitlabPipelineId: 9_999_002, observedAt: new Date() }),
+    );
+    const missing = await jobsOf(f.base, gone.id);
+    expect([missing.status, missing.json.code]).toEqual([422, "gitlab_pipeline_gone"]);
+  });
+
+  test("who may read: an admin, an organization member, a project reporter and a maintainer do; a stranger and no one do not", async () => {
+    const f = await failedRun();
+    mock.requests.splice(0);
+    for (const [who, status] of [
+      ["erin", 404],
+      [null, 401],
+    ] as const) {
+      expect([who, (await jobsOf(f.base, f.run.id, who)).status]).toEqual([who, status]);
+    }
+    expect(mock.requests).toEqual([]);
+    for (const who of ["alice", "bob", "carol", "dave"] as const) {
+      expect([who, (await jobsOf(f.base, f.run.id, who)).status]).toEqual([who, 200]);
+    }
+  });
+
+  test("not another project's run, nor another organization's", async () => {
+    const f = await failedRun();
+    const other = await world();
+    mock.requests.splice(0);
+    expect((await jobsOf(other.base, f.run.id)).status).toBe(404);
+    expect(
+      (
+        await call(
+          "alice",
+          "GET",
+          `/organizations/${o2}/projects/${f.project.id}/pipeline-runs/${f.run.id}/jobs`,
+        )
+      ).status,
+    ).toBe(404);
+    const none = "00000000-0000-4000-8000-000000000000";
+    expect((await jobsOf(f.base, none)).status).toBe(404);
+    expect(mock.requests).toEqual([]);
+  });
+
+  test("the connection's token is in no jobs response, no log and no audit row", async () => {
+    const f = await failedRun();
+    await jobsOf(f.base, f.run.id);
+    const rows = JSON.stringify(await t.db.select().from(auditEvents));
+    for (const place of [seen.join("\n"), lines.join("\n"), rows]) {
+      expect(place).not.toContain(mock.token);
+    }
+  });
+});
+
+const TRIGGER_KEYS = ["downstream", "id", "name", "stage", "status", "webUrl"];
+const DOWNSTREAM_KEYS = ["gone", "pipelineId", "projectId", "sameProject", "status"];
+const CHILD_KEYS = ["jobs", "pipelineId", "status", "truncated"];
+
+describe("the triggers and the child pipelines of a pipeline (NOD-6)", () => {
+  const STAGES =
+    "build:\n  stage: build\n  script:\n    - make\ndeploy:\n  stage: deploy\n  script:\n    - make deploy\n";
+  // biome-ignore lint/suspicious/noExplicitAny: a response body
+  const names = (jobs: any[]) => jobs.map((j) => j.name);
+
+  test("a trigger in this project answers its state and its child's jobs, in the same ten keys", async () => {
+    const f = await failedRun(STAGES);
+    const child = mock.addDownstream(f.p, "launch", ["migrate", "smoke"], { stage: "deploy" });
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.status).toBe(200);
+    expect(names(res.json.jobs)).toEqual(["build", "deploy"]);
+    expect(res.json.triggers).toHaveLength(1);
+    const [trigger] = res.json.triggers;
+    expect(Object.keys(trigger).sort()).toEqual(TRIGGER_KEYS);
+    expect(Object.keys(trigger.downstream).sort()).toEqual(DOWNSTREAM_KEYS);
+    expect([trigger.name, trigger.stage, trigger.status]).toEqual(["launch", "deploy", "pending"]);
+    expect(trigger.webUrl).toContain(`${mock.url}/${f.gl.path}/-/jobs/`);
+    expect(trigger.downstream).toEqual({
+      pipelineId: child,
+      status: "pending",
+      sameProject: true,
+      projectId: null,
+      gone: false,
+    });
+    expect(res.json.triggersTruncated).toBe(false);
+    expect(res.json.children).toHaveLength(1);
+    const [c] = res.json.children;
+    // a trigger is a job of the pipeline: its number is from the same sequence as the jobs', so it sorts among them
+    const jobIds = [...res.json.jobs, ...c.jobs].map((j: { id: number }) => j.id);
+    expect(jobIds).not.toContain(trigger.id);
+    expect(Math.max(...res.json.jobs.map((j: { id: number }) => j.id))).toBeLessThan(trigger.id);
+    expect(Object.keys(c).sort()).toEqual(CHILD_KEYS);
+    expect([c.pipelineId, c.status, c.truncated]).toEqual([child, "pending", false]);
+    expect(names(c.jobs)).toEqual(["migrate", "smoke"]);
+    for (const j of c.jobs) expect(Object.keys(j).sort()).toEqual(JOB_KEYS);
+  });
+
+  test("a pipeline with no trigger answers none, and asks GitLab for nothing more than its jobs and its triggers", async () => {
+    const f = await failedRun(STAGES);
+    mock.requests.splice(0);
+    const res = await jobsOf(f.base, f.run.id);
+    expect([res.json.triggers, res.json.children, res.json.triggersTruncated]).toEqual([
+      [],
+      [],
+      false,
+    ]);
+    expect(mock.requests.map((r) => r.method)).toEqual(mock.requests.map(() => "GET"));
+    expect(requestsTo(/\/pipelines\/\d+\/(jobs|bridges)$/)).toHaveLength(2);
+    expect(requestsTo(/\/pipelines\/\d+\/(jobs|bridges)$/)).toHaveLength(mock.requests.length);
+  });
+
+  test("only the allow-listed keys of a child's jobs leave, whatever GitLab sends", async () => {
+    const f = await failedRun(STAGES);
+    const child = mock.addDownstream(f.p, "launch", ["migrate"]);
+    mock.addJobFields(child, "migrate", {
+      trace: "$ echo TRACE-SECRET-VALUE",
+      variables: [{ key: "TOKEN", value: "VARIABLE-SECRET-VALUE" }],
+      runner: { id: 7, description: "RUNNER-DESCRIPTION", token: "RUNNER-SECRET-VALUE" },
+      user: { id: 3, username: "USERNAME-OF-TRIGGERER" },
+    });
+    const raw = await fetch(`${mock.url}/api/v4/projects/${f.gl.id}/pipelines/${child}/jobs`, {
+      headers: { "private-token": mock.token },
+    }).then((r) => r.text());
+    expect(raw).toContain("TRACE-SECRET-VALUE"); // the mock does send them
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.json.children[0].jobs).toHaveLength(1);
+    for (const j of res.json.children[0].jobs) expect(Object.keys(j).sort()).toEqual(JOB_KEYS);
+    for (const word of [
+      "TRACE-SECRET-VALUE",
+      "VARIABLE-SECRET-VALUE",
+      "RUNNER-DESCRIPTION",
+      "RUNNER-SECRET-VALUE",
+      "USERNAME-OF-TRIGGERER",
+    ]) {
+      expect(res.text).not.toContain(word);
+      expect(lines.join("\n")).not.toContain(word);
+    }
+  });
+
+  test("at most 200 jobs in all: a child gets what the pipeline left, and says it was cut", async () => {
+    const f = await failedRun(manyJobs(150));
+    mock.addDownstream(
+      f.p,
+      "launch",
+      Array.from({ length: 51 }, (_, i) => `c${String(i).padStart(3, "0")}`),
+    );
+    const res = await jobsOf(f.base, f.run.id);
+    const [c] = res.json.children;
+    expect([res.json.jobs.length, res.json.truncated]).toEqual([150, false]);
+    expect([c.jobs.length, c.truncated]).toEqual([50, true]);
+    expect(res.json.jobs.length + c.jobs.length).toBe(200);
+    expect(c.jobs[0].name).toBe("c000");
+  });
+
+  test("at most 5 children are read, and the sixth trigger is still listed", async () => {
+    const f = await failedRun(STAGES);
+    const kids = Array.from({ length: 6 }, (_, i) => mock.addDownstream(f.p, `t${i}`, [`k${i}`]));
+    mock.requests.splice(0);
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.json.triggers).toHaveLength(6);
+    expect(res.json.children.map((c: { pipelineId: number }) => c.pipelineId)).toEqual(
+      kids.slice(0, 5),
+    );
+    expect(requestsTo(new RegExp(`/pipelines/${kids[5]}/`))).toEqual([]);
+    expect(res.json.triggers[5].downstream).toEqual({
+      pipelineId: kids[5],
+      status: "pending",
+      sameProject: true,
+      projectId: null,
+      gone: false,
+    });
+  });
+
+  test("at most 20 triggers, and it says when there were more", async () => {
+    const f = await failedRun(STAGES);
+    for (let i = 0; i < 20; i++) mock.addBridge(f.p, `t${i}`, "deploy");
+    const exact = await jobsOf(f.base, f.run.id);
+    expect([exact.json.triggers.length, exact.json.triggersTruncated]).toEqual([20, false]);
+    mock.addBridge(f.p, "t20", "deploy");
+    const over = await jobsOf(f.base, f.run.id);
+    expect([over.json.triggers.length, over.json.triggersTruncated]).toEqual([20, true]);
+    expect(over.json.triggers[0].downstream).toBeNull();
+  });
+
+  test("a child's own trigger is not followed", async () => {
+    const f = await failedRun(STAGES);
+    const child = mock.addDownstream(f.p, "launch", ["migrate"]);
+    const grand = mock.addDownstream(child, "again", ["GRANDCHILD-JOB"]);
+    mock.requests.splice(0);
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.json.children).toHaveLength(1);
+    expect(res.text).not.toContain("GRANDCHILD-JOB");
+    expect(res.text).not.toContain("again");
+    expect(requestsTo(new RegExp(`/pipelines/${child}/bridges`))).toEqual([]);
+    expect(requestsTo(new RegExp(`/pipelines/${grand}/`))).toEqual([]);
+  });
+
+  test("a trigger into another project answers its state and number, and that project's pipeline is not read", async () => {
+    const f = await failedRun(STAGES);
+    const other = mock.addProject({ path: "fx/elsewhere", files: { ".gitlab-ci.yml": CI } });
+    const child = mock.addDownstream(f.p, "launch", ["OTHER-PROJECT-JOB"], {
+      project: other.path,
+    });
+    mock.setPipelineStatus(child, "running");
+    mock.requests.splice(0);
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.status).toBe(200);
+    expect(res.json.children).toEqual([]);
+    const [trigger] = res.json.triggers;
+    expect(trigger.downstream).toEqual({
+      pipelineId: child,
+      status: "running",
+      sameProject: false,
+      projectId: other.id,
+      gone: false,
+    });
+    // no name, path, address or job of the other project, and no request that asks for any
+    expect(trigger.webUrl).toBe("");
+    for (const word of [other.path, "elsewhere", "OTHER-PROJECT-JOB"])
+      expect(res.text).not.toContain(word);
+    expect(requestsTo(new RegExp(`/projects/${other.id}[/?]|/pipelines/${child}`))).toEqual([]);
+    expect(requestsTo(/\/projects\/[^/]+\/?$/)).toEqual([]);
+  });
+
+  // NOD-9: the connection that reads this project can read the other one too (same token, same GitLab), so what keeps its
+  // name, path, address and jobs out of the answer is this route, not GitLab's permissions
+  test("a trigger into another project the connection can read still leaves out that project's name, path, address and jobs, from the answer and the logs", async () => {
+    const f = await failedRun(STAGES);
+    const other = mock.addProject({
+      path: "fx/elsewhere-team/billing-api",
+      files: { ".gitlab-ci.yml": CI },
+    });
+    const child = mock.addDownstream(f.p, "launch", ["OTHER-PROJECT-JOB"], {
+      project: other.path,
+    });
+    mock.setPipelineStatus(child, "success");
+    const reachable = await fetch(
+      `${mock.url}/api/v4/projects/${other.id}/pipelines/${child}/jobs`,
+      { headers: { "private-token": mock.token } },
+    );
+    expect(reachable.status).toBe(200);
+    expect(await reachable.text()).toContain("OTHER-PROJECT-JOB");
+    lines.splice(0);
+    mock.requests.splice(0);
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.status).toBe(200);
+    expect(res.json.triggers[0].downstream).toEqual({
+      pipelineId: child,
+      status: "success",
+      sameProject: false,
+      projectId: other.id,
+      gone: false,
+    });
+    const said = `${res.text}\n${lines.join("\n")}`;
+    for (const word of [
+      other.path,
+      "elsewhere-team",
+      "billing-api",
+      `${mock.url}/${other.path}`,
+      "OTHER-PROJECT-JOB",
+    ])
+      expect(said, word).not.toContain(word);
+    // nothing asked GitLab about it, so nothing it knows could have been passed on
+    expect(requestsTo(new RegExp(`/projects/${other.id}[/?]|/pipelines/${child}`))).toEqual([]);
+  });
+
+  test("a downstream whose project GitLab does not name is treated as another project's, and not read", async () => {
+    const f = await failedRun(STAGES);
+    const child = mock.addDownstream(f.p, "launch", ["k"], { omitProject: true });
+    mock.requests.splice(0);
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.json.children).toEqual([]);
+    expect(res.json.triggers[0].downstream).toEqual({
+      pipelineId: child,
+      status: "pending",
+      sameProject: false,
+      projectId: null,
+      gone: false,
+    });
+    expect(requestsTo(new RegExp(`/pipelines/${child}/`))).toEqual([]);
+  });
+
+  test("a child that is gone is left out, its trigger says so, and the pipeline's own jobs still answer", async () => {
+    const f = await failedRun(STAGES);
+    const child = mock.addDownstream(f.p, "launch", ["migrate"]);
+    mock.inject({ method: "GET", path: new RegExp(`/pipelines/${child}/jobs$`), status: 404 });
+    const res = await jobsOf(f.base, f.run.id);
+    expect(res.status).toBe(200);
+    expect(names(res.json.jobs)).toEqual(["build", "deploy"]);
+    expect(res.json.children).toEqual([]);
+    expect(res.json.triggers[0].downstream).toEqual({
+      pipelineId: child,
+      status: "pending",
+      sameProject: true,
+      projectId: null,
+      gone: true,
+    });
+  });
+
+  test("GitLab failing on the triggers or on a child is a 502, as it is on the jobs", async () => {
+    const f = await failedRun(STAGES);
+    mock.inject({ method: "GET", path: /\/bridges$/, status: 500, times: 2 });
+    const a = await jobsOf(f.base, f.run.id);
+    expect([a.status, a.json.code]).toEqual([502, "gitlab_failed"]);
+    const child = mock.addDownstream(f.p, "launch", ["migrate"]);
+    mock.inject({
+      method: "GET",
+      path: new RegExp(`/pipelines/${child}/jobs$`),
+      status: 500,
+      times: 2,
+    });
+    const b = await jobsOf(f.base, f.run.id);
+    expect([b.status, b.json.code]).toEqual([502, "gitlab_failed"]);
+  });
+
+  test("who may read is unchanged, and a stranger's request reads nothing", async () => {
+    const f = await failedRun(STAGES);
+    mock.addDownstream(f.p, "launch", ["migrate"]);
+    mock.requests.splice(0);
+    expect((await jobsOf(f.base, f.run.id, "erin")).status).toBe(404);
+    expect((await jobsOf(f.base, f.run.id, null)).status).toBe(401);
+    expect(mock.requests).toEqual([]);
+    for (const who of ["bob", "carol", "dave"] as const)
+      expect([who, (await jobsOf(f.base, f.run.id, who)).json.children?.length]).toEqual([who, 1]);
   });
 });
 

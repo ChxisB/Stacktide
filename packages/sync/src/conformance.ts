@@ -20,6 +20,11 @@ export interface ConformanceTarget<C = unknown> {
 export interface ConformanceOptions {
   /** Items it can never hold (a secret it cannot mask, a key it cannot name) and the error each is. */
   refused?: { item: ItemInput; kind: SyncErrorKind }[];
+  /**
+   * The target keeps keys in capitals only (GitHub Actions stores a name in upper case), so it refuses any other and the
+   * suite tries none: its `a` is `_A` (after `B`, as `a` is) and its `abc` is `ABC_`.
+   */
+  capitalKeys?: boolean;
 }
 
 /** A value that must never show up in an error. */
@@ -166,7 +171,7 @@ export function runAdapterConformance<C>(
       expect(await remote.read()).toEqual([]);
       // a key is compared as a whole too: neither a part of it nor an extension of it is it
       await remote.create(item("ABC", "v"));
-      for (const key of ["AB", "ABCD", "abc"]) {
+      for (const key of ["AB", "ABCD", options.capitalKeys ? "ABC_" : "abc"]) {
         await failsWith("not_found", remote.update(item(key, CANARY)));
         await failsWith("not_found", remote.delete({ key, scope: ALL_SCOPES }));
       }
@@ -186,20 +191,21 @@ export function runAdapterConformance<C>(
 
     test("reads are ordered by key and then scope, in code units", async () => {
       const { remote, caps } = await fresh();
+      const lower = options.capitalKeys ? "_A" : "a";
       const order = caps.supportsScopes
         ? [
             item("B", "1", "prod"),
-            item("a", "2"),
+            item(lower, "2"),
             item("B", "3"),
             item("A", "4", "dev"),
             item("A", "5"),
           ]
-        : [item("B", "1"), item("a", "2"), item("A", "5")];
+        : [item("B", "1"), item(lower, "2"), item("A", "5")];
       for (const i of order) await remote.create(i);
       const read = ids(await remote.read());
       const expected = caps.supportsScopes
-        ? ["A@*", "A@dev", "B@*", "B@prod", "a@*"]
-        : ["A@*", "B@*", "a@*"];
+        ? ["A@*", "A@dev", "B@*", "B@prod", `${lower}@*`]
+        : ["A@*", "B@*", `${lower}@*`];
       expect(read).toEqual(expected);
     });
 

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
+import { StatusBadge } from "./components";
 import { Delivery } from "./pipeline-delivery";
 import {
   type Applied,
@@ -22,11 +23,17 @@ import {
   type Values,
   webUrl,
 } from "./pipeline-parts";
-import { type Project, ProjectPicker, Types, useConnections } from "./projects";
+import {
+  FORGES,
+  type Forge,
+  lacks,
+  type Project,
+  ProjectPicker,
+  Types,
+  useConnections,
+} from "./projects";
 import { href } from "./router";
 import { Loading, when } from "./ui";
-
-const FILE = ".gitlab-ci.yml";
 
 const at = (client: Client, orgId: string, projectId: string) =>
   client.organizations({ orgId }).projects({ projectId }).pipeline;
@@ -134,8 +141,8 @@ function Select({
       {sorted.length === 0 ? (
         <p>There are no templates to choose from.</p>
       ) : (
-        <fieldset className="list">
-          <legend>Template</legend>
+        <fieldset className="list cards">
+          <legend className="visually-hidden">Template</legend>
           {sorted.map((t) => (
             <label key={t.name} className="item">
               <input
@@ -147,7 +154,7 @@ function Select({
               <span className="stack">
                 <span>
                   <strong>{t.name}</strong> {t.version}{" "}
-                  {fit.has(t.name) && <span className="tag">Recommended</span>}
+                  {fit.has(t.name) && <StatusBadge tone="ok">Recommended</StatusBadge>}
                 </span>
                 <span className="muted">{t.description}</span>
               </span>
@@ -263,6 +270,7 @@ function Field({
 
 function Parameters({
   orgId,
+  forge,
   template,
   values,
   set,
@@ -276,6 +284,7 @@ function Parameters({
   submit,
 }: {
   orgId: string;
+  forge: Forge;
   template: TemplateInfo;
   values: Values;
   set: (name: string, value: string | boolean) => void;
@@ -288,7 +297,8 @@ function Parameters({
   back: () => void;
   submit: () => void;
 }) {
-  const connections = useConnections(orgId);
+  const connections = useConnections(orgId, forge);
+  const system = FORGES[forge].name;
   const names = Object.keys(template.params.properties);
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -308,12 +318,12 @@ function Parameters({
           <Loading what="Loading connections" />
         ) : connections.data.length === 0 ? (
           <p>
-            This organization has no GitLab connection yet. <a href={href("projects")}>Add one</a>{" "}
+            This organization has no {system} connection yet. <a href={href("projects")}>Add one</a>{" "}
             to create a merge request.
           </p>
         ) : (
           <div className="field">
-            <label htmlFor="pipeline-connection">GitLab connection</label>
+            <label htmlFor="pipeline-connection">{system} connection</label>
             <select
               id="pipeline-connection"
               value={connectionId ?? ""}
@@ -325,7 +335,7 @@ function Parameters({
                 </option>
               ))}
             </select>
-            <small className="muted">The connection that reaches this project in GitLab.</small>
+            <small className="muted">The connection that reaches this project in {system}.</small>
           </div>
         )}
         <Delivery
@@ -372,12 +382,12 @@ const unique = (messages: string[]) => [...new Set(messages)];
 
 const MARK: Record<Line["kind"], string> = { same: "  ", add: "+ ", del: "- " };
 
-function Diff({ before, after }: { before: string | null; after: string }) {
+function Diff({ before, after, file }: { before: string | null; after: string; file: string }) {
   const lines = lineDiff(before, after);
   const added = lines.filter((l) => l.kind === "add").length;
   const removed = lines.filter((l) => l.kind === "del").length;
   return (
-    <figure className="stack changes" aria-label={`Changes to ${FILE}`}>
+    <figure className="stack changes" aria-label={`Changes to ${file}`}>
       <figcaption>
         {added + removed === 0 ? "No changes." : `${added} added, ${removed} removed.`}
       </figcaption>
@@ -396,15 +406,16 @@ function Diff({ before, after }: { before: string | null; after: string }) {
   );
 }
 
-const EXISTING: Record<Preview["existing"], string> = {
-  none: `The default branch has no ${FILE}. The merge request adds it.`,
-  identical: `The default branch already has exactly this ${FILE}, so there is nothing to merge. Saving records that the project was set up from this template.`,
-  generated: `The default branch has an earlier ${FILE} generated from a template. The merge request updates it.`,
-  "hand-written": `The default branch has a ${FILE} written by hand. The merge request replaces it. Its content is not shown here: read the diff in the merge request before merging.`,
-};
+const existingNote = (file: string): Record<Preview["existing"], string> => ({
+  none: `The default branch has no ${file}. The merge request adds it.`,
+  identical: `The default branch already has exactly this ${file}, so there is nothing to merge. Saving records that the project was set up from this template.`,
+  generated: `The default branch has an earlier ${file} generated from a template. The merge request updates it.`,
+  "hand-written": `The default branch has a ${file} written by hand. The merge request replaces it. Its content is not shown here: read the diff in the merge request before merging.`,
+});
 
 function Review({
   reviewed,
+  project,
   config,
   busy,
   error,
@@ -412,6 +423,7 @@ function Review({
   create,
 }: {
   reviewed: { request: Request; preview: Preview };
+  project: Project;
   config: Config | null;
   busy: boolean;
   error: string | undefined;
@@ -420,17 +432,19 @@ function Review({
 }) {
   const { request, preview } = reviewed;
   const { lint, missingVariables, violations } = preview.validation;
+  const file = FORGES[project.forge].file;
+  const unlinted = lacks(project, "ciLint");
   return (
     <section className="stack card" aria-label="Step 4: Review">
       <h2>
-        Review {FILE} from {request.template} {request.version}
+        Review {file} from {request.template} {request.version}
       </h2>
       <p className={preview.existing === "hand-written" ? "warn" : undefined}>
-        {EXISTING[preview.existing]}
+        {existingNote(file)[preview.existing]}
       </p>
       {request.include && (
         <p>
-          The merge request writes a short {FILE} that{" "}
+          The merge request writes a short {file} that{" "}
           {request.mode === "component" ? "uses" : "includes"} {request.template} from{" "}
           <code>{request.include.project}</code>
           {request.include.ref ? ` at ${request.include.ref}` : ""}.
@@ -442,13 +456,13 @@ function Review({
           {config.mode === "component"
             ? "uses its template as a component of"
             : "includes its template from"}{" "}
-          another project. Creating this merge request writes the whole pipeline into {FILE}{" "}
+          another project. Creating this merge request writes the whole pipeline into {file}{" "}
           instead.
         </p>
       )}
       {!lint.valid && (
         <section className="stack" aria-label="Lint errors">
-          <h3>GitLab's lint refuses this pipeline</h3>
+          <h3>{FORGES[project.forge].name}'s lint refuses this pipeline</h3>
           <ul className="error">
             {unique(lint.errors).map((e) => (
               <li key={e}>{e}</li>
@@ -473,9 +487,10 @@ function Review({
           </p>
         </section>
       )}
+      {unlinted && <p className="muted">{unlinted}</p>}
       {lint.warnings.length > 0 && (
         <section className="stack" aria-label="Lint warnings">
-          <h3>GitLab's lint warns</h3>
+          <h3>{unlinted ? "Notes" : `${FORGES[project.forge].name}'s lint warns`}</h3>
           <ul className="warn">
             {unique(lint.warnings).map((w) => (
               <li key={w}>{w}</li>
@@ -500,7 +515,7 @@ function Review({
           </p>
         </section>
       )}
-      <Diff before={preview.current} after={preview.text} />
+      <Diff before={preview.current} after={preview.text} file={file} />
       {error && (
         <p role="alert" className="error">
           {error}
@@ -572,7 +587,7 @@ function Wizard({
 }) {
   const client = useClient();
   const queries = useQueryClient();
-  const connections = useConnections(orgId);
+  const connections = useConnections(orgId, project.forge);
   const { config, templates } = overview;
   const start = () => {
     const name = startTemplate(overview);
@@ -657,11 +672,17 @@ function Wizard({
     go("detect");
   };
 
+  // the steps before this one are done; once the result is shown, all of them are
+  const reached = step === "done" ? STEPS.length : STEPS.findIndex(([key]) => key === step);
   return (
     <div className="stack wide">
       <ol className="steps" aria-label="Steps">
         {STEPS.map(([key, label], i) => (
-          <li key={key} aria-current={key === step ? "step" : undefined}>
+          <li
+            key={key}
+            className={i < reached ? "done" : undefined}
+            aria-current={key === step ? "step" : undefined}
+          >
             {i + 1}. {label}
           </li>
         ))}
@@ -693,6 +714,7 @@ function Wizard({
       {step === "params" && template && (
         <Parameters
           orgId={orgId}
+          forge={project.forge}
           template={template}
           values={values}
           set={(n, v) => setValues((old) => ({ ...old, [n]: v }))}
@@ -709,6 +731,7 @@ function Wizard({
       {step === "review" && reviewed && (
         <Review
           reviewed={reviewed}
+          project={project}
           config={config}
           busy={busy === "apply"}
           error={error}

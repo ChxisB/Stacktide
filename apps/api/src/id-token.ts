@@ -106,6 +106,22 @@ export async function verifyIdToken(token: string, options: VerifyOptions): Prom
   return { ...claims, sub, exp };
 }
 
+/**
+ * The `iss` a token claims, **unverified**: only for choosing whose keys to check it with, from the
+ * addresses connections registered. Never a URL to call, and never trusted until `verifyIdToken` has
+ * checked the signature and that the signed `iss` is the same.
+ */
+export function peekIssuer(token: string): string | undefined {
+  const body = token.split(".")[1];
+  if (!body || token.split(".").length !== 3 || !SEGMENT.test(body)) return undefined;
+  try {
+    const iss = decodeJson(body).iss;
+    return typeof iss === "string" && iss ? iss : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface KeyCacheOptions {
   /** Fetches the keys GitLab publishes. */
   fetch: () => Promise<readonly Jwk[]>;

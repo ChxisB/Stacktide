@@ -7,7 +7,7 @@ import { newQueryClient, Providers } from "./app";
 import { AuthGate } from "./auth";
 import { FindingsPage } from "./findings";
 import { OrgProvider, RequireOrg } from "./org";
-import { type Backend, clientVia, mount, pathOf, startBackend } from "./testing";
+import { type Backend, clientVia, mount, pathOf, startBackend, visibleText } from "./testing";
 import { must, scene as sceneOn } from "./variables.fixture";
 
 let backend: Backend;
@@ -175,7 +175,10 @@ describe("dismissing", () => {
     mountPage(s.client);
     const user = userEvent.setup();
     const t = await table();
-    await user.click(within(t).getByRole("button", { name: "Dismiss src/config.ts:7" }));
+    // one word on the page; the whole name stays for assistive technology
+    const dismiss = within(t).getByRole("button", { name: "Dismiss src/config.ts:7" });
+    expect(visibleText(dismiss)).toBe("Dismiss");
+    await user.click(dismiss);
     const submit = screen.getByRole("button", { name: "Dismiss finding" }) as HTMLButtonElement;
     // no reason, or a blank one, is not enough
     expect(submit.disabled).toBe(true);
@@ -284,5 +287,63 @@ describe("when the API does not answer", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }));
     await table();
     expect(alertText()).toBeUndefined();
+  });
+});
+
+describe("how the screen looks", () => {
+  /** The badge in a cell: its classes, and whether its shape is kept from assistive technology. */
+  const badge = (tr: HTMLElement, cell: number) => {
+    const el = tr.querySelectorAll("td")[cell]?.querySelector(".st");
+    return [el?.className, el?.querySelector("svg")?.getAttribute("aria-hidden")];
+  };
+
+  test("severity and status are badges, and the list is in a card", async () => {
+    const s = await sceneOn(backend);
+    await seed(s, [
+      finding("f1"),
+      finding("f2", { path: "hi.ts", severity: "high" }),
+      finding("f3", { path: "med.ts", severity: "medium" }),
+      finding("f4", { path: "low.ts", severity: "low" }),
+    ]);
+    mountPage(s.client);
+    const t = await table();
+    expect(within(screen.getByRole("region", { name: "Findings" })).getByRole("table")).toBe(t);
+    // a table of this width needs the whole page, not the narrow form column
+    expect(t.closest(".stack")?.classList.contains("wide")).toBe(true);
+    const tone = (where: string) => badge(rowOf(t, where), 1);
+    expect(tone("src/config.ts:7")).toEqual(["st st-bad", "true"]);
+    expect(tone("hi.ts:7")).toEqual(["st st-bad", "true"]);
+    expect(tone("med.ts:7")).toEqual(["st st-warn", "true"]);
+    expect(tone("low.ts:7")).toEqual(["st st-quiet", "true"]);
+    // an open finding is waiting for someone, not a failure
+    expect(badge(rowOf(t, "low.ts:7"), 3)).toEqual(["st st-manual", "true"]);
+  });
+
+  test("a dismissed finding is quiet and a resolved one is ok", async () => {
+    const s = await sceneOn(backend);
+    // one stays open, so the page opens on a table
+    await seed(s, [
+      finding("f1"),
+      finding("f2", { path: "gone.ts" }),
+      finding("f3", { path: "b.ts" }),
+    ]);
+    const rows = await stored(s);
+    const id = (path: string) => rows.find((r) => r.path === path)?.id ?? "";
+    must(
+      await s.scope
+        .findings({ findingId: id("src/config.ts") })
+        .dismiss.post({ reason: "Dead key" }),
+    );
+    await backend.t.db
+      .update(secretFindings)
+      .set({ status: "resolved" })
+      .where(eq(secretFindings.id, id("gone.ts")));
+    mountPage(s.client);
+    await table();
+    await show("all");
+    await waitFor(() => expect(rowHeaders()).toHaveLength(3), { timeout: 5000 });
+    const t = await table();
+    expect(badge(rowOf(t, "src/config.ts:7"), 3)).toEqual(["st st-quiet", "true"]);
+    expect(badge(rowOf(t, "gone.ts:7"), 3)).toEqual(["st st-ok", "true"]);
   });
 });

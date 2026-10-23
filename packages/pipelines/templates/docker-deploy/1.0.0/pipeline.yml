@@ -1,0 +1,87 @@
+workflow:
+  rules:
+    # a promotion or a rollback: nothing but the deploy runs, so no scan of the branch's head stands in its way
+    - if: $ORCH_DEPLOY_ENV
+      variables:
+        SECRET_DETECTION_DISABLED: "true"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+default:
+  image: "docker:{{ params.dockerVersion }}"
+  services:
+    - "docker:{{ params.dockerVersion }}-dind"
+
+variables:
+  DOCKER_TLS_CERTDIR: /certs
+
+stages:
+  - build
+  - release
+  - deploy
+
+# merge requests only prove the image builds: nothing is pushed from a branch that is not merged
+build:
+  stage: build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - 'docker build --pull -f "{{ params.dockerfile }}" "{{ params.context }}"'
+
+publish:
+  stage: release
+  rules:
+    - if: $ORCH_DEPLOY_ENV
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - tag="$(printf %s "$CI_COMMIT_SHA" | cut -c1-8)"
+    - 'docker build --pull -f "{{ params.dockerfile }}" -t "$CI_REGISTRY_IMAGE:$tag" -t "$CI_REGISTRY_IMAGE:latest" "{{ params.context }}"'
+    - docker push "$CI_REGISTRY_IMAGE:$tag"
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+
+# a merge to the default branch deploys to the parameter's environment; a pipeline the platform starts names its own
+# (ORCH_DEPLOY_ENV, ORCH_DEPLOY_SHA, ORCH_PREVIOUS_SHA), and a pipeline variable outranks the default below
+deploy:
+  stage: deploy
+  image: "{{ params.deployImage }}"
+  inherit:
+    default: false
+  rules:
+    - if: $ORCH_DEPLOY_ENV
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  variables:
+    ORCH_DEPLOY_ENV: "{{ params.environment }}"
+  environment:
+    name: $ORCH_DEPLOY_ENV
+  resource_group: deploy-$ORCH_DEPLOY_ENV
+  script:
+    - |
+      set -eu
+      fail() { echo "docker-deploy: $1" >&2; exit 1; }
+      # values reach a shell here: only a slug and a 40-character sha go on
+      is_slug() { case "$1" in ""|*[!a-z0-9-]*|-*|*-|*--*) return 1 ;; esac; [ "${#1}" -le 63 ]; }
+      is_sha() { case "$1" in ""|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" -eq 40 ]; }
+      sha="${ORCH_DEPLOY_SHA:-$CI_COMMIT_SHA}"
+      is_slug "$ORCH_DEPLOY_ENV" || fail "ORCH_DEPLOY_ENV is not an environment slug"
+      is_sha "$sha" || fail "the build to deploy is not a 40-character commit sha"
+      previous="${ORCH_PREVIOUS_SHA:-}"
+      [ -z "$previous" ] || is_sha "$previous" || fail "ORCH_PREVIOUS_SHA is not a 40-character commit sha"
+      [ -z "${ORCH_HEALTH_URL:-}" ] || command -v curl > /dev/null || fail "ORCH_HEALTH_URL is set and this image has no curl"
+      run() {
+        tag="$(printf %s "$1" | cut -c1-8)"
+        IMAGE="$CI_REGISTRY_IMAGE:$tag" IMAGE_TAG="$tag" ORCH_DEPLOY_ENV="$ORCH_DEPLOY_ENV" ORCH_DEPLOY_SHA="$1" "./{{ params.deployScript }}"
+      }
+      healthy() {
+        [ -z "${ORCH_HEALTH_URL:-}" ] || curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors --max-time 10 --url "$ORCH_HEALTH_URL" > /dev/null
+      }
+      run "$sha"
+      healthy && exit 0
+      echo "docker-deploy: $ORCH_DEPLOY_ENV did not answer at its health URL" >&2
+      if [ -n "$previous" ]; then
+        echo "docker-deploy: putting back $previous" >&2
+        run "$previous"
+      fi
+      exit 1

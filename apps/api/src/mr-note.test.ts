@@ -14,6 +14,9 @@ import {
   withMergeRequest,
 } from "@orch/db";
 import { createTestDb, type TestDb } from "@orch/db/testing";
+import { githubForge } from "@orch/forge";
+import { createGithubClient } from "@orch/github";
+import { createMockGithub } from "@orch/github/mock";
 import { createGitlab } from "@orch/gitlab";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import { inline, refreshNote, renderNote, writeNote } from "./mr-note";
@@ -26,8 +29,13 @@ const stack = (over: Partial<RunStack> = {}): RunStack => ({
   projectId: "p",
   stack: "net",
   tags: [],
+  costed: true,
+  dnsPrune: null,
+  lintErrors: null,
+  lintWarnings: null,
   status: "queued",
   error: null,
+  approvalUrl: null,
   planJobId: null,
   summaryJobId: null,
   planAdd: null,
@@ -198,6 +206,66 @@ describe("what the plan costs, in the note", () => {
   });
 });
 
+describe("what the lint of a zone's config says, in the note (DNS-11)", () => {
+  const zoneStack = (name: string, over: Partial<RunStack> = {}) =>
+    stack({
+      stack: name,
+      status: "planned",
+      planAdd: 1,
+      planChange: 0,
+      planDestroy: 0,
+      summarizedAt: new Date(0),
+      costed: false,
+      dnsPrune: false,
+      ...over,
+    });
+  const note = (stacks: RunStack[]) =>
+    renderNote({ run: { sha: SHA, stacks }, notice: null, projectUrl: undefined });
+
+  test("is a line per linted zone with the counts per severity, in the words of one and of many", () => {
+    const body = note([
+      zoneStack("a-both", { lintErrors: 1, lintWarnings: 2 }),
+      zoneStack("b-many", { lintErrors: 2, lintWarnings: 1 }),
+      zoneStack("c-clean", { lintErrors: 0, lintWarnings: 0 }),
+      zoneStack("d-warn", { lintErrors: 0, lintWarnings: 3 }),
+    ]);
+    expect(body).toContain("DNS lint:");
+    expect(body).toContain("- `a-both`: 1 error, 2 warnings\n");
+    expect(body).toContain("- `b-many`: 2 errors, 1 warning\n");
+    // zero and zero says the lint ran
+    expect(body).toContain("- `c-clean`: no findings\n");
+    expect(body).toContain("- `d-warn`: 3 warnings\n");
+  });
+
+  test("a zone the lint did not answer for has no line, and neither has a stack that is not a zone", () => {
+    const body = note([
+      zoneStack("no-lint"),
+      stack({ stack: "net", status: "planned", lintErrors: 5, lintWarnings: 5 }),
+    ]);
+    expect(body).not.toContain("DNS lint");
+    expect(body).not.toContain("- `no-lint`");
+    expect(body).not.toContain("- `net`: 5");
+  });
+
+  test("a zone with a lint error is denied in the policy section, by rule and zone, and the note has counts only", () => {
+    const body = note([
+      zoneStack("zone", {
+        lintErrors: 1,
+        lintWarnings: 1,
+        policyVerdict: "deny",
+        policyDenied: ["dns-lint-spf-single:example.com"],
+        policyWarned: ["dns-lint-ttl-range:example.com"],
+      }),
+      stack({ stack: "net", status: "planned", planAdd: 2, planChange: 0, planDestroy: 0 }),
+    ]);
+    expect(body).toContain(
+      "- `zone`: deny (`dns-lint-spf-single:example.com`, `dns-lint-ttl-range:example.com`)",
+    );
+    expect(body).toContain("- `zone`: 1 error, 1 warning");
+    expect(body).toMatchSnapshot();
+  });
+});
+
 describe("what the secret gate says, in the note (SCAN-6)", () => {
   const view = (gate: SecretGateView["gate"], open: number): SecretGateView => ({
     gate,
@@ -280,6 +348,36 @@ describe("the note's text", () => {
       expect(renderNote({ run, notice: null, projectUrl })).not.toContain("[job]");
     }
     expect(renderNote({ run, notice: null, projectUrl: `${URL}/` })).toContain(`(${URL}/-/jobs/1)`);
+  });
+
+  test("links a GitHub job at the address GitHub sends on to the job", () => {
+    const run = { sha: SHA, stacks: [stack({ planJobId: 7 })] };
+    const body = renderNote({
+      run,
+      notice: null,
+      projectUrl: "https://github.com/acme/svc",
+      github: true,
+    });
+    expect(body).toContain("[job](https://github.com/acme/svc/runs/7)");
+    expect(body).not.toContain("/-/jobs/");
+  });
+
+  test("says which stack waits for approval in GitHub and links the page, but only to a safe address", () => {
+    const page = "https://github.com/acme/svc/actions/runs/9/job/3";
+    const run = (approvalUrl: string | null) => ({
+      sha: SHA,
+      stacks: [stack({ status: "applying", approvalUrl })],
+    });
+    const waiting = renderNote({ run: run(page), notice: null, projectUrl: URL });
+    expect(waiting).toContain(`\`net\`: waiting for approval in GitHub ([open the job](${page}))`);
+    for (const bad of ["javascript:alert(1)", "https://x/a)b", "https://x/ a"]) {
+      expect(renderNote({ run: run(bad), notice: null, projectUrl: URL })).not.toContain(
+        "waiting for approval",
+      );
+    }
+    expect(renderNote({ run: run(null), notice: null, projectUrl: URL })).not.toContain(
+      "Approval:",
+    );
   });
 
   test("cannot be broken out of by a stored status or error, nor by text from a repository", () => {
@@ -510,5 +608,112 @@ describe("writing the note", () => {
     await expect(w.refresh()).rejects.toThrow();
     await w.refresh();
     expect(w.notes()).toHaveLength(1);
+  });
+});
+
+// FRG-13: the same note, on a GitHub pull request (a comment on the issue behind it)
+describe("writing the note on a GitHub pull request", () => {
+  const TOKEN = "ghp_not-a-real-token-1234";
+  async function onGithub() {
+    const id = ++n;
+    const hub = createMockGithub();
+    const repo = hub.addRepo("acme", `nn${id}`);
+    const forge = githubForge(
+      createGithubClient({ baseUrl: hub.url, token: TOKEN, maxRetries: 0 }),
+    );
+    await forge.repository.createBranch(repo.id, "feature", "main");
+    await forge.repository.commitFiles(repo.id, { branch: "feature", message: "m" }, [
+      { action: "create", path: "a.txt", content: "a" },
+    ]);
+    const pr = await forge.mergeRequests.create(repo.id, {
+      sourceBranch: "feature",
+      targetBranch: "main",
+      title: "t",
+    });
+    // an organization of its own: repository ids of a GitHub mock start where the GitLab mock's do
+    const org = (await createOrganization(t.db, { slug: `gh${id}`, name: "G" })).id;
+    const project = await createProject(t.db, {
+      organizationId: org,
+      name: `gh${id}`,
+      gitlabProjectId: repo.id,
+    });
+    await createRun(t.db, {
+      organizationId: org,
+      projectId: project.id,
+      ref: "feature",
+      sha: SHA,
+      mergeRequestIid: pr.iid,
+      stacks: ["net"],
+    });
+    const at = { organizationId: org, projectId: project.id, gitlabProjectId: repo.id };
+    const comments = () =>
+      hub.requests.filter((r) => r.method === "POST" && r.path.endsWith("/comments"));
+    return {
+      hub,
+      repo,
+      forge,
+      pr,
+      project,
+      org,
+      comments,
+      refresh: () => refreshNote({ db: t.db }, at, pr.iid, forge),
+    };
+  }
+
+  test("makes one comment the first time and updates that one after", async () => {
+    const w = await onGithub();
+    try {
+      await w.refresh();
+      expect(w.comments()).toHaveLength(1);
+      expect(JSON.stringify(w.comments()[0]?.body)).toContain("| `net` | queued |");
+      const first = await withMergeRequest(
+        t.db,
+        w.org,
+        w.project.id,
+        w.pr.iid,
+        async (_tx, row) => row.noteId,
+      );
+      expect(first).not.toBeNull();
+      await w.refresh();
+      await w.refresh();
+      expect(w.comments()).toHaveLength(1);
+      // the link in the note is the repository's, from GitHub
+      const note = await w.forge.mergeRequests.getNote(w.repo.id, w.pr.iid, first as number);
+      expect(note.body).toContain("net");
+    } finally {
+      w.hub.stop();
+    }
+  });
+
+  test("makes a new comment when someone deleted the old one", async () => {
+    const w = await onGithub();
+    try {
+      await w.refresh();
+      const first = await withMergeRequest(
+        t.db,
+        w.org,
+        w.project.id,
+        w.pr.iid,
+        async (_tx, row) => row.noteId,
+      );
+      w.hub.inject({
+        method: "PATCH",
+        path: `/repos/acme/${w.repo.name}/issues/comments/${first}`,
+        status: 404,
+        times: 1,
+      });
+      await w.refresh();
+      expect(w.comments()).toHaveLength(2);
+      const second = await withMergeRequest(
+        t.db,
+        w.org,
+        w.project.id,
+        w.pr.iid,
+        async (_tx, row) => row.noteId,
+      );
+      expect(second).not.toBe(first);
+    } finally {
+      w.hub.stop();
+    }
   });
 });

@@ -91,6 +91,14 @@ export const RULES = {
   "template.registry.read": { org: "admin" },
   // Retrying runs the failed jobs of a pipeline again: the same commit and the same jobs, so no new code, only the project's runners and CI variables once more.
   "pipeline.retry": { project: "maintainer" },
+  // What was deployed where is names, shas, statuses and times, no more than a pipeline run holds: any project reader may see it. (ADR-0020)
+  "deployment.read": { project: "reporter" },
+  // Refreshing reads the project's deployments from GitLab with the organization's connection token and stores what it says (an environment's name, a sha, a status): the same people as retrying a pipeline. (ADR-0020)
+  "deployment.refresh": { project: "maintainer" },
+  // Promoting starts a pipeline on the default branch that deploys a build that already worked somewhere to an environment: it changes what runs there with the project's runners and variables, as an IaC apply does, so the same people as apply. The platform's guard is the only gate on who (GitLab's own rules apply to the connection's token user). (ADR-0020)
+  "deployment.promote": { project: "maintainer" },
+  // Rolling back is a promotion of the build that was there before: the same pipeline, the same people. A separate action so a project may one day let one and not the other. (ADR-0020)
+  "deployment.rollback": { project: "maintainer" },
   // Runs of IaC stacks: a plan only reads the project's repository and runs its own CI, as any merge request does, so developers may start one and reporters may read. What a run holds is names, a commit and states.
   "run.read": { project: "reporter" },
   "run.create": { project: "developer" },
@@ -111,6 +119,10 @@ export const RULES = {
   "cost.limit.read": { org: "viewer" },
   "cost.limit.set": { org: "admin" },
   "cost.limit.delete": { org: "admin" },
+  // Which project and stack may manage which DNS zone (DNS-6, ADR-0018) is the organization's: org admins make and remove the claims, as for cost limits, and anyone in the organization may read them. A project's maintainers apply plans and must not be the ones to widen what a plan may touch.
+  "dns.zone.read": { org: "viewer" },
+  "dns.zone.create": { org: "admin" },
+  "dns.zone.delete": { org: "admin" },
   // The secret gate (SCAN-6) decides whether open findings hold back an apply: the organization's, so org admins set it, as for cost limits, and anyone in the organization may read it. A project maintainer applies plans and must not be the one to lift what holds them.
   "secret.gate.read": { org: "viewer" },
   "secret.gate.update": { org: "admin" },

@@ -8,6 +8,7 @@ import {
   listSinks,
   listSubscriptions,
   NOTIFY_QUEUE,
+  notifyDeploymentFailed,
   notifyRotationFailing,
   notifyStackDrift,
   openSink,
@@ -443,5 +444,76 @@ describe("telling the subscribers of a rotation that keeps failing", () => {
         notifyStackDrift(tx, { organizationId: o.id, projectId: p.id, at: new Date(), ...stack }),
       ),
     ).toBe(0);
+  });
+});
+
+describe("telling the subscribers of a deployment that failed", () => {
+  const news = (o: { id: string }, p: { id: string }, over: object = {}) => ({
+    organizationId: o.id,
+    projectId: p.id,
+    environment: "production",
+    sha: "0123456789abcdef0123456789abcdef01234567",
+    pipelineUrl: "https://gitlab.example/acme/web/-/pipelines/8",
+    at: new Date(Date.UTC(2026, 9, 21, 8)),
+    ...over,
+  });
+  const queued = () => t.db.select().from(jobs).where(eq(jobs.queue, NOTIFY_QUEUE));
+
+  test("each sink that asked for this event hears of it, as names and eight characters of the commit", async () => {
+    const o = await org();
+    const p = await project(o.id, "web");
+    const hears = await sink(o.id, { name: "a" });
+    const driftOnly = await sink(o.id, { name: "b" });
+    const sub = (s: { id: string }, events: ("stack.drift" | "deployment.failed")[]) =>
+      setSubscriptions(t.db, { organizationId: o.id, projectId: p.id, sinkId: s.id, events });
+    await sub(hears, ["deployment.failed"]);
+    await sub(driftOnly, ["stack.drift"]);
+    const before = (await queued()).length;
+
+    expect(await t.db.transaction((tx) => notifyDeploymentFailed(tx, news(o, p)))).toBe(1);
+
+    const [job, ...more] = (await queued()).slice(before);
+    expect(more).toEqual([]);
+    expect(job?.payload).toEqual({
+      sinkId: hears.id,
+      organizationId: o.id,
+      event: "deployment.failed",
+      projectId: p.id,
+      projectName: "web",
+      environment: "production",
+      sha: "01234567",
+      pipelineUrl: "https://gitlab.example/acme/web/-/pipelines/8",
+      at: "2026-10-21T08:00:00.000Z",
+    });
+  });
+
+  test("a deployment GitLab gave no pipeline address for is told with none", async () => {
+    const o = await org();
+    const p = await project(o.id);
+    const s = await sink(o.id);
+    await setSubscriptions(t.db, {
+      organizationId: o.id,
+      projectId: p.id,
+      sinkId: s.id,
+      events: ["deployment.failed"],
+    });
+    const before = (await queued()).length;
+    await t.db.transaction((tx) => notifyDeploymentFailed(tx, news(o, p, { pipelineUrl: null })));
+    const [job] = (await queued()).slice(before);
+    expect(((job?.payload ?? {}) as { pipelineUrl?: unknown }).pipelineUrl).toBeNull();
+  });
+
+  test("a project nobody subscribed for hears nothing, and another project's subscription is not used", async () => {
+    const o = await org();
+    const p = await project(o.id, "one");
+    const other = await project(o.id, "two");
+    const s = await sink(o.id);
+    await setSubscriptions(t.db, {
+      organizationId: o.id,
+      projectId: other.id,
+      sinkId: s.id,
+      events: ["deployment.failed"],
+    });
+    expect(await t.db.transaction((tx) => notifyDeploymentFailed(tx, news(o, p)))).toBe(0);
   });
 });

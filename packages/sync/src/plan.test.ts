@@ -227,6 +227,62 @@ describe("plan: a target that hides its values", () => {
   });
 });
 
+describe("plan: a target that stamps when an item changed", () => {
+  // GitHub never returns a secret, but it says when each was last changed: a change nobody applied shows in the stamp.
+  const ref = { key: "A", scope: "*" };
+  const stamped = (changedAt?: string): RemoteItem => ({ ...have("A", null), changedAt });
+  const recorded = (stamp?: string): LastApplied => ({
+    ...applied([ref, "1"]),
+    changedAt: () => stamp,
+  });
+
+  test("an item untouched since it was applied is left alone", () => {
+    expect(
+      summary(plan([want("A", "1")], [stamped("t1")], { lastApplied: recorded("t1") })),
+    ).toEqual(["noop A@*"]);
+  });
+
+  test("an item changed since it was applied is updated, though its value is what was applied", () => {
+    expect(
+      summary(plan([want("A", "1")], [stamped("t2")], { lastApplied: recorded("t1") })),
+    ).toEqual(["update A@* value"]);
+  });
+
+  test("an item with no stamp recorded is updated: a hand edit cannot be ruled out", () => {
+    expect(
+      summary(plan([want("A", "1")], [stamped("t1")], { lastApplied: recorded(undefined) })),
+    ).toEqual(["update A@* value"]);
+    // a record that does not keep stamps at all is the same
+    expect(
+      summary(plan([want("A", "1")], [stamped("t1")], { lastApplied: applied([ref, "1"]) })),
+    ).toEqual(["update A@* value"]);
+  });
+
+  test("a changed wanted value is updated whatever the stamp says", () => {
+    expect(
+      summary(plan([want("A", "2")], [stamped("t1")], { lastApplied: recorded("t1") })),
+    ).toEqual(["update A@* value"]);
+  });
+
+  test("a target that gives no stamp is judged as before, and a recorded stamp is not asked for", () => {
+    expect(summary(plan([want("A", "1")], [stamped()], { lastApplied: recorded("t1") }))).toEqual([
+      "noop A@*",
+    ]);
+    const asked: unknown[] = [];
+    plan([want("A", "1")], [stamped()], {
+      lastApplied: { ...applied([ref, "1"]), changedAt: (r) => void asked.push(r) },
+    });
+    expect(asked).toEqual([]);
+  });
+
+  test("a value that can be read is still compared as it is, stamp or not", () => {
+    const item: RemoteItem = { ...have("A", "edited by hand"), changedAt: "t1" };
+    expect(summary(plan([want("A", "1")], [item], { lastApplied: recorded("t1") }))).toEqual([
+      "update A@* value",
+    ]);
+  });
+});
+
 describe("plan: which item is which", () => {
   test("a key and a scope tell items apart whatever characters they hold", () => {
     const pairs: [string, string][] = [

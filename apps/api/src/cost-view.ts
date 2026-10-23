@@ -4,7 +4,13 @@ import { planCostOf, type RunStack } from "@orch/db";
 /** The part of a run's stack that the cost depends on. */
 export type CostStack = Pick<
   RunStack,
-  "tags" | "summarizedAt" | "costMonthlyDelta" | "costMonthlyTotal" | "costCurrency" | "costTool"
+  | "tags"
+  | "costed"
+  | "summarizedAt"
+  | "costMonthlyDelta"
+  | "costMonthlyTotal"
+  | "costCurrency"
+  | "costTool"
 >;
 
 export interface CostView {
@@ -27,7 +33,7 @@ export interface CostView {
 export function costViewOf(s: CostStack, limits: readonly CostLimit[]): CostView | null {
   if (s.summarizedAt === null) return null;
   const estimate = planCostOf(s);
-  const limit = limitFor(limits, s.tags);
+  const limit = s.costed ? limitFor(limits, s.tags) : undefined;
   if (!(estimate || limit)) return null;
   const { verdict, denied, warned } = judge(costVerdict(limit, estimate));
   return {

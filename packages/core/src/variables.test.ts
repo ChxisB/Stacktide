@@ -859,3 +859,329 @@ describe("planBulk", () => {
     expect(bulkKeys(set("A", "1"))).toEqual(["A"]);
   });
 });
+
+describe("folders", () => {
+  const f = (
+    folder: string,
+    level: VariableLevel,
+    key: string,
+    value: string,
+    kind: VariableKind = "plain",
+  ): VariableInput => ({ ...v(level, key, value, kind), folder });
+  /** "folder key=value" of everything that resolved, in the order the result lists it. */
+  const view = (inputs: VariableInput[]) =>
+    resolveVariables(inputs).variables.map((r) => `${r.folder} ${r.key}=${r.value}`);
+
+  test("the same key in two folders is two variables, listed by address", () => {
+    expect(
+      view([
+        f("/b", "project", "URL", "in b"),
+        proj("URL", "root"),
+        f("/a", "project", "URL", "in a"),
+      ]),
+    ).toEqual(["/ URL=root", "/a URL=in a", "/b URL=in b"]);
+  });
+
+  test("no folder is the root, and a result always says its folder", () => {
+    expect(one([proj("A", "1")], "A")?.folder).toBe("/");
+    expect(one([f("/a", "project", "A", "1")], "A")?.folder).toBe("/a");
+    // the root written out is the root: two live variables with one address are a duplicate
+    expect(issues([proj("A", "1"), f("/", "project", "A", "2")])).toEqual([
+      { code: "duplicate", key: "A", level: "project" },
+    ]);
+  });
+
+  test("a more specific level wins inside a folder, and only inside it", () => {
+    const inputs = [
+      f("/a", "project", "URL", "project a"),
+      f("/a", "environment", "URL", "env a"),
+      proj("URL", "project root"),
+      f("/b", "project", "URL", "project b"),
+    ];
+    expect(view(inputs)).toEqual(["/ URL=project root", "/a URL=env a", "/b URL=project b"]);
+    // an environment variable at the root does not beat a project variable in a folder
+    expect(view([env("URL", "env root"), f("/a", "project", "URL", "project a")])).toEqual([
+      "/ URL=env root",
+      "/a URL=project a",
+    ]);
+  });
+
+  test("${KEY} reads the folder of the variable that holds it; ${/a/KEY} reads that address", () => {
+    expect(
+      view([
+        proj("HOST", "root-host"),
+        f("/a", "project", "HOST", "a-host"),
+        f("/a", "project", "URL", "http://${HOST}/x"),
+        proj("ROOTURL", "http://${HOST}"),
+        f("/b", "project", "URL", "${/a/HOST}|${/HOST}"),
+      ]),
+    ).toEqual([
+      "/ HOST=root-host",
+      "/ ROOTURL=http://root-host",
+      "/a HOST=a-host",
+      "/a URL=http://a-host/x",
+      "/b URL=a-host|root-host",
+    ]);
+  });
+
+  test("a reference does not fall back to the root", () => {
+    expect(issues([proj("HOST", "root-host"), f("/a", "project", "URL", "${HOST}")])).toEqual([
+      { code: "missing", key: "URL", folder: "/a", ref: "HOST" },
+    ]);
+  });
+
+  test("a path to a folder or a key that is not there is missing, and names the address", () => {
+    expect(issues([proj("T", "${/nope/HOST}"), f("/a", "project", "HOST", "h")])).toEqual([
+      { code: "missing", key: "T", ref: "/nope/HOST" },
+    ]);
+    // a folder that could never exist is missing too, not left in the text
+    expect(issues([proj("T", "${/A/HOST}|${/a/b/c/d/e/f/HOST}")])).toEqual([
+      { code: "missing", key: "T", ref: "/A/HOST" },
+      { code: "missing", key: "T", ref: "/a/b/c/d/e/f/HOST" },
+    ]);
+    // something that is not a whole address stays as written, as `${}` always did
+    expect(values([proj("T", "${/a/} ${/} ${a/B}")])).toEqual({ T: "${/a/} ${/} ${a/B}" });
+  });
+
+  test("a value that read ${/KEY} as text now reads the root KEY", () => {
+    expect(values([proj("X", "1"), proj("T", "${/X}")])).toEqual({ X: "1", T: "1" });
+    expect(issues([proj("T", "${/X}")])).toEqual([{ code: "missing", key: "T", ref: "X" }]);
+  });
+
+  test("a cycle across folders is found, and the same key elsewhere is not in it", () => {
+    const inputs = [
+      f("/b", "project", "Y", "${/a/X}"),
+      f("/a", "project", "X", "${/b/Y}"),
+      proj("X", "fine"),
+      proj("R", "${/a/X}"),
+    ];
+    expect(issues(inputs)).toEqual([
+      { code: "cycle", key: "X", folder: "/a", path: ["/a/X", "/b/Y", "/a/X"] },
+      { code: "unresolved", key: "R", ref: "/a/X" },
+    ]);
+    expect(view(inputs)).toEqual(["/ X=fine"]);
+  });
+
+  test("a variable that reads its own address is a cycle", () => {
+    expect(issues([f("/a", "project", "X", "${X}")])).toEqual([
+      { code: "cycle", key: "X", folder: "/a", path: ["/a/X", "/a/X"] },
+    ]);
+  });
+
+  test("taint crosses folders, and a secret in one folder taints nothing that reads another", () => {
+    const inputs = [
+      f("/a", "project", "S", "s", "secret"),
+      f("/b", "project", "P", "p ${/a/S}"),
+      proj("Q", "q ${/b/P}"),
+      proj("S", "plain"),
+      proj("R", "r ${S}"),
+    ];
+    const kinds = Object.fromEntries(
+      resolveVariables(inputs).variables.map((r) => [`${r.folder} ${r.key}`, [r.kind, r.tainted]]),
+    );
+    expect(kinds).toEqual({
+      "/ Q": ["secret", true],
+      "/ R": ["plain", false],
+      "/ S": ["plain", false],
+      "/a S": ["secret", false],
+      "/b P": ["secret", true],
+    });
+  });
+
+  test("$${ stays literal beside a path reference", () => {
+    expect(
+      view([f("/a", "project", "KEY", "k"), f("/a", "project", "L", "$${/a/KEY} ${/a/KEY}")]),
+    ).toEqual(["/a KEY=k", "/a L=${/a/KEY} k"]);
+  });
+
+  test("a file variable in a folder is not interpolated and can be read by path", () => {
+    expect(
+      view([
+        f("/a", "project", "CERT", "x ${/a/KEY} $${y}", "file"),
+        f("/a", "project", "KEY", "k"),
+        proj("C", "${/a/CERT}"),
+      ]),
+    ).toEqual(["/ C=x ${/a/KEY} $${y}", "/a CERT=x ${/a/KEY} $${y}", "/a KEY=k"]);
+  });
+
+  test("the most folders it may have: five deep works, and the path reaches it", () => {
+    const deep = "/a/b/c/d/e";
+    expect(view([f(deep, "project", "K", "deep"), proj("T", `\${${deep}/K}`)])).toEqual([
+      "/ T=deep",
+      "/a/b/c/d/e K=deep",
+    ]);
+  });
+
+  test("the order of the input changes nothing, in a result or in an issue", () => {
+    const inputs = [
+      f("/b", "project", "Y", "${/a/X}"),
+      f("/a", "project", "X", "${/b/Y}"),
+      proj("X", "fine"),
+      f("/a", "environment", "X", "e"),
+      f("/a", "project", "D", "1"),
+      f("/a", "project", "D", "2"),
+      proj("M", "${/gone/K}"),
+      f("/c", "project", "OK", "${/}"),
+    ];
+    const first = JSON.stringify(resolveVariables(inputs));
+    for (let turn = 1; turn < inputs.length; turn += 1) {
+      const turned = [...inputs.slice(turn), ...inputs.slice(0, turn)];
+      expect(JSON.stringify(resolveVariables(turned))).toBe(first);
+      expect(JSON.stringify(resolveVariables([...turned].reverse()))).toBe(first);
+    }
+  });
+
+  test("an issue carries its folder only when it is not the root, and never a value", () => {
+    const found = issues([
+      f("/a", "project", "D", "secret-one"),
+      f("/a", "project", "D", "secret-two"),
+      f("/a", "project", "BIG", "x".repeat(MAX_RESOLVED_LENGTH + 1)),
+      proj("D", "1"),
+      proj("D", "2"),
+    ]);
+    expect(found).toEqual([
+      { code: "duplicate", key: "D", level: "project" },
+      { code: "duplicate", key: "D", level: "project", folder: "/a" },
+      { code: "too_large", key: "BIG", folder: "/a" },
+    ]);
+    expect(JSON.stringify(found)).not.toContain("secret-");
+    expect(found.some((i) => "folder" in i && i.folder === "/")).toBe(false);
+  });
+
+  test("a folder that breaks the rules is refused, not resolved", () => {
+    for (const folder of ["", "a", "/A", "/a/", "/a//b", "/a/b/c/d/e/f"]) {
+      expect(() => resolveVariables([f(folder, "project", "K", "1")])).toThrow();
+    }
+  });
+});
+
+describe("folders in the plans", () => {
+  const have = (folder: string, key: string, value: string, kind: VariableKind = "secret") => ({
+    id: `id-${folder}-${key}`,
+    folder,
+    key,
+    kind,
+    value,
+  });
+  const root = (key: string, value: string, kind: VariableKind = "secret") => ({
+    id: `id-${key}`,
+    key,
+    kind,
+    value,
+  });
+
+  test("planRestore matches by address: a key in another folder is another key", () => {
+    const plan = planRestore(
+      [have("/a", "K", "1"), root("K", "1")],
+      [have("/b", "K", "1"), root("K", "1")],
+    );
+    expect(plan.map((c) => `${c.change} ${c.folder ?? "-"} ${c.key}`)).toEqual([
+      "create /a K",
+      "remove /b K",
+    ]);
+  });
+
+  test("planRestore says folder only for a change that is not at the root", () => {
+    const [atRoot] = planRestore([root("K", "new")], [root("K", "old")]);
+    expect(atRoot?.change).toBe("update");
+    expect(atRoot && "folder" in atRoot).toBe(false);
+    const [inA] = planRestore([have("/a", "K", "new")], [have("/a", "K", "old")]);
+    expect(inA).toMatchObject({ change: "update", folder: "/a", key: "K" });
+  });
+
+  test("planImport brings a key into its own folder, and the same key elsewhere does not clash", () => {
+    const current = [root("URL", "root")];
+    const plan = planImport(
+      [
+        { key: "URL", kind: "secret", value: "root" },
+        { key: "URL", folder: "/a", kind: "secret", value: "in a" },
+        { key: "URL", folder: "/b", kind: "secret", value: "in b" },
+        { key: "URL", folder: "/b", kind: "secret", value: "in b, again" },
+      ],
+      current,
+      false,
+    );
+    expect(plan.map((c) => `${c.change} ${c.folder ?? "-"} ${c.key}`)).toEqual([
+      "unchanged - URL",
+      "create /a URL",
+      "create /b URL",
+    ]);
+    expect(plan.at(2)?.incoming.value).toBe("in b, again");
+    expect(
+      planImport(
+        [{ key: "URL", folder: "/a", kind: "secret", value: "in a" }],
+        [have("/a", "URL", "old")],
+        false,
+      ).map((c) => c.change),
+    ).toEqual(["conflict"]);
+  });
+
+  test("a BulkOp with no folder plans as the root, and the root written out is the same", () => {
+    const current = [root("A", "1"), have("/a", "A", "2")];
+    const plan = (op: BulkOp) => planBulk([op], current).map((c) => c.change);
+    expect(plan({ op: "set", key: "A", kind: "secret", value: "1" })).toEqual(["unchanged"]);
+    expect(plan({ op: "set", folder: "/", key: "A", kind: "secret", value: "1" })).toEqual([
+      "unchanged",
+    ]);
+    expect(plan({ op: "set", folder: "/a", key: "A", kind: "secret", value: "2" })).toEqual([
+      "unchanged",
+    ]);
+    expect(plan({ op: "set", folder: "/b", key: "A", kind: "secret", value: "1" })).toEqual([
+      "create",
+    ]);
+  });
+
+  test("two edits of one key in different folders are not a duplicate: bulkKeys names addresses", () => {
+    expect(bulkKeys({ op: "delete", key: "A" })).toEqual(["A"]);
+    expect(bulkKeys({ op: "delete", folder: "/", key: "A" })).toEqual(["A"]);
+    expect(bulkKeys({ op: "delete", folder: "/a", key: "A" })).toEqual(["/a/A"]);
+    expect(bulkKeys({ op: "rename", folder: "/a", key: "A", to: "B" })).toEqual(["/a/A", "/a/B"]);
+    const named = [
+      { op: "delete", key: "A" },
+      { op: "delete", folder: "/a", key: "A" },
+    ] satisfies BulkOp[];
+    expect(new Set(named.flatMap(bulkKeys)).size).toBe(named.length);
+  });
+
+  test("each edit reaches the variable of its own folder, sorted by address", () => {
+    const current = [root("A", "1"), have("/a", "A", "2"), have("/a", "B", "3")];
+    const plan = planBulk(
+      [
+        { op: "delete", folder: "/a", key: "A" },
+        { op: "delete", key: "A" },
+        { op: "delete", folder: "/b", key: "A" },
+      ],
+      current,
+    );
+    expect(plan.map((c) => `${c.change} ${c.folder ?? "-"} ${c.current?.value ?? "-"}`)).toEqual([
+      "delete - 1",
+      "delete /a 2",
+      "missing /b -",
+    ]);
+  });
+
+  test("a rename stays in its folder: the same name elsewhere is not a conflict", () => {
+    const current = [root("B", "root"), have("/a", "A", "1")];
+    const [free] = planBulk([{ op: "rename", folder: "/a", key: "A", to: "B" }], current);
+    expect(free).toMatchObject({ change: "rename", folder: "/a", key: "A", to: "B" });
+    const [taken] = planBulk(
+      [{ op: "rename", folder: "/a", key: "A", to: "B" }],
+      [...current, have("/a", "B", "x")],
+    );
+    expect(taken?.change).toBe("conflict");
+  });
+
+  test("a change at the root carries no folder, however the root was written", () => {
+    const [c] = planBulk([{ op: "delete", key: "A" }], [root("A", "1")]);
+    expect(c && "folder" in c).toBe(false);
+    const written = { ...root("A", "1"), folder: "/" };
+    const [d] = planBulk([{ op: "delete", folder: "/", key: "A" }], [written]);
+    const [i] = planImport(
+      [{ folder: "/", key: "A", kind: "secret", value: "2" }],
+      [written],
+      true,
+    );
+    const [r] = planRestore([{ ...written, value: "2" }], [written]);
+    for (const change of [d, i, r]) expect(change && "folder" in change).toBe(false);
+  });
+});
