@@ -9,6 +9,8 @@ export interface CiJob {
   /** The GitHub Actions run a job without a job id belongs to; null for a GitLab job. */
   gitlabPipelineId: number | null;
   ref: string;
+  /** The ref is protected: a branch anyone can push to is not, and its jobs may not change what outlives them. */
+  refProtected: boolean;
   /** When the CI token ends: nothing it makes may outlive it. */
   expiresAt: Date;
 }

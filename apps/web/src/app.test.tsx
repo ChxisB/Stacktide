@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createClient } from "@orch/api-client";
 import { auditEvents } from "@orch/db";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { and, eq } from "drizzle-orm";
 import { newQueryClient, Providers } from "./app";
@@ -40,6 +40,22 @@ describe("signed out", () => {
     expect(link.getAttribute("href")).toBe("/auth/sso/acme%2Fx/login?return_to=/");
   });
 
+  // UXR-13 (feature 32): one centred card in the page's landmark, the one h1, and the slug's hint read with its field
+  test("the login page is one card in the main landmark, under the one h1, with the slug's hint tied to its field", async () => {
+    mount(backend.anonymous());
+    await screen.findByRole("link", { name: "Sign in with GitLab" });
+    const main = screen.getByRole("main");
+    expect(within(main).getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    expect(main.querySelectorAll(".card")).toHaveLength(1);
+    const slug = screen.getByLabelText("Organization slug");
+    const hint = document.getElementById(slug.getAttribute("aria-describedby") ?? "");
+    expect(hint?.textContent).toMatch(/slug/i);
+    // the heading over the field names the way in, and is the second level
+    expect(
+      within(main).getByRole("heading", { level: 2, name: "Or through your organization" }),
+    ).toBeTruthy();
+  });
+
   test("a session that has ended is a visitor too", async () => {
     const { client } = await backend.signIn("Gone Soon");
     await client.auth.logout.post({});
@@ -53,6 +69,16 @@ describe("signed out", () => {
     expect(alert.textContent).toContain("Cannot reach the server");
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Sign in with GitLab" })).toBeNull();
+  });
+
+  // UXR-13: the same alert, now a bad callout (its glyph and its words), in the same centred card as the login page
+  test("that error is a bad callout in the centred card, with its title and the server's words", async () => {
+    mount(createClient("http://127.0.0.1:1"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.classList.contains("callout-bad")).toBe(true);
+    expect(alert.textContent).toContain("Something went wrong");
+    expect(alert.querySelector("svg")).toBeTruthy();
+    expect(screen.getByRole("main").querySelectorAll(".card")).toHaveLength(1);
   });
 });
 

@@ -58,8 +58,18 @@ for (const theme of ["dark", "light"] as const) {
         problems.push(`${r.status()} ${new URL(r.url()).pathname}`),
     );
     await page.setViewportSize({ width: 1280, height: 800 });
-    // no transitions, so the sidebar is not caught half way between two pages
+    // the app's own switch for no movement; the style below, added at load, takes the fades and transitions to their end
     await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
+    // reduced motion keeps the fades (UXR-7, UXR-10), so a picture taken the moment a page or overlay is there could be of the
+    // first frame of its fade: every page of the demo starts with its animations and transitions at their end
+    await page.addInitScript(() => {
+      document.addEventListener("DOMContentLoaded", () => {
+        const style = document.createElement("style");
+        style.textContent =
+          "*,*::before,*::after{animation-duration:0s!important;animation-delay:0s!important;transition-duration:0s!important}";
+        document.head.append(style);
+      });
+    });
     await mkdir(out, { recursive: true });
     // the link signs in and sends the browser to the app
     await page.goto(`http://127.0.0.1:${PORT + 1}/`);
@@ -81,7 +91,7 @@ for (const theme of ["dark", "light"] as const) {
       }
       // the State page waits for a stack name, so give it one the seed wrote
       if (path === "state") {
-        await page.getByLabel("Stack").fill("network");
+        await page.getByLabel("Stack", { exact: true }).fill("network");
         await page.getByRole("button", { name: "Show state" }).click();
         await page.getByRole("heading", { name: "Resources in the newest version" }).waitFor();
       }
@@ -94,17 +104,22 @@ for (const theme of ["dark", "light"] as const) {
           .first()
           .waitFor();
       }
-      // the Status page with two pipelines' jobs open: a failed one (two passed, the one that failed and why, the rest never
-      // run) and main's, whose release trigger started a child pipeline of two jobs and whose deploy-api trigger handed over to
-      // acme/api, each drawn as a lane to the right
+      // the Status page with two pipelines' jobs, one open at a time (UXR-18): a failed one (two passed, the one that failed and
+      // why, the rest never run), then main's, whose release trigger started a child pipeline of two jobs and whose deploy-api
+      // trigger handed over to acme/api, each drawn as a lane to the right
       if (path === "status") {
         await page.getByRole("button", { name: "Jobs feature/billing" }).click();
         await page.locator(".jobs-list").getByText("Script failure").waitFor();
+        await page.screenshot({ path: join(out, `status-failed-${theme}.png`) });
         await page.getByRole("button", { name: "Jobs main" }).click();
         await page.getByRole("heading", { name: /^Child pipeline #\d+$/ }).waitFor();
         // its `deploy-api` trigger handed over to acme/api, which the viewer can see: that project's jobs are the second lane
         await page.getByRole("heading", { name: /^acme\/api #\d+$/ }).waitFor();
-        await expect(page.locator(".job-flow"), "both pipelines' nodes are drawn").toHaveCount(2);
+        await expect(
+          page.locator(".job-flow"),
+          "main's nodes are drawn, the failed pipeline's panel shut",
+        ).toHaveCount(1);
+        await expect(page.locator(".jobs-list").getByText("Script failure")).toHaveCount(0);
         await expect(page.locator(".job-trigger .job-kind")).toHaveText(["Triggers", "Triggers"]);
       }
       await page.waitForLoadState("networkidle");
@@ -189,6 +204,21 @@ for (const theme of ["dark", "light"] as const) {
       await page.setViewportSize({ width: 1280, height: Math.max(800, height) });
       await page.screenshot({ path: join(out, `${name}-${theme}.png`) });
       await page.setViewportSize({ width: 1280, height: 800 });
+      // the same page on a phone (UXR-30), the whole length; Status takes its own below, with its jobs open
+      if (path !== "status") {
+        await page.setViewportSize({ width: 390, height: 844 });
+        expect(await sideways(), `${name} scrolls sideways at 390`).toBe(false);
+        await page.screenshot({ path: join(out, `${name}-390-${theme}.png`), fullPage: true });
+        // and the menu that stands in for the sidebar, open over home
+        if (path === "") {
+          await page.getByRole("button", { name: "Open menu" }).click();
+          await page.getByRole("dialog", { name: "Menu" }).waitFor();
+          await page.screenshot({ path: join(out, `menu-390-${theme}.png`) });
+          await page.keyboard.press("Escape");
+          await page.getByRole("dialog", { name: "Menu" }).waitFor({ state: "detached" });
+        }
+        await page.setViewportSize({ width: 1280, height: 800 });
+      }
       // the Promote dialog of staging, once the dry run has said what it would do: at a desktop and at a phone width
       if (path === "status") {
         await page.getByRole("button", { name: "Promote to staging" }).click();
@@ -236,7 +266,7 @@ for (const theme of ["dark", "light"] as const) {
         await page.getByRole("group", { name: "Selected variables" }).waitFor();
         await page.screenshot({ path: join(out, `variables-select-${theme}.png`) });
         await page.getByRole("button", { name: "Delete selected" }).click();
-        await page.getByRole("dialog", { name: "Delete 2 variables" }).waitFor();
+        await page.getByRole("alertdialog", { name: "Delete 2 variables" }).waitFor();
         await page.screenshot({ path: join(out, `variables-delete-${theme}.png`) });
         await page.keyboard.press("Escape");
         await boxes.nth(0).uncheck();

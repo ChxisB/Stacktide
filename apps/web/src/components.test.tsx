@@ -1,34 +1,84 @@
-import { describe, expect, mock, test } from "bun:test";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { describe, expect, jest, mock, test } from "bun:test";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import {
+  Callout,
   Card,
   Chips,
+  Confirm,
+  Dialog,
   Drawer,
+  Empty,
   Kpi,
   Named,
   PageHead,
   Popover,
   RowMenu,
   StatusBadge,
+  Toaster,
   type Tone,
   useInDrawer,
+  useToast,
 } from "./components";
 import { visibleText } from "./testing";
+import { Loading } from "./ui";
+
+// UXR-2: busy is a state of any button; the spinner is CSS (styles.test.ts), so what a test can hold to is the markup: the
+// label stays, and so does the name it is found by
+describe("a busy button", () => {
+  test("keeps its label as its name, says it is busy, and cannot be pressed again", async () => {
+    const press = mock(() => {});
+    render(
+      <button type="button" className="primary" aria-busy="true" disabled onClick={press}>
+        Checking…
+      </button>,
+    );
+    const button = screen.getByRole("button", { name: "Checking…" });
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    await userEvent.click(button);
+    fireEvent.keyDown(button, { key: "Enter" });
+    expect(press).not.toHaveBeenCalled();
+  });
+});
+
+// UXR-3: no screen has a field with an error of its own yet (a form's error is one line under the form); the State
+// screen's stack input is the first (UXR-22). This holds the markup those screens follow: the control says it is invalid
+// and is described by its error line, which the field's CSS then shows under it
+describe("an invalid field", () => {
+  test("is found by its label, says it is invalid, and has its error as its description", () => {
+    render(
+      <div className="field">
+        <label htmlFor="name">Name</label>
+        <input
+          id="name"
+          defaultValue="database url"
+          aria-invalid="true"
+          aria-describedby="name-error"
+        />
+        <p id="name-error" className="error">
+          Use capitals and underscores, like DATABASE_URL.
+        </p>
+      </div>,
+    );
+    const input = screen.getByRole("textbox", {
+      name: "Name",
+      description: "Use capitals and underscores, like DATABASE_URL.",
+    });
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+  });
+});
 
 describe("PageHead", () => {
-  test("is the page's heading, with the eyebrow, lede and actions around it", () => {
+  test("is the page's heading, with the lede and actions around it", () => {
     render(
       <PageHead
-        eyebrow="Delivery"
         title="Pipeline"
         lede="Set up CI for a project."
         actions={<button type="button">Open merge request</button>}
       />,
     );
     expect(screen.getByRole("heading", { level: 1, name: "Pipeline" })).toBeTruthy();
-    expect(screen.getByText("Delivery")).toBeTruthy();
     expect(screen.getByText("Set up CI for a project.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open merge request" })).toBeTruthy();
   });
@@ -36,7 +86,7 @@ describe("PageHead", () => {
   test("needs only a title", () => {
     const { container } = render(<PageHead title="Home" />);
     expect(screen.getByRole("heading", { name: "Home" })).toBeTruthy();
-    expect(container.querySelector(".eyebrow, .lede, .actions")).toBeNull();
+    expect(container.querySelector(".lede, .actions")).toBeNull();
   });
 });
 
@@ -119,6 +169,129 @@ describe("Kpi", () => {
   test("a figure of zero is shown, not left out", () => {
     const { container } = render(<Kpi label="Projects" value={0} />);
     expect(container.querySelector(".kpi-value")?.textContent).toBe("0");
+  });
+
+  test("a foot with a link is a link, named by the foot's words", () => {
+    render(<Kpi label="Open findings" value="5" foot="2 are high" footHref="#/findings" />);
+    const link = screen.getByRole("link", { name: "2 are high" });
+    expect(link.getAttribute("href")).toBe("#/findings");
+  });
+
+  test("a foot without a link is words only, and no foot leaves no line", () => {
+    const { container, rerender } = render(
+      <Kpi label="Open findings" value="5" foot="2 are high" />,
+    );
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(container.querySelector(".kpi-foot")?.textContent).toBe("2 are high");
+    rerender(<Kpi label="Open findings" value="5" />);
+    expect(container.querySelector(".kpi-foot")).toBeNull();
+  });
+});
+
+// UXR-5: a message in a box (a callout), a place with nothing in it (empty, or failed) and the shape of what is on its way
+describe("Callout", () => {
+  const tones = ["info", "ok", "warn", "bad"] as const;
+
+  test.each(tones)("%s shows its words beside a glyph hidden from assistive technology", (tone) => {
+    const { container } = render(
+      <Callout tone={tone} title="Heads up.">
+        Check the connection.
+      </Callout>,
+    );
+    expect(container.textContent).toBe("Heads up. Check the connection.");
+    expect(screen.getByText("Heads up.").tagName).toBe("B");
+    const glyph = container.querySelector("svg");
+    expect(glyph?.getAttribute("aria-hidden")).toBe("true");
+    expect(glyph?.getAttribute("focusable")).toBe("false");
+  });
+
+  test("only a bad one interrupts a screen reader; the others are read in their turn", () => {
+    for (const tone of tones) {
+      const { unmount } = render(<Callout tone={tone}>Words for {tone}</Callout>);
+      expect(screen.queryByRole("alert") === null).toBe(tone !== "bad");
+      unmount();
+    }
+  });
+
+  test("every tone has its own glyph, so colour is never the only signal", () => {
+    const shapes = tones.map((tone) => {
+      const { container, unmount } = render(<Callout tone={tone}>x</Callout>);
+      const html = container.querySelector("svg")?.innerHTML ?? "";
+      unmount();
+      return html;
+    });
+    expect(new Set(shapes).size).toBe(tones.length);
+  });
+
+  test("its action is a button inside the box, so it is read with the words", () => {
+    render(
+      <Callout tone="bad" title="Down." action={<button type="button">Try again</button>}>
+        Cannot reach it.
+      </Callout>,
+    );
+    const alert = screen.getByRole("alert");
+    expect(within(alert).getByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(alert.textContent).toBe("Down. Cannot reach it.Try again");
+  });
+
+  test("without a title it is its words only, and a link in it stays a link", () => {
+    render(
+      <Callout tone="warn">
+        2 variables differ. <a href="#/sync">Open Sync</a>
+      </Callout>,
+    );
+    expect(screen.queryByText("2 variables differ.", { selector: "b" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open Sync" }).getAttribute("href")).toBe("#/sync");
+  });
+});
+
+describe("Empty", () => {
+  test("says what belongs here and gives the button that puts something here", () => {
+    render(
+      <Empty
+        title="No projects yet"
+        text="Connect GitLab and choose the projects to manage."
+        action={<button type="button">Connect GitLab</button>}
+      />,
+    );
+    expect(screen.getByRole("heading", { level: 3, name: "No projects yet" })).toBeTruthy();
+    expect(screen.getByText("Connect GitLab and choose the projects to manage.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Connect GitLab" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("without an action it is words only", () => {
+    render(<Empty title="No findings" text="Nothing was found in the last scan." />);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  test("a failed one is announced, with its fix beside it and its glyph hidden", () => {
+    const { container } = render(
+      <Empty
+        tone="bad"
+        title="Something went wrong"
+        text="We could not load pipelines."
+        action={<button type="button">Retry</button>}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(within(alert).getByRole("heading", { name: "Something went wrong" })).toBeTruthy();
+    expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(container.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+  });
+});
+
+describe("Loading", () => {
+  test("is a busy status that still says what is loading, with the shape of lines drawn under it", () => {
+    const { container } = render(<Loading what="Loading pipelines" />);
+    const status = screen.getByRole("status");
+    expect(status.getAttribute("aria-busy")).toBe("true");
+    expect(status.textContent).toBe("Loading pipelines…");
+    expect(screen.getByText("Loading pipelines…")).toBeTruthy();
+    // the lines are decoration: a screen reader hears the words once
+    const lines = [...container.querySelectorAll(".skel")];
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    for (const line of lines) expect(line.getAttribute("aria-hidden")).toBe("true");
   });
 });
 
@@ -420,6 +593,38 @@ describe("RowMenu", () => {
     expect(menu.style.top).toBe("");
   });
 
+  test("it pops from the button: its origin is the corner nearest the button, under it or over it", async () => {
+    const { trigger } = mounted();
+    const user = userEvent.setup();
+    window.innerWidth = 1000;
+    window.innerHeight = 800;
+    trigger.getBoundingClientRect = () => ({ top: 100, bottom: 132, right: 500 }) as DOMRect;
+    await user.click(trigger);
+    expect((screen.getByRole("menu") as HTMLElement).style.transformOrigin).toBe("top right");
+    await user.keyboard("{Escape}");
+
+    trigger.getBoundingClientRect = () => ({ top: 750, bottom: 782, right: 500 }) as DOMRect;
+    await user.click(trigger);
+    expect((screen.getByRole("menu") as HTMLElement).style.transformOrigin).toBe("bottom right");
+  });
+
+  test("it moves toward the button as it opens: from below when under it, from above when over it", async () => {
+    const { trigger } = mounted();
+    const user = userEvent.setup();
+    window.innerWidth = 1000;
+    window.innerHeight = 800;
+    trigger.getBoundingClientRect = () => ({ top: 100, bottom: 132, right: 500 }) as DOMRect;
+    await user.click(trigger);
+    expect((screen.getByRole("menu") as HTMLElement).style.getPropertyValue("--menu-dir")).toBe("");
+    await user.keyboard("{Escape}");
+
+    trigger.getBoundingClientRect = () => ({ top: 750, bottom: 782, right: 500 }) as DOMRect;
+    await user.click(trigger);
+    expect((screen.getByRole("menu") as HTMLElement).style.getPropertyValue("--menu-dir")).toBe(
+      "-1",
+    );
+  });
+
   test("the button toggles it, and a second row's menu closes the first (a press outside the first)", async () => {
     render(
       <>
@@ -446,6 +651,521 @@ describe("RowMenu", () => {
 
 // VUI-6: a panel from the right edge. A dialog: named, modal, focus goes in and comes back, Tab stays inside, Esc and the
 // scrim close it, and the page behind does not scroll while it is open.
+// UXR-9: a result is reported, then leaves. One at a time, 5 s, a live region that was there before the words.
+describe("Toaster", () => {
+  function Reports(props: { text: string }) {
+    const toast = useToast();
+    return (
+      <button type="button" onClick={() => toast(props.text)}>
+        Report {props.text}
+      </button>
+    );
+  }
+  const shown = () => screen.getByRole("status").textContent;
+
+  test("a status region is there before any toast, empty, with nothing to dismiss", () => {
+    render(
+      <Toaster>
+        <Reports text="Saved." />
+      </Toaster>,
+    );
+    expect(shown()).toBe("");
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+  });
+
+  test("the words arrive in that region, with a Dismiss button, and the focus stays where it was", async () => {
+    const user = userEvent.setup();
+    render(
+      <Toaster>
+        <Reports text="Variable deleted." />
+      </Toaster>,
+    );
+    const opener = screen.getByRole("button", { name: "Report Variable deleted." });
+    await user.click(opener);
+    expect(shown()).toBe("Variable deleted.");
+    expect(screen.getByRole("button", { name: "Dismiss" })).toBeTruthy();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  test("Dismiss removes it, and the region stays", async () => {
+    const user = userEvent.setup();
+    render(
+      <Toaster>
+        <Reports text="Saved." />
+      </Toaster>,
+    );
+    await user.click(screen.getByRole("button", { name: "Report Saved." }));
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(shown()).toBe("");
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+  });
+
+  // UXR-18: "Started … open the pipeline" is a result with a link in it
+  test("the words may carry a link, in the same region", async () => {
+    const user = userEvent.setup();
+    function Links() {
+      const toast = useToast();
+      return (
+        <button
+          type="button"
+          onClick={() =>
+            toast(
+              <>
+                Started <code>bbbbbbbb</code>:{" "}
+                <a href="https://gitlab.example/p/-/pipelines/7">open the pipeline</a>.
+              </>,
+            )
+          }
+        >
+          Start
+        </button>
+      );
+    }
+    render(
+      <Toaster>
+        <Links />
+      </Toaster>,
+    );
+    await user.click(screen.getByRole("button", { name: "Start" }));
+    const region = screen.getByRole("status");
+    expect(region.textContent).toBe("Started bbbbbbbb: open the pipeline.");
+    expect(
+      within(region).getByRole("link", { name: "open the pipeline" }).getAttribute("href"),
+    ).toBe("https://gitlab.example/p/-/pipelines/7");
+  });
+
+  // UXR-17: a screen starting a new action takes the news of the last one away before it knows the new result
+  test("asking with no words takes the toast away, and the region stays", async () => {
+    const user = userEvent.setup();
+    function Clears() {
+      const toast = useToast();
+      return (
+        <button type="button" onClick={() => toast()}>
+          Clear
+        </button>
+      );
+    }
+    render(
+      <Toaster>
+        <Reports text="Saved." />
+        <Clears />
+      </Toaster>,
+    );
+    await user.click(screen.getByRole("button", { name: "Report Saved." }));
+    expect(shown()).toBe("Saved.");
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    expect(shown()).toBe("");
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+  });
+
+  test("it goes by itself after 5 s, and not before", () => {
+    jest.useFakeTimers();
+    try {
+      render(
+        <Toaster>
+          <Reports text="Saved." />
+        </Toaster>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Report Saved." }));
+      act(() => jest.advanceTimersByTime(4999));
+      expect(shown()).toBe("Saved.");
+      act(() => jest.advanceTimersByTime(1));
+      expect(shown()).toBe("");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("it waits while the pointer is over it or the focus is in it, then has its whole 5 s again", () => {
+    jest.useFakeTimers();
+    try {
+      render(
+        <Toaster>
+          <Reports text="Saved." />
+        </Toaster>,
+      );
+      const box = () => screen.getByRole("status").parentElement as HTMLElement;
+      for (const [hold, release] of [
+        [() => fireEvent.mouseEnter(box()), () => fireEvent.mouseLeave(box())],
+        [
+          () => fireEvent.focus(screen.getByRole("button", { name: "Dismiss" })),
+          () => fireEvent.blur(screen.getByRole("button", { name: "Dismiss" })),
+        ],
+      ] as const) {
+        fireEvent.click(screen.getByRole("button", { name: "Report Saved." }));
+        act(() => jest.advanceTimersByTime(4000));
+        act(() => hold());
+        act(() => jest.advanceTimersByTime(60000));
+        expect(shown()).toBe("Saved.");
+        act(() => release());
+        act(() => jest.advanceTimersByTime(4999));
+        expect(shown()).toBe("Saved.");
+        act(() => jest.advanceTimersByTime(1));
+        expect(shown()).toBe("");
+      }
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("a second toast replaces the first and has its own 5 s", () => {
+    jest.useFakeTimers();
+    try {
+      render(
+        <Toaster>
+          <Reports text="One." />
+          <Reports text="Two." />
+        </Toaster>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Report One." }));
+      act(() => jest.advanceTimersByTime(3000));
+      fireEvent.click(screen.getByRole("button", { name: "Report Two." }));
+      expect(shown()).toBe("Two.");
+      expect(screen.getAllByRole("button", { name: "Dismiss" })).toHaveLength(1);
+      // the first one's 5 s would be up now; the second one's are not
+      act(() => jest.advanceTimersByTime(2000));
+      expect(shown()).toBe("Two.");
+      act(() => jest.advanceTimersByTime(3000));
+      expect(shown()).toBe("");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("a toast asked for outside a Toaster does nothing instead of throwing", () => {
+    render(<Reports text="Saved." />);
+    fireEvent.click(screen.getByRole("button", { name: "Report Saved." }));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+// UXR-8: one question, two answers. It shares the drawer's modal behaviour (focus in and back, Tab kept inside, Esc and the
+// scrim close it, the page does not scroll); what is its own is the heading, the footer, the error line and the busy state.
+describe("Dialog", () => {
+  function Host(props: {
+    destructive?: boolean;
+    field?: boolean;
+    busy?: boolean;
+    disabled?: boolean;
+    error?: string;
+    onConfirm?: () => void;
+    closed?: () => void;
+  }) {
+    const [open, setOpen] = useState(false);
+    return (
+      <>
+        <button type="button" onClick={() => setOpen(true)}>
+          Open it
+        </button>
+        {open && (
+          <Dialog
+            title="Delete DATABASE_URL?"
+            sub="It is removed from dev and from 2 sync targets."
+            cancel="Keep it"
+            confirm={props.destructive ? "Delete variable" : "Promote"}
+            destructive={props.destructive}
+            busy={props.busy}
+            disabled={props.disabled}
+            error={props.error}
+            onConfirm={props.onConfirm ?? (() => {})}
+            close={() => {
+              props.closed?.();
+              setOpen(false);
+            }}
+          >
+            {props.field && (
+              <label>
+                Type the name
+                <input />
+              </label>
+            )}
+          </Dialog>
+        )}
+      </>
+    );
+  }
+  const opened = async (props: Parameters<typeof Host>[0] = {}) => {
+    const user = userEvent.setup();
+    const view = render(<Host {...props} />);
+    const opener = screen.getByRole("button", { name: "Open it" });
+    await user.click(opener);
+    return { user, opener, view };
+  };
+  const scrim = () => document.querySelector(".drawer-scrim") as HTMLElement;
+
+  test("is a modal dialog named by its heading and described by its line", async () => {
+    await opened();
+    const dialog = screen.getByRole("dialog", { name: "Delete DATABASE_URL?" });
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    const heading = screen.getByRole("heading", { name: "Delete DATABASE_URL?" });
+    expect(dialog.getAttribute("aria-labelledby")).toBe(heading.id);
+    expect(
+      document.getElementById(dialog.getAttribute("aria-describedby") ?? "")?.textContent,
+    ).toBe("It is removed from dev and from 2 sync targets.");
+  });
+
+  test("a destructive one is an alert dialog, and its confirm is the solid danger button", async () => {
+    await opened({ destructive: true });
+    expect(screen.getByRole("alertdialog", { name: "Delete DATABASE_URL?" })).toBeTruthy();
+    const confirm = screen.getByRole("button", { name: "Delete variable" });
+    expect(confirm.className).toBe("danger solid");
+    expect(screen.getByRole("button", { name: "Keep it" }).className).toBe("quiet");
+  });
+
+  test("a consequential one is a dialog, and its confirm is the primary button, after Cancel", async () => {
+    await opened();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    const [cancel, confirm] = within(screen.getByRole("dialog")).getAllByRole("button");
+    expect(cancel?.textContent).toBe("Keep it");
+    expect(confirm?.textContent).toBe("Promote");
+    expect(confirm?.className).toBe("primary");
+  });
+
+  test("Cancel reads Cancel unless the caller says what it keeps", () => {
+    render(
+      <Dialog title="Leave?" confirm="Leave" onConfirm={() => {}} close={() => {}}>
+        {null}
+      </Dialog>,
+    );
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
+
+  test("focus starts on Cancel for a destructive one, on the first field for a form, else on the dialog", async () => {
+    const destructive = await opened({ destructive: true });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Keep it" }));
+    destructive.view.unmount();
+    const form = await opened({ destructive: true, field: true });
+    // destructive wins over a field: the safe button first, even when there is something to type
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Keep it" }));
+    form.view.unmount();
+    const typed = await opened({ field: true });
+    expect(document.activeElement).toBe(screen.getByLabelText("Type the name"));
+    typed.view.unmount();
+    await opened();
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+  });
+
+  test("Tab from the last button goes to the first control, and Shift+Tab from it goes back", async () => {
+    const { user } = await opened({ field: true });
+    const field = screen.getByLabelText("Type the name");
+    const confirm = screen.getByRole("button", { name: "Promote" });
+    confirm.focus();
+    await user.tab();
+    expect(document.activeElement).toBe(field);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(confirm);
+  });
+
+  test("Esc, the scrim and Cancel each close it, and focus is back on the button that opened it", async () => {
+    const closed = mock(() => {});
+    const first = await opened({ closed });
+    await first.user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(first.opener);
+    first.view.unmount();
+    const second = await opened({ closed });
+    await second.user.click(scrim());
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(second.opener);
+    second.view.unmount();
+    const third = await opened({ closed });
+    await third.user.click(screen.getByRole("button", { name: "Keep it" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(third.opener);
+    expect(closed).toHaveBeenCalledTimes(3);
+  });
+
+  test("when what opened it is gone with what it did, focus goes to the page's main and not to nowhere", async () => {
+    function Gone() {
+      const [rows, setRows] = useState(["a"]);
+      const [open, setOpen] = useState(false);
+      return (
+        <main id="main" tabIndex={-1}>
+          {rows.map((r) => (
+            <div key={r}>
+              <button type="button" onClick={() => setOpen(true)}>
+                Open it
+              </button>
+              {open && (
+                <Dialog
+                  title="Remove it?"
+                  confirm="Remove"
+                  onConfirm={() => setRows([])}
+                  close={() => setOpen(false)}
+                />
+              )}
+            </div>
+          ))}
+        </main>
+      );
+    }
+    const user = userEvent.setup();
+    render(<Gone />);
+    await user.click(screen.getByRole("button", { name: "Open it" }));
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open it" })).toBeNull();
+    expect(document.activeElement).toBe(document.getElementById("main"));
+  });
+
+  test("the confirm button runs it once, and so does Enter in a field", async () => {
+    const onConfirm = mock(() => {});
+    const { user } = await opened({ field: true, onConfirm });
+    await user.click(screen.getByRole("button", { name: "Promote" }));
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    await user.type(screen.getByLabelText("Type the name"), "x{Enter}");
+    expect(onConfirm).toHaveBeenCalledTimes(2);
+  });
+
+  test("answering it does not submit the form it was opened from: React bubbles a portal's events to its parent", async () => {
+    const outer = mock((e: { preventDefault: () => void }) => e.preventDefault());
+    const onConfirm = mock(() => {});
+    const user = userEvent.setup();
+    render(
+      <form onSubmit={outer}>
+        <Dialog title="Leave?" confirm="Leave" onConfirm={onConfirm} close={() => {}} />
+      </form>,
+    );
+    await user.click(screen.getByRole("button", { name: "Leave" }));
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(outer).not.toHaveBeenCalled();
+  });
+
+  test("busy: both buttons are disabled and the confirm says so, so it cannot be pressed again", async () => {
+    const onConfirm = mock(() => {});
+    const { user, view } = await opened({ onConfirm });
+    view.rerender(<Host busy onConfirm={onConfirm} />);
+    const confirm = screen.getByRole("button", { name: "Promote" }) as HTMLButtonElement;
+    const cancel = screen.getByRole("button", { name: "Keep it" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    expect(cancel.disabled).toBe(true);
+    expect(confirm.getAttribute("aria-busy")).toBe("true");
+    expect(cancel.getAttribute("aria-busy")).toBeNull();
+    await user.click(confirm);
+    fireEvent.keyDown(confirm, { key: "Enter" });
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  // UXR-18: an answer that is not yet possible (the dry run has not come back) is shut, but nothing is under way
+  test("disabled: the answer is shut without saying it is busy, and Cancel and Esc still work", async () => {
+    const onConfirm = mock(() => {});
+    const closed = mock(() => {});
+    const { user } = await opened({ disabled: true, field: true, onConfirm, closed });
+    const confirm = screen.getByRole("button", { name: "Promote" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    expect(confirm.getAttribute("aria-busy")).toBeNull();
+    expect((screen.getByRole("button", { name: "Keep it" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    await user.click(confirm);
+    // the browser does not submit by Enter when the answer is shut; a form submitted any other way is held too
+    fireEvent.submit(screen.getByRole("dialog").querySelector("form") as HTMLFormElement);
+    expect(onConfirm).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  test("busy: Esc and the scrim do not close it either, so the answer is not lost mid-request", async () => {
+    const closed = mock(() => {});
+    const { user, view } = await opened({ closed });
+    view.rerender(<Host busy closed={closed} />);
+    await user.keyboard("{Escape}");
+    await user.click(scrim());
+    expect(closed).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    view.rerender(<Host closed={closed} />);
+    await user.keyboard("{Escape}");
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  test("opened over a drawer, Esc closes only the dialog, the one on top", async () => {
+    const drawerClosed = mock(() => {});
+    const dialogClosed = mock(() => {});
+    function Over() {
+      const [open, setOpen] = useState(false);
+      return (
+        <Drawer title="Edit DATABASE_URL" close={drawerClosed}>
+          <button type="button" onClick={() => setOpen(true)}>
+            Ask
+          </button>
+          {open && (
+            <Dialog title="Delete it?" confirm="Delete" onConfirm={() => {}} close={dialogClosed} />
+          )}
+        </Drawer>
+      );
+    }
+    const user = userEvent.setup();
+    const view = render(<Over />);
+    await user.click(screen.getByRole("button", { name: "Ask" }));
+    await user.keyboard("{Escape}");
+    expect(dialogClosed).toHaveBeenCalledTimes(1);
+    expect(drawerClosed).not.toHaveBeenCalled();
+    // both go at once (a delete answered in the dialog closes the drawer too): the page scrolls again
+    view.unmount();
+    expect(document.body.style.overflow).toBe("");
+  });
+
+  test("an error is an alert in the dialog, and when the work stops the focus is back on the confirm button", async () => {
+    const { view } = await opened();
+    expect(screen.queryByRole("alert")).toBeNull();
+    view.rerender(<Host busy />);
+    // a disabled button loses the focus; the keyboard is not left on the page behind the scrim
+    (document.activeElement as HTMLElement).blur();
+    view.rerender(<Host error="It is used by 2 sync targets. Remove them first." />);
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("It is used by 2 sync targets. Remove them first.");
+    expect(screen.getByRole("dialog").contains(alert)).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Promote" }));
+  });
+});
+
+// UXR-26: the one delete question of the Settings screens (a connection, a provider, a sign-in method, a token)
+describe("Confirm", () => {
+  test("asks with the cost as a warning, what blocks it as a note, Keep, and the answer named for what it does", async () => {
+    const onConfirm = mock(() => {});
+    const close = mock(() => {});
+    const user = userEvent.setup();
+    const view = render(
+      <Confirm
+        title="Delete Mock GitLab"
+        warn="Its stored token is deleted."
+        note="One that sync targets still use cannot be deleted."
+        go="Delete Mock GitLab"
+        onConfirm={onConfirm}
+        close={close}
+      />,
+    );
+    const box = screen.getByRole("alertdialog", { name: "Delete Mock GitLab" });
+    // a warning is read in turn, not announced as a failure: only a refusal is an alert
+    expect(
+      within(box).getByText("Its stored token is deleted.").closest(".callout"),
+    ).not.toBeNull();
+    expect(within(box).queryByRole("alert")).toBeNull();
+    expect(
+      within(box).getByText("One that sync targets still use cannot be deleted."),
+    ).toBeDefined();
+    expect(document.activeElement).toBe(within(box).getByRole("button", { name: "Keep" }));
+    await user.click(within(box).getByRole("button", { name: "Keep" }));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+    await user.click(within(box).getByRole("button", { name: "Delete Mock GitLab" }));
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    // a refusal stays in the dialog, as an alert
+    view.rerender(
+      <Confirm
+        title="Delete Mock GitLab"
+        warn="Its stored token is deleted."
+        go="Delete Mock GitLab"
+        error="Sync targets still use this connection."
+        onConfirm={onConfirm}
+        close={close}
+      />,
+    );
+    expect(screen.getByRole("alert").textContent).toBe("Sync targets still use this connection.");
+    expect(box.contains(screen.getByRole("alert"))).toBe(true);
+  });
+});
+
 describe("Drawer", () => {
   function Host({ closed = mock(() => {}) }: { closed?: () => void }) {
     const [open, setOpen] = useState(false);

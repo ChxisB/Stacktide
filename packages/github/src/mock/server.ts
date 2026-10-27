@@ -86,6 +86,20 @@ export interface RunSeed {
   workflow?: string;
 }
 
+/** What a test says about a deployment; the rest is filled in the way GitHub would. */
+export interface DeploymentSeed {
+  environment: string;
+  /** Default: `main`. */
+  ref?: string;
+  /** Default: the head of the ref. */
+  sha?: string;
+  /**
+   * The state of its first status: queued, pending, in_progress, success, failure, error or inactive. Default: none,
+   * which is a deployment nothing has reported on yet.
+   */
+  state?: string;
+}
+
 /** Whose Actions items: a repository (`owner/name`), one of its environments, or an organization. */
 export type ActionsWhere = { repository: string; environment?: string } | { organization: string };
 
@@ -127,6 +141,10 @@ export interface MockGithub {
     job: string,
     to: { status?: string; conclusion?: string | null },
   ): void;
+  /** A deployment of a commit to an environment; returns its id. */
+  addDeployment(owner: string, name: string, seed: DeploymentSeed): { id: number };
+  /** Posts a status to a deployment, as the deploying job does while it runs; `logUrl` is the address GitHub shows for it. */
+  setDeployment(owner: string, name: string, id: number, state: string, logUrl?: string): void;
   /** A review of a pull request, as its author sees it in the list: `state` is APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED. */
   addReview(
     owner: string,
@@ -206,7 +224,6 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
 /** Repository routes with one answer each, the permission probes of FRG-10 that have no logic behind them. */
 const REPO_ROUTES: Record<string, unknown> = {
   "/actions/workflows": { total_count: 0, workflows: [] },
-  "/environments": { total_count: 0, environments: [] },
   "/hooks": [],
 };
 
@@ -253,6 +270,16 @@ interface Run {
   path: string;
   /** Reads of the workflow's run list that still leave the run out. */
   hidden: number;
+}
+
+/** A deployment and the statuses posted to it, oldest first. */
+interface MockDeployment {
+  id: number;
+  environment: string;
+  ref: string;
+  sha: string;
+  createdAt: string;
+  statuses: { id: number; state: string; logUrl: string | null; createdAt: string }[];
 }
 
 /** An Actions secret or variable; `value` is plain text, a secret's opened with the scope's key. */
@@ -303,12 +330,15 @@ export function createMockGithub(opts: MockGithubOptions = {}): MockGithub {
   const gits = new Map<string, MockGit>();
   const pulls = new Map<string, PullState>();
   const runs = new Map<string, Run[]>();
+  const deployments = new Map<string, MockDeployment[]>();
   const maxPerPage = opts.maxPerPage ?? 100;
   let nextRepoId = 1000;
   let nextPullId = 5000;
   let nextCommentId = 9000;
   let nextRunId = 7000;
   let nextJobId = 8000;
+  let nextDeploymentId = 3000;
+  let nextStatusId = 4000;
   let nextAccountId = 100;
   const accounts: Account[] = [];
   const collaborators = new Map<string, Map<string, { role: string; permission: string }>>();
@@ -614,6 +644,40 @@ export function createMockGithub(opts: MockGithubOptions = {}): MockGithub {
       );
     }
 
+    m = on("GET", /^\/environments$/);
+    if (m) {
+      const held = [...(environments.get(repo.full_name)?.keys() ?? [])];
+      return page(
+        url,
+        held.map((name, i) => ({ id: i + 1, name })),
+        "environments",
+      );
+    }
+    m = on("GET", /^\/deployments$/);
+    if (m) {
+      const env = q.get("environment");
+      const mine = (deployments.get(repo.full_name) ?? [])
+        .filter((d) => env === null || d.environment === env)
+        .toSorted((a, b) => b.id - a.id);
+      return page(url, mine.map(deploymentJson));
+    }
+    m = on("GET", /^\/deployments\/(\d+)(\/statuses)?$/);
+    if (m) {
+      const d = (deployments.get(repo.full_name) ?? []).find((x) => x.id === Number(m?.[1]));
+      if (!d) return notFound();
+      if (!m[2]) return json(200, deploymentJson(d));
+      return page(
+        url,
+        d.statuses.toReversed().map((st) => ({
+          id: st.id,
+          state: st.state,
+          environment: d.environment,
+          log_url: st.logUrl,
+          created_at: st.createdAt,
+          updated_at: st.createdAt,
+        })),
+      );
+    }
     m = on("GET", /^\/environments\/([^/]+)$/);
     if (m) {
       const rules = environments.get(repo.full_name)?.get(m[1] ?? "");
@@ -966,9 +1030,22 @@ export function createMockGithub(opts: MockGithubOptions = {}): MockGithub {
       }
       value[k] = v;
     }
+    // the expressions a `run-name` uses here: `inputs.x`, `github.sha` and 'a literal', the first that is not empty of
+    // several joined by `||`; GitHub evaluates far more, and a name the mock cannot read stays as written
+    const term = (t: string) => {
+      const name = t.trim();
+      if (name === "github.sha") return sha;
+      const literal = /^'([^']*)'$/.exec(name);
+      if (literal) return literal[1] ?? "";
+      const input = /^inputs\.([\w-]+)$/.exec(name);
+      return input ? (value[input[1] as string] ?? "") : undefined;
+    };
     const title = (workflow["run-name"] ?? workflow.name ?? file).replace(
-      /\$\{\{\s*inputs\.([\w-]+)\s*\}\}/g,
-      (_, k: string) => value[k] ?? "",
+      /\$\{\{([^}]*)\}\}/g,
+      (whole, e: string) => {
+        const terms = e.split("||").map(term);
+        return terms.includes(undefined) ? whole : (terms.find((v) => v) ?? "");
+      },
     );
     for (let i = 0; i < (opts.alsoDispatches ? 2 : 1); i++) {
       c.runs.push(
@@ -1128,6 +1205,16 @@ export function createMockGithub(opts: MockGithubOptions = {}): MockGithub {
     issue_url: `${api}/issues/${cm.issue}`,
   });
 
+  const deploymentJson = (d: MockDeployment) => ({
+    id: d.id,
+    sha: d.sha,
+    ref: d.ref,
+    task: "deploy",
+    environment: d.environment,
+    created_at: d.createdAt,
+    updated_at: d.statuses.at(-1)?.createdAt ?? d.createdAt,
+  });
+
   const runJson = (r: Run, repo: MockRepo) => ({
     id: r.id,
     run_number: r.number,
@@ -1233,6 +1320,30 @@ export function createMockGithub(opts: MockGithubOptions = {}): MockGithub {
       }
       if (to.status !== undefined) j.status = to.status;
       if (to.conclusion !== undefined) j.conclusion = to.conclusion;
+    },
+    addDeployment(owner, name, seed) {
+      const full = `${owner}/${name}`;
+      const git = gits.get(full);
+      if (!git) throw new Error(`no repository ${full}`);
+      const ref = seed.ref ?? "main";
+      const createdAt = stamp();
+      const d: MockDeployment = {
+        id: nextDeploymentId++,
+        environment: seed.environment,
+        ref,
+        sha: seed.sha ?? git.resolve(ref) ?? "0".repeat(40),
+        createdAt,
+        statuses: [],
+      };
+      if (seed.state)
+        d.statuses.push({ id: nextStatusId++, state: seed.state, logUrl: null, createdAt });
+      deployments.set(full, [...(deployments.get(full) ?? []), d]);
+      return { id: d.id };
+    },
+    setDeployment(owner, name, id, state, logUrl) {
+      const d = (deployments.get(`${owner}/${name}`) ?? []).find((x) => x.id === id);
+      if (!d) throw new Error(`no deployment ${id} in ${owner}/${name}`);
+      d.statuses.push({ id: nextStatusId++, state, logUrl: logUrl ?? null, createdAt: stamp() });
     },
     addReview(owner, name, number, review) {
       const full = `${owner}/${name}`;

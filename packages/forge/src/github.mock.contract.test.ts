@@ -8,6 +8,9 @@ function onTheMock() {
   const mock = createMockGithub();
   mock.addRepo("platform", "other", { files: { "package.json": "{}" } });
   mock.addRepo("platform", "api");
+  // so the deployments cases read something, and not an empty list
+  mock.addEnvironment("platform", "api", "staging");
+  mock.addDeployment("platform", "api", { environment: "staging", state: "success" });
   const forge = githubForge(
     createGithubClient({
       baseUrl: mock.url,
@@ -30,7 +33,7 @@ forgeContract(
       stop: mock.stop,
     };
   },
-  { areas: ["projects", "repository", "merge requests"] },
+  { areas: ["projects", "repository", "merge requests", "deployments and environments"] },
 );
 
 /** What would change a branch of the repository: every write that names the branch in its path or its body. */

@@ -106,7 +106,8 @@ export const gitlabProblem = (e: unknown, kind: Forge["kind"] = "gitlab") => {
   );
 };
 
-const notFound = <T>(read: Promise<T>) =>
+/** A read that finds nothing is `null`; any other failure goes on. */
+export const notFound = <T>(read: Promise<T>) =>
   read.catch((e) => {
     if (e instanceof GitlabError && e.kind === "not_found") return null;
     throw e;

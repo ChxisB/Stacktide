@@ -184,13 +184,20 @@ describe("what can be done from the details", () => {
     const user = userEvent.setup();
     await user.click(within(region).getByRole("button", { name: "Delete COLOR in dev" }));
     await user.click(
-      within(screen.getByRole("form", { name: "Delete COLOR" })).getByRole("button", {
+      within(screen.getByRole("alertdialog", { name: "Delete COLOR" })).getByRole("button", {
         name: "Delete variable",
       }),
     );
     // (no role query for the dialog, and a boolean, not a node: a failed `expect(node)` prints the whole page
     // on every poll and stalls the wait; the details have no heading any more, so the drawer going shows they went)
     await waitFor(() => expect(document.querySelector("dialog") === null).toBe(true));
+    // the answer is a toast, since the drawer that would have held it is gone
+    await waitFor(() =>
+      expect(document.querySelector(".toast-text")?.textContent).toBe(
+        "Deleted COLOR from the project.",
+      ),
+    );
+    expect(document.querySelector(".toast-text")?.getAttribute("role")).toBe("status");
     expect(screen.queryAllByRole("region").length).toBe(1);
     const table = screen.getByRole("table", { name: "Variables in dev" });
     expect(within(table).queryByRole("button", { name: "COLOR" })).toBeNull();
@@ -200,6 +207,26 @@ describe("what can be done from the details", () => {
     await within(changes).findByText(/REGION/);
     expect(changes.textContent).not.toContain("COLOR");
     expect(within(table).getByRole("button", { name: "REGION" })).toBeTruthy();
+  });
+
+  test("Delete asks in a dialog over the details: Esc closes only the dialog, nothing goes, the focus comes back", async () => {
+    const s = await scene();
+    await s.put.project("DB_PASSWORD", SECRET, true);
+    mount(s.client);
+    const region = await details("DB_PASSWORD");
+    const user = userEvent.setup();
+    const button = within(region).getByRole("button", { name: "Delete DB_PASSWORD in dev" });
+    await user.click(button);
+    const ask = await screen.findByRole("alertdialog", { name: "Delete DB_PASSWORD" });
+    expect(ask.textContent).toContain("Delete DB_PASSWORD from the project?");
+    // the details stay behind it
+    expect(screen.getByRole("dialog", { name: "DB_PASSWORD in dev" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(screen.getByRole("dialog", { name: "DB_PASSWORD in dev" })).toBeTruthy();
+    expect(document.activeElement).toBe(button);
+    expect(await s.audit("variable.delete")).toHaveLength(0);
+    expect(document.body.textContent).not.toContain(SECRET);
   });
 
   test("its history and its rotation open in the matrix's own components", async () => {

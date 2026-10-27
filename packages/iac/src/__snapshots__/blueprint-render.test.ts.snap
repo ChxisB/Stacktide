@@ -1,0 +1,1389 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`renderBlueprint network gcp on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-network/README.md
+# staging-main-network
+
+Written by the platform from a blueprint: a \`network\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/network-v1\`, shared by every \`network\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses nothing.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-network/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source      = "../../_blueprints/gcp/network-v1"
+  environment = "staging"
+  name        = "main"
+  project     = "my-proj-123"
+  region      = "us-central1"
+  cidr        = "10.20.0.0/16"
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-network/stack.yml
+# Written by the platform from a blueprint (network on gcp); see README.md.
+name: staging-main-network
+tool: terraform
+version: 1.5.7
+state: gitlab
+watch:
+  - infra/_blueprints/gcp/network-v1/**
+"
+`;
+
+exports[`renderBlueprint network gcp on github: the stack's own files 1`] = `
+"# infra/staging/main-network/README.md
+# staging-main-network
+
+Written by the platform from a blueprint: a \`network\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/network-v1\`, shared by every \`network\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses nothing.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-network/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source      = "../../_blueprints/gcp/network-v1"
+  environment = "staging"
+  name        = "main"
+  project     = "my-proj-123"
+  region      = "us-central1"
+  cidr        = "10.20.0.0/16"
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-network/stack.yml
+# Written by the platform from a blueprint (network on gcp); see README.md.
+name: staging-main-network
+tool: terraform
+version: 1.5.7
+state: orch
+watch:
+  - infra/_blueprints/gcp/network-v1/**
+"
+`;
+
+exports[`renderBlueprint network aws on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-network/README.md
+# staging-main-network
+
+Written by the platform from a blueprint: a \`network\` on \`aws\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/network-v1\`, shared by every \`network\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses nothing.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-network/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source      = "../../_blueprints/aws/network-v1"
+  environment = "staging"
+  name        = "main"
+  region      = "eu-west-2"
+  cidr        = "10.30.0.0/20"
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-network/stack.yml
+# Written by the platform from a blueprint (network on aws); see README.md.
+name: staging-main-network
+tool: terraform
+version: 1.5.7
+state: gitlab
+watch:
+  - infra/_blueprints/aws/network-v1/**
+"
+`;
+
+exports[`renderBlueprint network aws on github: the stack's own files 1`] = `
+"# infra/staging/main-network/README.md
+# staging-main-network
+
+Written by the platform from a blueprint: a \`network\` on \`aws\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/network-v1\`, shared by every \`network\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses nothing.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-network/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source      = "../../_blueprints/aws/network-v1"
+  environment = "staging"
+  name        = "main"
+  region      = "eu-west-2"
+  cidr        = "10.30.0.0/20"
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-network/stack.yml
+# Written by the platform from a blueprint (network on aws); see README.md.
+name: staging-main-network
+tool: terraform
+version: 1.5.7
+state: orch
+watch:
+  - infra/_blueprints/aws/network-v1/**
+"
+`;
+
+exports[`renderBlueprint service gcp on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-service/README.md
+# staging-main-service
+
+Written by the platform from a blueprint: a \`service\` on \`gcp\`, profile \`medium\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/service-v1\`, shared by every \`service\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`bucket:files\`, \`network:main\`, \`postgres:main\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-service/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source        = "../../_blueprints/gcp/service-v1"
+  environment   = "staging"
+  name          = "main"
+  project       = "my-proj-123"
+  region        = "us-central1"
+  image         = "europe-docker.pkg.dev/my-proj-123/staging/app:1.2.3"
+  port          = 3000
+  public        = true
+  cpu           = "1"
+  memory        = "1Gi"
+  min_instances = 1
+  max_instances = 10
+  network       = "main"
+  databases     = ["main"]
+  buckets       = ["files"]
+}
+
+output "url" {
+  value = module.this.url
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-service/stack.yml
+# Written by the platform from a blueprint (service on gcp); see README.md.
+name: staging-main-service
+tool: terraform
+version: 1.5.7
+state: gitlab
+depends_on:
+  - staging-files-bucket
+  - staging-main-network
+  - staging-main-postgres
+watch:
+  - infra/_blueprints/gcp/service-v1/**
+"
+`;
+
+exports[`renderBlueprint service gcp on github: the stack's own files 1`] = `
+"# infra/staging/main-service/README.md
+# staging-main-service
+
+Written by the platform from a blueprint: a \`service\` on \`gcp\`, profile \`medium\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/service-v1\`, shared by every \`service\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`bucket:files\`, \`network:main\`, \`postgres:main\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-service/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source        = "../../_blueprints/gcp/service-v1"
+  environment   = "staging"
+  name          = "main"
+  project       = "my-proj-123"
+  region        = "us-central1"
+  image         = "europe-docker.pkg.dev/my-proj-123/staging/app:1.2.3"
+  port          = 3000
+  public        = true
+  cpu           = "1"
+  memory        = "1Gi"
+  min_instances = 1
+  max_instances = 10
+  network       = "main"
+  databases     = ["main"]
+  buckets       = ["files"]
+}
+
+output "url" {
+  value = module.this.url
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-service/stack.yml
+# Written by the platform from a blueprint (service on gcp); see README.md.
+name: staging-main-service
+tool: terraform
+version: 1.5.7
+state: orch
+depends_on:
+  - staging-files-bucket
+  - staging-main-network
+  - staging-main-postgres
+watch:
+  - infra/_blueprints/gcp/service-v1/**
+"
+`;
+
+exports[`renderBlueprint service gcp bare on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-service/README.md
+# staging-main-service
+
+Written by the platform from a blueprint: a \`service\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/service-v1\`, shared by every \`service\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses nothing.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-service/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source        = "../../_blueprints/gcp/service-v1"
+  environment   = "staging"
+  name          = "main"
+  project       = "my-proj-123"
+  region        = "us-central1"
+  port          = 8080
+  public        = false
+  cpu           = "1"
+  memory        = "512Mi"
+  min_instances = 0
+  max_instances = 3
+}
+
+output "url" {
+  value = module.this.url
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-service/stack.yml
+# Written by the platform from a blueprint (service on gcp); see README.md.
+name: staging-main-service
+tool: terraform
+version: 1.5.7
+state: gitlab
+watch:
+  - infra/_blueprints/gcp/service-v1/**
+"
+`;
+
+exports[`renderBlueprint service gcp bare on github: the stack's own files 1`] = `
+"# infra/staging/main-service/README.md
+# staging-main-service
+
+Written by the platform from a blueprint: a \`service\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/service-v1\`, shared by every \`service\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses nothing.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-service/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source        = "../../_blueprints/gcp/service-v1"
+  environment   = "staging"
+  name          = "main"
+  project       = "my-proj-123"
+  region        = "us-central1"
+  port          = 8080
+  public        = false
+  cpu           = "1"
+  memory        = "512Mi"
+  min_instances = 0
+  max_instances = 3
+}
+
+output "url" {
+  value = module.this.url
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-service/stack.yml
+# Written by the platform from a blueprint (service on gcp); see README.md.
+name: staging-main-service
+tool: terraform
+version: 1.5.7
+state: orch
+watch:
+  - infra/_blueprints/gcp/service-v1/**
+"
+`;
+
+exports[`renderBlueprint service aws on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-service/README.md
+# staging-main-service
+
+Written by the platform from a blueprint: a \`service\` on \`aws\`, profile \`large\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/service-v2\`, shared by every \`service\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`bucket:files\`, \`network:main\`, \`postgres:main\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-service/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source          = "../../_blueprints/aws/service-v2"
+  environment     = "staging"
+  name            = "main"
+  region          = "eu-west-2"
+  network         = "main"
+  certificate_arn = "arn:aws:acm:eu-west-2:123456789012:certificate/12345678-1234-1234-1234-123456789012"
+  port            = 8080
+  public          = false
+  cpu             = 1024
+  memory          = 2048
+  desired_count   = 3
+  databases       = ["main"]
+  buckets         = ["files"]
+}
+
+output "url" {
+  value = module.this.url
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-service/stack.yml
+# Written by the platform from a blueprint (service on aws); see README.md.
+name: staging-main-service
+tool: terraform
+version: 1.5.7
+state: gitlab
+depends_on:
+  - staging-files-bucket
+  - staging-main-network
+  - staging-main-postgres
+watch:
+  - infra/_blueprints/aws/service-v2/**
+"
+`;
+
+exports[`renderBlueprint service aws on github: the stack's own files 1`] = `
+"# infra/staging/main-service/README.md
+# staging-main-service
+
+Written by the platform from a blueprint: a \`service\` on \`aws\`, profile \`large\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/service-v2\`, shared by every \`service\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`bucket:files\`, \`network:main\`, \`postgres:main\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-service/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source          = "../../_blueprints/aws/service-v2"
+  environment     = "staging"
+  name            = "main"
+  region          = "eu-west-2"
+  network         = "main"
+  certificate_arn = "arn:aws:acm:eu-west-2:123456789012:certificate/12345678-1234-1234-1234-123456789012"
+  port            = 8080
+  public          = false
+  cpu             = 1024
+  memory          = 2048
+  desired_count   = 3
+  databases       = ["main"]
+  buckets         = ["files"]
+}
+
+output "url" {
+  value = module.this.url
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-service/stack.yml
+# Written by the platform from a blueprint (service on aws); see README.md.
+name: staging-main-service
+tool: terraform
+version: 1.5.7
+state: orch
+depends_on:
+  - staging-files-bucket
+  - staging-main-network
+  - staging-main-postgres
+watch:
+  - infra/_blueprints/aws/service-v2/**
+"
+`;
+
+exports[`renderBlueprint postgres gcp on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-postgres/README.md
+# staging-main-postgres
+
+Written by the platform from a blueprint: a \`postgres\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/postgres-v1\`, shared by every \`postgres\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`network:main\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-postgres/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source           = "../../_blueprints/gcp/postgres-v1"
+  environment      = "staging"
+  name             = "main"
+  project          = "my-proj-123"
+  region           = "us-central1"
+  network          = "main"
+  postgres_version = "17"
+  tier             = "db-f1-micro"
+  storage_gb       = 10
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-postgres/stack.yml
+# Written by the platform from a blueprint (postgres on gcp); see README.md.
+name: staging-main-postgres
+tool: terraform
+version: 1.5.7
+state: gitlab
+depends_on:
+  - staging-main-network
+watch:
+  - infra/_blueprints/gcp/postgres-v1/**
+"
+`;
+
+exports[`renderBlueprint postgres gcp on github: the stack's own files 1`] = `
+"# infra/staging/main-postgres/README.md
+# staging-main-postgres
+
+Written by the platform from a blueprint: a \`postgres\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/postgres-v1\`, shared by every \`postgres\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`network:main\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-postgres/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source           = "../../_blueprints/gcp/postgres-v1"
+  environment      = "staging"
+  name             = "main"
+  project          = "my-proj-123"
+  region           = "us-central1"
+  network          = "main"
+  postgres_version = "17"
+  tier             = "db-f1-micro"
+  storage_gb       = 10
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-postgres/stack.yml
+# Written by the platform from a blueprint (postgres on gcp); see README.md.
+name: staging-main-postgres
+tool: terraform
+version: 1.5.7
+state: orch
+depends_on:
+  - staging-main-network
+watch:
+  - infra/_blueprints/gcp/postgres-v1/**
+"
+`;
+
+exports[`renderBlueprint postgres aws on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-postgres/README.md
+# staging-main-postgres
+
+Written by the platform from a blueprint: a \`postgres\` on \`aws\`, profile \`medium\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/postgres-v1\`, shared by every \`postgres\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`network:main\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-postgres/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source           = "../../_blueprints/aws/postgres-v1"
+  environment      = "staging"
+  name             = "main"
+  region           = "eu-west-2"
+  network          = "main"
+  postgres_version = "16"
+  instance_class   = "db.t4g.small"
+  storage_gb       = 50
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-postgres/stack.yml
+# Written by the platform from a blueprint (postgres on aws); see README.md.
+name: staging-main-postgres
+tool: terraform
+version: 1.5.7
+state: gitlab
+depends_on:
+  - staging-main-network
+watch:
+  - infra/_blueprints/aws/postgres-v1/**
+"
+`;
+
+exports[`renderBlueprint postgres aws on github: the stack's own files 1`] = `
+"# infra/staging/main-postgres/README.md
+# staging-main-postgres
+
+Written by the platform from a blueprint: a \`postgres\` on \`aws\`, profile \`medium\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/postgres-v1\`, shared by every \`postgres\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`network:main\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-postgres/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source           = "../../_blueprints/aws/postgres-v1"
+  environment      = "staging"
+  name             = "main"
+  region           = "eu-west-2"
+  network          = "main"
+  postgres_version = "16"
+  instance_class   = "db.t4g.small"
+  storage_gb       = 50
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-postgres/stack.yml
+# Written by the platform from a blueprint (postgres on aws); see README.md.
+name: staging-main-postgres
+tool: terraform
+version: 1.5.7
+state: orch
+depends_on:
+  - staging-main-network
+watch:
+  - infra/_blueprints/aws/postgres-v1/**
+"
+`;
+
+exports[`renderBlueprint bucket gcp on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-bucket/README.md
+# staging-main-bucket
+
+Written by the platform from a blueprint: a \`bucket\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/bucket-v1\`, shared by every \`bucket\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses nothing.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-bucket/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source      = "../../_blueprints/gcp/bucket-v1"
+  environment = "staging"
+  name        = "main"
+  project     = "my-proj-123"
+  region      = "us-central1"
+  versioning  = true
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-bucket/stack.yml
+# Written by the platform from a blueprint (bucket on gcp); see README.md.
+name: staging-main-bucket
+tool: terraform
+version: 1.5.7
+state: gitlab
+watch:
+  - infra/_blueprints/gcp/bucket-v1/**
+"
+`;
+
+exports[`renderBlueprint bucket gcp on github: the stack's own files 1`] = `
+"# infra/staging/main-bucket/README.md
+# staging-main-bucket
+
+Written by the platform from a blueprint: a \`bucket\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/bucket-v1\`, shared by every \`bucket\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses nothing.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-bucket/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source      = "../../_blueprints/gcp/bucket-v1"
+  environment = "staging"
+  name        = "main"
+  project     = "my-proj-123"
+  region      = "us-central1"
+  versioning  = true
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-bucket/stack.yml
+# Written by the platform from a blueprint (bucket on gcp); see README.md.
+name: staging-main-bucket
+tool: terraform
+version: 1.5.7
+state: orch
+watch:
+  - infra/_blueprints/gcp/bucket-v1/**
+"
+`;
+
+exports[`renderBlueprint bucket aws on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-bucket/README.md
+# staging-main-bucket
+
+Written by the platform from a blueprint: a \`bucket\` on \`aws\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/bucket-v1\`, shared by every \`bucket\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses nothing.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-bucket/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source      = "../../_blueprints/aws/bucket-v1"
+  environment = "staging"
+  name        = "main"
+  region      = "eu-west-2"
+  versioning  = false
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-bucket/stack.yml
+# Written by the platform from a blueprint (bucket on aws); see README.md.
+name: staging-main-bucket
+tool: terraform
+version: 1.5.7
+state: gitlab
+watch:
+  - infra/_blueprints/aws/bucket-v1/**
+"
+`;
+
+exports[`renderBlueprint bucket aws on github: the stack's own files 1`] = `
+"# infra/staging/main-bucket/README.md
+# staging-main-bucket
+
+Written by the platform from a blueprint: a \`bucket\` on \`aws\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/bucket-v1\`, shared by every \`bucket\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses nothing.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-bucket/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source      = "../../_blueprints/aws/bucket-v1"
+  environment = "staging"
+  name        = "main"
+  region      = "eu-west-2"
+  versioning  = false
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-bucket/stack.yml
+# Written by the platform from a blueprint (bucket on aws); see README.md.
+name: staging-main-bucket
+tool: terraform
+version: 1.5.7
+state: orch
+watch:
+  - infra/_blueprints/aws/bucket-v1/**
+"
+`;
+
+exports[`renderBlueprint deploy-identity gcp github on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-deploy-identity/README.md
+# staging-main-deploy-identity
+
+Written by the platform from a blueprint: a \`deploy-identity\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/deploy-identity-v1\`, shared by every \`deploy-identity\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`service:web\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-deploy-identity/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source            = "../../_blueprints/gcp/deploy-identity-v1"
+  environment       = "staging"
+  name              = "main"
+  project           = "my-proj-123"
+  region            = "us-central1"
+  service           = "web"
+  forge             = "github"
+  repository        = "acme/web"
+  repository_id     = 1234567
+  owner_id          = 7654321
+  immutable_subject = false
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-deploy-identity/stack.yml
+# Written by the platform from a blueprint (deploy-identity on gcp); see README.md.
+name: staging-main-deploy-identity
+tool: terraform
+version: 1.5.7
+state: gitlab
+depends_on:
+  - staging-web-service
+watch:
+  - infra/_blueprints/gcp/deploy-identity-v1/**
+"
+`;
+
+exports[`renderBlueprint deploy-identity gcp github on github: the stack's own files 1`] = `
+"# infra/staging/main-deploy-identity/README.md
+# staging-main-deploy-identity
+
+Written by the platform from a blueprint: a \`deploy-identity\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/deploy-identity-v1\`, shared by every \`deploy-identity\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`service:web\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-deploy-identity/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source            = "../../_blueprints/gcp/deploy-identity-v1"
+  environment       = "staging"
+  name              = "main"
+  project           = "my-proj-123"
+  region            = "us-central1"
+  service           = "web"
+  forge             = "github"
+  repository        = "acme/web"
+  repository_id     = 1234567
+  owner_id          = 7654321
+  immutable_subject = false
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-deploy-identity/stack.yml
+# Written by the platform from a blueprint (deploy-identity on gcp); see README.md.
+name: staging-main-deploy-identity
+tool: terraform
+version: 1.5.7
+state: orch
+depends_on:
+  - staging-web-service
+watch:
+  - infra/_blueprints/gcp/deploy-identity-v1/**
+"
+`;
+
+exports[`renderBlueprint deploy-identity gcp gitlab on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-deploy-identity/README.md
+# staging-main-deploy-identity
+
+Written by the platform from a blueprint: a \`deploy-identity\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/deploy-identity-v1\`, shared by every \`deploy-identity\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`service:web\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-deploy-identity/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source        = "../../_blueprints/gcp/deploy-identity-v1"
+  environment   = "staging"
+  name          = "main"
+  project       = "my-proj-123"
+  region        = "us-central1"
+  service       = "web"
+  forge         = "gitlab"
+  repository    = "acme/web"
+  repository_id = 1234567
+  owner_id      = 7654321
+  branch        = "main"
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-deploy-identity/stack.yml
+# Written by the platform from a blueprint (deploy-identity on gcp); see README.md.
+name: staging-main-deploy-identity
+tool: terraform
+version: 1.5.7
+state: gitlab
+depends_on:
+  - staging-web-service
+watch:
+  - infra/_blueprints/gcp/deploy-identity-v1/**
+"
+`;
+
+exports[`renderBlueprint deploy-identity gcp gitlab on github: the stack's own files 1`] = `
+"# infra/staging/main-deploy-identity/README.md
+# staging-main-deploy-identity
+
+Written by the platform from a blueprint: a \`deploy-identity\` on \`gcp\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/gcp/deploy-identity-v1\`, shared by every \`deploy-identity\` on \`gcp\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`service:web\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-deploy-identity/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "google" {
+  project = "my-proj-123"
+  region  = "us-central1"
+}
+
+module "this" {
+  source        = "../../_blueprints/gcp/deploy-identity-v1"
+  environment   = "staging"
+  name          = "main"
+  project       = "my-proj-123"
+  region        = "us-central1"
+  service       = "web"
+  forge         = "gitlab"
+  repository    = "acme/web"
+  repository_id = 1234567
+  owner_id      = 7654321
+  branch        = "main"
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-deploy-identity/stack.yml
+# Written by the platform from a blueprint (deploy-identity on gcp); see README.md.
+name: staging-main-deploy-identity
+tool: terraform
+version: 1.5.7
+state: orch
+depends_on:
+  - staging-web-service
+watch:
+  - infra/_blueprints/gcp/deploy-identity-v1/**
+"
+`;
+
+exports[`renderBlueprint deploy-identity aws github on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-deploy-identity/README.md
+# staging-main-deploy-identity
+
+Written by the platform from a blueprint: a \`deploy-identity\` on \`aws\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/deploy-identity-v1\`, shared by every \`deploy-identity\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`service:web\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-deploy-identity/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source                 = "../../_blueprints/aws/deploy-identity-v1"
+  environment            = "staging"
+  name                   = "main"
+  region                 = "eu-west-2"
+  service                = "web"
+  forge                  = "github"
+  repository             = "acme/web"
+  repository_id          = 1234567
+  owner_id               = 7654321
+  immutable_subject      = true
+  existing_oidc_provider = true
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-deploy-identity/stack.yml
+# Written by the platform from a blueprint (deploy-identity on aws); see README.md.
+name: staging-main-deploy-identity
+tool: terraform
+version: 1.5.7
+state: gitlab
+depends_on:
+  - staging-web-service
+watch:
+  - infra/_blueprints/aws/deploy-identity-v1/**
+"
+`;
+
+exports[`renderBlueprint deploy-identity aws github on github: the stack's own files 1`] = `
+"# infra/staging/main-deploy-identity/README.md
+# staging-main-deploy-identity
+
+Written by the platform from a blueprint: a \`deploy-identity\` on \`aws\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/deploy-identity-v1\`, shared by every \`deploy-identity\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`service:web\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-deploy-identity/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source                 = "../../_blueprints/aws/deploy-identity-v1"
+  environment            = "staging"
+  name                   = "main"
+  region                 = "eu-west-2"
+  service                = "web"
+  forge                  = "github"
+  repository             = "acme/web"
+  repository_id          = 1234567
+  owner_id               = 7654321
+  immutable_subject      = true
+  existing_oidc_provider = true
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-deploy-identity/stack.yml
+# Written by the platform from a blueprint (deploy-identity on aws); see README.md.
+name: staging-main-deploy-identity
+tool: terraform
+version: 1.5.7
+state: orch
+depends_on:
+  - staging-web-service
+watch:
+  - infra/_blueprints/aws/deploy-identity-v1/**
+"
+`;
+
+exports[`renderBlueprint deploy-identity aws gitlab on gitlab: the stack's own files 1`] = `
+"# infra/staging/main-deploy-identity/README.md
+# staging-main-deploy-identity
+
+Written by the platform from a blueprint: a \`deploy-identity\` on \`aws\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/deploy-identity-v1\`, shared by every \`deploy-identity\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`service:web\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-deploy-identity/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source                 = "../../_blueprints/aws/deploy-identity-v1"
+  environment            = "staging"
+  name                   = "main"
+  region                 = "eu-west-2"
+  service                = "web"
+  forge                  = "gitlab"
+  repository             = "acme/web"
+  repository_id          = 1234567
+  owner_id               = 7654321
+  branch                 = "main"
+  existing_oidc_provider = false
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-deploy-identity/stack.yml
+# Written by the platform from a blueprint (deploy-identity on aws); see README.md.
+name: staging-main-deploy-identity
+tool: terraform
+version: 1.5.7
+state: gitlab
+depends_on:
+  - staging-web-service
+watch:
+  - infra/_blueprints/aws/deploy-identity-v1/**
+"
+`;
+
+exports[`renderBlueprint deploy-identity aws gitlab on github: the stack's own files 1`] = `
+"# infra/staging/main-deploy-identity/README.md
+# staging-main-deploy-identity
+
+Written by the platform from a blueprint: a \`deploy-identity\` on \`aws\`, profile \`small\`.
+
+- \`stack.yml\` marks this directory as a stack: its name, the Terraform version and where the state lives.
+- \`main.tf\` sets the provider, calls the module with the values the blueprint allows and passes on the module's public outputs (its console link, and a service's address). It holds no secret.
+- The module is a copy at \`../../_blueprints/aws/deploy-identity-v1\`, shared by every \`deploy-identity\` on \`aws\` in this repository. It is never edited in place: a newer version is a new directory and a new proposal.
+
+Uses: \`service:web\`.
+
+Change this resource by proposing a change through the platform. A hand edit of these files is overwritten by the next one.
+
+# infra/staging/main-deploy-identity/main.tf
+terraform {
+  backend "http" {}
+}
+
+provider "aws" {
+  region = "eu-west-2"
+}
+
+module "this" {
+  source                 = "../../_blueprints/aws/deploy-identity-v1"
+  environment            = "staging"
+  name                   = "main"
+  region                 = "eu-west-2"
+  service                = "web"
+  forge                  = "gitlab"
+  repository             = "acme/web"
+  repository_id          = 1234567
+  owner_id               = 7654321
+  branch                 = "main"
+  existing_oidc_provider = false
+}
+
+output "console_url" {
+  value = module.this.console_url
+}
+
+# infra/staging/main-deploy-identity/stack.yml
+# Written by the platform from a blueprint (deploy-identity on aws); see README.md.
+name: staging-main-deploy-identity
+tool: terraform
+version: 1.5.7
+state: orch
+depends_on:
+  - staging-web-service
+watch:
+  - infra/_blueprints/aws/deploy-identity-v1/**
+"
+`;

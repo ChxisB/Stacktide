@@ -17,6 +17,7 @@ Stop it with Ctrl-C: the demo's database is dropped, and nothing is kept between
 - **State**: two Terraform stacks with their versions and resources.
 - **Findings**: four, one of each severity.
 - **Sync**: a target that was applied once and has drifted by one change since. The strip at the top of its card shows variables, the three environments and the target. Plan it and apply it from the page; within a few seconds it reads "In sync". That is the real plan, the real worker and the real drift check.
+- **Resources** (`acme/web`, through the CLI and the API; there is no page yet): one of each kind from the [resource catalog](resource-catalog.md) on GCP in `staging`: a network, a Postgres, a bucket and a service that uses all three. Each is a merge request on the mock GitLab, so none has been applied; the service carries an invented link, as a finished plan would. Try `orch resource ls` and `orch resource show staging-api-service`.
 - **Settings and Organizations** are the real pages over the same data: the connection, the `linux-runners` worker pool and the API tokens. The connection's address is a local port, because GitLab is the mock (below).
 
 ## The Variables page
@@ -50,7 +51,7 @@ Say that in a demo before someone asks where the pipeline's logs are.
 ```bash
 bun run demo:shots
 ```
-Starts its own demo on port `3210` (`DEMO_PORT` moves it), signs in, visits all ten pages in the dark and the light theme at 1280 wide, and writes one PNG for each to `apps/web/demo/shots/` (not committed). It is also a check: it fails if a page crashes, scrolls sideways, logs a console error or makes a request the server refuses. It needs the Playwright browser (`cd apps/web && bunx playwright install chromium`, once) and the same Postgres as the demo.
+Starts its own demo on port `3210` (`DEMO_PORT` moves it), signs in, visits all ten pages in the dark and the light theme at 1280 wide and again at 390 wide (a phone), with the phone menu open over Home, and writes one PNG for each to `apps/web/demo/shots/` (not committed). It is also a check: it fails if a page crashes, scrolls sideways, logs a console error or makes a request the server refuses. It needs the Playwright browser (`cd apps/web && bunx playwright install chromium`, once) and the same Postgres as the demo.
 
 ## Safety
 - Both servers bind `127.0.0.1` and there is no setting to change that. The sign-in link issues a session for the demo owner **without a GitLab sign-in**, which is only acceptable because nothing here is real. Do not put it behind a tunnel or a proxy, and do not reuse the code for anything that holds real data.

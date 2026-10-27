@@ -1,0 +1,2 @@
+ALTER TABLE "organizations" ADD COLUMN "github_org_id" bigint;--> statement-breakpoint
+CREATE UNIQUE INDEX "organizations_github_org_key" ON "organizations" USING btree ("github_org_id") WHERE "organizations"."github_org_id" IS NOT NULL;

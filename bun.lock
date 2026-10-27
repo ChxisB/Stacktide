@@ -145,6 +145,7 @@
     "packages/iac": {
       "name": "@orch/iac",
       "dependencies": {
+        "@orch/core": "workspace:*",
         "@orch/gitlab": "workspace:*",
         "yaml": "2.8.3",
         "zod": "4.6.7",

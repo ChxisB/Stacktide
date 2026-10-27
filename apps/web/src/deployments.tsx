@@ -1,14 +1,15 @@
 import type { Client } from "@orch/api-client";
 import { statsLine } from "@orch/core/deployment-stats";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { Card, Drawer, StatusBadge, type Tone } from "./components";
+import { Callout, Card, Dialog, StatusBadge, type Tone, useToast } from "./components";
 import { Asks, asksKey, requestsAt, useAsks } from "./deployment-asks";
 import { webUrl } from "./pipeline-parts";
+import { FORGES, type Forge } from "./projects";
 import { Loading, stamp, when } from "./ui";
-import { Form, useWrite } from "./variable-parts";
+import { useWrite } from "./variable-parts";
 
 /** A deployment as the API answers: ids, a sha, a status and times, never a person or a commit's words. */
 interface Build {
@@ -205,76 +206,74 @@ function DeployDialog({
     return d ? `${short(build)} · ${d.ref} · ${when(d.finishedAt ?? d.observedAt)}` : short(build);
   };
   return (
-    <Drawer
+    <Dialog
       title={promote ? `Promote to ${env.name}` : `Roll back ${env.name}`}
-      centered
+      confirm={
+        asking
+          ? waiting
+            ? "Waiting for approval"
+            : "Ask for approval"
+          : promote
+            ? "Start deployment"
+            : "Start rollback"
+      }
+      busy={write.pending}
+      disabled={!answer || (guarded && !asks.data) || (asking && waiting)}
+      error={write.error ?? (plan.error ? message(plan.error) : undefined)}
+      onConfirm={() => void write.go()}
       close={close}
     >
-      <Form
-        title={promote ? "Promote" : "Roll back"}
-        submit={
-          asking
-            ? waiting
-              ? "Waiting for approval"
-              : "Ask for approval"
-            : promote
-              ? "Start deployment"
-              : "Start rollback"
-        }
-        onSubmit={() => void write.go()}
-        error={write.error ?? (plan.error ? message(plan.error) : undefined)}
-        pending={write.pending}
-        disabled={!answer || (guarded && !asks.data) || (asking && waiting)}
-        onCancel={close}
-      >
-        {promote && options.length > 0 && (
-          <label>
-            Build to deploy
-            <select value={sha ?? ""} onChange={(e) => setPicked(e.target.value)}>
-              {options.map((o) => (
-                <option key={o} value={o}>
-                  {label(o)}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        {promote && builds.data && options.length === 0 && (
-          <p>No other build has been deployed successfully in this project yet.</p>
-        )}
-        {!answer && plan.isFetching && <Loading what="Checking what this would do" />}
-        {answer && (
+      {promote && options.length > 0 && (
+        <label>
+          Build to deploy
+          <select value={sha ?? ""} onChange={(e) => setPicked(e.target.value)}>
+            {options.map((o) => (
+              <option key={o} value={o}>
+                {label(o)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {promote && builds.data && options.length === 0 && (
+        <p>No other build has been deployed successfully in this project yet.</p>
+      )}
+      {!answer && plan.isFetching && <Loading what="Checking what this would do" />}
+      {answer && (
+        <>
           <div className="deploy-plan">
-            <p>
-              Now deployed:{" "}
+            <div>
+              <span className="muted">Now deployed</span>
               {answer.plan.from ? <code>{short(answer.plan.from.sha)}</code> : "nothing"}
-            </p>
-            <p>
-              {promote ? "Going there" : "Going back to"}: <code>{short(answer.plan.to)}</code>
-            </p>
-            {answer.plan.previous && (
-              <p>
-                If a health check is set up and it fails, <code>{short(answer.plan.previous)}</code>{" "}
-                is put back.
-              </p>
-            )}
-            {!promote && (
-              <p>Data changes are not undone: a database migration that ran stays run.</p>
-            )}
-            {guarded && (
-              <p>
-                {env.name} is protected:{" "}
-                {!asking
-                  ? "an approval for this build is ready, and starting uses it up."
-                  : waiting
-                    ? "an approval for this build has been asked for, and waits for someone other than the person who asked."
-                    : "starting needs an approval from someone other than you. Ask for it here; once it is approved, start it."}
-              </p>
-            )}
+            </div>
+            <div>
+              <span className="muted">{promote ? "Going there" : "Going back to"}</span>
+              <code>{short(answer.plan.to)}</code>
+            </div>
           </div>
-        )}
-      </Form>
-    </Drawer>
+          {answer.plan.previous && (
+            <p className="muted">
+              If a health check is set up and it fails, <code>{short(answer.plan.previous)}</code>{" "}
+              is put back.
+            </p>
+          )}
+          {!promote && (
+            <p className="muted">
+              Data changes are not undone: a database migration that ran stays run.
+            </p>
+          )}
+          {guarded && (
+            <Callout tone="info" title={`${env.name} is protected:`}>
+              {!asking
+                ? "an approval for this build is ready, and starting uses it up."
+                : waiting
+                  ? "an approval for this build has been asked for, and waits for someone other than the person who asked."
+                  : "starting needs an approval from someone other than you. Ask for it here; once it is approved, start it."}
+            </Callout>
+          )}
+        </>
+      )}
+    </Dialog>
   );
 }
 
@@ -288,12 +287,16 @@ export function Deployments({
   orgId,
   projectId,
   pollMs,
+  forge = "gitlab",
 }: {
   orgId: string;
   projectId: string;
   pollMs: number;
+  /** The forge the project is on, which names who says what is deployed. */
+  forge?: Forge;
 }) {
   const client = useClient();
+  const { name: forgeName } = FORGES[forge];
   const queries = useQueryClient();
   const key = ["deployments", orgId, projectId];
   const where = useQuery({
@@ -315,17 +318,17 @@ export function Deployments({
   });
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string>();
-  const [done, setDone] = useState<ReactNode>();
+  const toast = useToast();
   const [open, setOpen] = useState<{ kind: Kind; slug: string }>();
 
   const refresh = async () => {
     setRefreshing(true);
     setError(undefined);
-    setDone(undefined);
+    toast(); // the news of the last look goes before this one's is known
     try {
       const { recorded } = await call(() => at(client, orgId, projectId).refresh.post());
       await queries.invalidateQueries({ queryKey: key });
-      setDone(`Read GitLab's newest deployments: ${recorded} new or changed.`);
+      toast(`Read ${forgeName}'s newest deployments: ${recorded} new or changed.`);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -333,13 +336,13 @@ export function Deployments({
     }
   };
 
-  // what a person is told once the pipeline has started: the box changes when GitLab reports the deployment
+  // what a person is told once the deployment has started: the box changes when the forge reports it
   const started = async (answer: Answer) => {
     const link = answer.pipeline && webUrl(answer.pipeline.webUrl);
     const rollback = open?.kind === "rollback";
     setOpen(undefined);
     setError(undefined);
-    setDone(
+    toast(
       <>
         Started {rollback ? "rolling back to" : "the deployment of"}{" "}
         <code>{short(answer.plan.to)}</code>
@@ -348,11 +351,11 @@ export function Deployments({
           <>
             :{" "}
             <a href={link} target="_blank" rel="noreferrer">
-              open the pipeline
+              open the {forge === "github" ? "run" : "pipeline"}
             </a>
           </>
         )}
-        . It shows in its box when GitLab reports it.
+        . It shows in its box when {forgeName} reports it.
       </>,
     );
     await queries.invalidateQueries({ queryKey: key });
@@ -365,7 +368,7 @@ export function Deployments({
     const slug = open?.slug;
     setOpen(undefined);
     setError(undefined);
-    setDone(
+    toast(
       <>
         Asked for approval to deploy <code>{short(sha)}</code> to {slug}. Someone other than you
         approves it in its box; then Promote or Roll back starts it.
@@ -388,7 +391,7 @@ export function Deployments({
   return (
     <Card
       title="Deployments"
-      sub="What GitLab says is deployed to each environment."
+      sub={`What ${forgeName} says is deployed to each environment.`}
       actions={
         <button type="button" disabled={refreshing} onClick={() => void refresh()}>
           {refreshing ? "Refreshing…" : "Refresh"}
@@ -406,15 +409,25 @@ export function Deployments({
           {error}
         </p>
       )}
-      {done && <p role="status">{done}</p>}
       {numbers.error && (
         <p className="muted">Could not read the numbers: {message(numbers.error)}</p>
       )}
       {none && (
         <p>
-          No deployment has been recorded for this project yet. They appear when GitLab reports one:
-          add the <code>docker-deploy</code> template on the Pipeline page, and tick "Deployment
-          events" on the project's webhook. Refresh reads GitLab now.
+          No deployment has been recorded for this project yet. They appear when {forgeName} reports
+          one:{" "}
+          {forge === "github" ? (
+            <>
+              a workflow job that names an environment is one, as the <code>cloud-run</code> and{" "}
+              <code>ecs</code> templates' are
+            </>
+          ) : (
+            <>
+              add the <code>docker-deploy</code> template on the Pipeline page, and tick "Deployment
+              events" on the project's webhook
+            </>
+          )}
+          . Refresh reads {forgeName} now.
         </p>
       )}
       {data.environments.length > 0 && (
@@ -479,7 +492,7 @@ export function Deployments({
       )}
       {data.unmatched.length > 0 && (
         <p className="muted">
-          GitLab has deployments to{" "}
+          {forgeName} has deployments to{" "}
           {data.unmatched.map((name, i) => (
             <span key={name}>
               {i > 0 && ", "}

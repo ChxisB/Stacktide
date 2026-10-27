@@ -46,6 +46,7 @@ import { policySetRoutes } from "./routes/policy";
 import { poolStatusRoutes } from "./routes/pool-status";
 import { poolRoutes } from "./routes/pools";
 import { projectRoutes } from "./routes/projects";
+import { blueprintRoutes, resourceRoutes } from "./routes/resources";
 import { rotationRoutes } from "./routes/rotations";
 import { runPlanRoutes } from "./routes/run-plan";
 import { runRoutes } from "./routes/runs";
@@ -168,6 +169,8 @@ export function createApp(deps: AppDeps) {
     .use(policySetRoutes(deps))
     .use(costLimitRoutes(deps))
     .use(dnsZoneRoutes(deps))
+    .use(blueprintRoutes())
+    .use(resourceRoutes(deps))
     .use(secretGateRoutes(deps))
     .use(poolRoutes(deps))
     .use(poolStatusRoutes(deps))

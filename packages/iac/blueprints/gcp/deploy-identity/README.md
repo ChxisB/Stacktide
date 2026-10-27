@@ -1,0 +1,16 @@
+# deploy identity, GCP
+
+What lets one repository's pipeline deploy one Cloud Run service, with no key anywhere: a workload identity pool and provider for the forge, and a service account the pipeline acts as.
+
+- **Creates:** a `google_iam_workload_identity_pool` and its provider (issuer `https://token.actions.githubusercontent.com` for GitHub, `https://gitlab.com` for GitLab), a `google_service_account` named `<environment>-<name>-dep`, and four grants. It enables `iam`, `iamcredentials` and `sts` and leaves them on at destroy.
+- **Trusts one thing.** The provider's attribute condition is `assertion.sub == '<the exact subject>'` **and** the numeric ids (`repository_id` and `repository_owner_id` on GitHub, `project_id` and `namespace_id` on GitLab), so a renamed, moved or recreated repository does not match. Nothing is a pattern. The subject is `repo:<owner>/<repo>:environment:<environment>` on GitHub (the deploy job names its environment), the id form `repo:<owner>@<id>/<repo>@<id>:environment:<environment>` when `immutable_subject` is on (repositories created after 2026-07-15), and `project_path:<group>/<project>:ref_type:branch:ref:<branch>` on GitLab, whose subject carries no environment.
+- **Four roles, each on one thing, none on the project:** `roles/iam.workloadIdentityUser` on the service account (to that one subject, by `principal://`), `roles/run.developer` on the one Cloud Run service, `roles/iam.serviceAccountUser` on the service's runtime account, and `roles/artifactregistry.writer` on the service's own repository. No key, no `owner`, `editor` or `admin`, no project-level grant.
+- **The audience** is Google's default (`https://iam.googleapis.com/<the provider's resource name>`), which is what the `cloud-run` template asks the forge for. Do not set `allowed_audiences`.
+- **Names come from the service.** `service` is the name of a service resource in the environment; its service, repository and runtime account are derived exactly as the `service` module derives them, and a test fails if either side is renamed.
+- **The first apply is by hand.** An identity cannot create itself: someone with rights to make pools and service accounts in the project applies this stack once, from a workstation or a bootstrap pipeline. After that the platform's pipeline uses it. This is a human step (CLD-15).
+- **Destroy:** Google soft-deletes a pool and a provider for 30 days, so a re-apply with the same id fails until the old one is undeleted or the id changes.
+- **gitlab.com only.** A self-managed GitLab issuer is untested.
+- **Not checked against a real project:** that a deleted pool keeps its id for 30 days, the immutable GitHub subject's environment form, the GitHub issuer's exact URL, which characters `principal://` accepts in a subject, and whether `serviceusage` is needed to enable the three APIs. See `docs/cloud-deploy-spike.md`.
+- **Needs from the runner's identity:** `roles/iam.workloadIdentityPoolAdmin`, `roles/iam.serviceAccountAdmin`, `roles/run.admin` and `roles/artifactregistry.admin` on what it names, and `roles/serviceusage.serviceUsageAdmin` to enable the APIs.
+- **Idle cost:** none. The pool, its trust and the service account are free.
+- **Outputs:** `console_url`, `provider` (the template's `provider` value), `service_account` (the template's `serviceAccount` value).

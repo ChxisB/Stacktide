@@ -66,6 +66,7 @@ export const bearerPrincipal = (options: SessionOptions): PrincipalResolver => {
             gitlabJobId: row.gitlabJobId,
             gitlabPipelineId: row.gitlabPipelineId,
             ref: row.ref,
+            refProtected: row.refProtected,
             expiresAt: row.expiresAt,
           },
         }

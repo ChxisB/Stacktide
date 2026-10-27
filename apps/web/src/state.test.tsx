@@ -164,6 +164,18 @@ describe("a stack with state", () => {
     expect(rows[0]?.[0]).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d UTC$/);
   });
 
+  // UXR-6: a number is read down its column, so the size and its title sit at the right edge
+  test("the size column is aligned as a number, header and cells", async () => {
+    const s = await sceneOn(backend);
+    await seed(s, "net", [1, 2]);
+    mountPage(s.client);
+    await show("net");
+    const t = await versions();
+    expect(within(t).getByRole("columnheader", { name: "Size" }).className).toBe("num");
+    for (const row of within(t).getAllByRole("row").slice(1))
+      expect(within(row).getAllByRole("cell")[1]?.className).toBe("num");
+  });
+
   test("lists what the newest version holds by name, and shows nothing the state holds", async () => {
     const s = await sceneOn(backend);
     await seed(s, "net", [1], [res("aws_vpc", "main")]);
@@ -245,7 +257,7 @@ describe("a stack with state", () => {
     await seed(other, "net", [1, 2], [res("aws_vpc", "theirs")]);
     mountPage(s.client);
     await show("net");
-    await screen.findByText(/No state for net in this project/);
+    await screen.findByRole("heading", { name: "No state for net" });
     expect(document.body.textContent).not.toContain("theirs");
   });
 
@@ -278,7 +290,7 @@ describe("a stack without state", () => {
     const s = await sceneOn(backend);
     mountPage(s.client);
     await show("nothing-here");
-    await screen.findByText(/No state for nothing-here in this project/);
+    await screen.findByRole("heading", { name: "No state for nothing-here" });
     expect(screen.queryByRole("table")).toBeNull();
   });
 });
@@ -359,5 +371,125 @@ describe("how the screen looks", () => {
         "table",
       ),
     ).toBe(r);
+  });
+});
+
+// UXR-19: the lookup is a card with a sub line, a hint or an error under the input, and a callout
+describe("the lookup form", () => {
+  test("the intro is the card's sub line, and the warning that this is only a look is an info callout", async () => {
+    const s = await sceneOn(backend);
+    mountPage(s.client);
+    const card = (await screen.findByLabelText("Stack")).closest(".card") as HTMLElement;
+    expect(within(card).getByRole("heading", { name: "Look up a stack" })).toBeTruthy();
+    expect(card.querySelector(".card-sub")?.textContent).toBe(
+      "What the platform holds for a stack, by name: who wrote each version and the resources in the newest one.",
+    );
+    const callout = card.querySelector(".callout-info");
+    expect(callout?.textContent).toMatch(/^Never the state itself: outputs and attribute values/);
+    expect(callout?.textContent).toMatch(/The newest 20 versions are kept\.$/);
+    expect(callout?.getAttribute("role")).toBeNull();
+  });
+
+  test("a hint says what a name is; a name the API would refuse swaps it for an error the input is described by", async () => {
+    const s = await sceneOn(backend);
+    mountPage(s.client);
+    const input = (await screen.findByLabelText("Stack")) as HTMLInputElement;
+    const line = () => document.getElementById(input.getAttribute("aria-describedby") ?? "");
+    expect(line()?.className).toBe("hint");
+    expect(line()?.textContent).toBe("Lowercase letters, digits and dashes, up to 63 characters.");
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+    const user = userEvent.setup();
+    await user.type(input, "Bad Name");
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(line()?.className).toBe("error");
+    expect(line()?.textContent).toBe(
+      "Use lowercase letters, digits and dashes. Start and end with a letter or digit.",
+    );
+    // an empty box is not an error, and a good name takes the hint back
+    await user.clear(input);
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+    expect(line()?.className).toBe("hint");
+    await user.type(input, "good-name");
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+    expect(line()?.className).toBe("hint");
+  });
+
+  test("the button says it is reading while the versions are on their way", async () => {
+    const s = await sceneOn(backend);
+    await seed(s, "net", [1]);
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    mountPage(
+      clientVia(backend.api, s.cookie, async (request, send) => {
+        if (pathOf(request).endsWith("/versions")) await held;
+        return send();
+      }),
+    );
+    await show("net");
+    const busy = (await screen.findByRole("button", { name: "Reading…" })) as HTMLButtonElement;
+    expect(busy.disabled).toBe(true);
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+    release();
+    await versions();
+    const again = screen.getByRole("button", { name: "Show state" }) as HTMLButtonElement;
+    expect(again.disabled).toBe(false);
+    expect(again.getAttribute("aria-busy")).toBeNull();
+  });
+});
+
+describe("the cards say what is in them", () => {
+  test("the lede promises what the screen shows: no lock", async () => {
+    const s = await sceneOn(backend);
+    mount(s.client);
+    await screen.findByLabelText("Stack");
+    expect(
+      screen.getByText("Terraform state for each stack: its versions and its resources."),
+    ).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/\block\b/i);
+  });
+
+  test("each card has a sub line that counts what it lists, one or many", async () => {
+    const s = await sceneOn(backend);
+    await seed(s, "net", [1, 2, 3], [res("aws_vpc", "a"), res("aws_vpc", "b")]);
+    await seed(s, "solo", [5], [res("aws_vpc", "only")]);
+    mountPage(s.client);
+    const sub = (name: string) =>
+      screen.getByRole("region", { name }).querySelector(".card-sub")?.textContent;
+    await show("net");
+    await resources();
+    expect(sub("State versions")).toBe("3 versions of net, newest first.");
+    expect(sub("Resources in the newest version")).toBe("2 resources in version 3.");
+    await show("solo");
+    await waitFor(() => expect(sub("State versions")).toBe("1 version of solo, newest first."));
+    await waitFor(() =>
+      expect(sub("Resources in the newest version")).toBe("1 resource in version 5."),
+    );
+  });
+
+  test("a stack that holds no resources says what that means, in a card of its own", async () => {
+    const s = await sceneOn(backend);
+    await seed(s, "bare", [1], []);
+    mountPage(s.client);
+    await show("bare");
+    const card = await screen.findByRole("region", { name: "Resources in the newest version" });
+    expect(
+      within(card).getByRole("heading", { name: "The newest version holds no resources" }),
+    ).toBeTruthy();
+    expect(
+      within(card).getByText("A stack with no resources has nothing to list here."),
+    ).toBeTruthy();
+  });
+
+  test("a stack without state tells what to check", async () => {
+    const s = await sceneOn(backend);
+    mountPage(s.client);
+    await show("nothing-here");
+    expect(
+      await screen.findByText(
+        "Nothing is stored under that name in this project. Check the spelling of the stack.",
+      ),
+    ).toBeTruthy();
   });
 });

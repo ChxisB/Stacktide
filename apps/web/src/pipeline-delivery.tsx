@@ -18,6 +18,9 @@ const MODES: [Mode, string, string][] = [
   ],
 ];
 
+/** What a mode is called on its card, and in the stepper once it is chosen. */
+export const modeName = (mode: Mode) => MODES.find(([m]) => m === mode)?.[1] ?? mode;
+
 /** What the catalog project publishes, read when asked: it uses the connection to read another repository. */
 function Releases({
   orgId,

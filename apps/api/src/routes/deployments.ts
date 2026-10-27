@@ -16,6 +16,8 @@ import {
   recordSeenDeployment,
   type Tx,
 } from "@orch/db";
+import { GitlabError } from "@orch/gitlab";
+import { deployRunName } from "@orch/pipelines";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { approvalRequired } from "../apply-approval";
@@ -23,8 +25,9 @@ import { auditPlugin } from "../audit";
 import { noKeys } from "../connections";
 import { deploymentProblem, deploymentRow } from "../deployments";
 import { guardPlugin } from "../guard";
+import { pipelineFileOf } from "../pipeline-apply";
 import { type PromotionPlan, planPromotion, planRollback, promotionVariables } from "../promotion";
-import { gitlabFor } from "./pipeline";
+import { forgeOf } from "./pipeline";
 import { iso, notFound, type RouteDeps, readErrors, writeErrors } from "./shared";
 
 const params = z.object({ orgId: z.uuid(), projectId: z.uuid() });
@@ -103,12 +106,17 @@ const environmentSchema = z.object({
   rollbackTo: z.string().nullable(),
 });
 
-/** The project, and the id GitLab knows it by: a project that was not imported from GitLab cannot deploy. */
+/** The deploy workflow's file name below `.github/workflows/`: the one the onboarding commits (`pipelineFileOf`). */
+const DEPLOY_WORKFLOW = pipelineFileOf("github").slice(
+  pipelineFileOf("github").lastIndexOf("/") + 1,
+);
+
+/** The project, and the id its forge knows it by: a project that is not linked to a repository cannot deploy. */
 async function linkedProject(db: RouteDeps["db"], orgId: string, projectId: string) {
   const project = await getProject(db, orgId, projectId);
   if (!project) throw notFound("Project");
   if (project.gitlabProjectId === null)
-    throw new DomainError("not_linked", 422, "This project was not imported from GitLab");
+    throw new DomainError("not_linked", 422, "This project is not linked to a repository");
   return { project, gitlabProjectId: project.gitlabProjectId };
 }
 
@@ -136,6 +144,7 @@ async function startDeployment(
     pipelineId: number | null,
     dryRun: boolean,
     changeRequestId?: string,
+    unknownOutcome?: boolean,
   ): AuditEvent => ({
     action: run.action,
     resourceType: "project",
@@ -149,6 +158,7 @@ async function startDeployment(
       pipelineId,
       dryRun,
       ...(changeRequestId ? { changeRequestId } : {}),
+      ...(unknownOutcome ? { outcome: "unknown" } : {}),
     },
   });
   // a success must write an audit row, so a dry run writes one too (as a variable import does)
@@ -160,8 +170,27 @@ async function startDeployment(
   // the plan found the config: it is the connection the project's pipeline was set up with
   const connectionId = (await getPipelineConfig(db, orgId, projectId))?.connectionId;
   if (!connectionId)
-    throw new DomainError("no_connection", 409, "No GitLab connection is known for this project");
-  const gitlab = await gitlabFor({ db, keys, logger }, orgId, connectionId, run.requestId);
+    throw new DomainError(
+      "no_connection",
+      409,
+      "No connection is known for this project: set up its pipeline first",
+    );
+  const forge = await forgeOf({ db, keys, logger }, orgId, connectionId, run.requestId);
+  const forgeName = forge.kind === "github" ? "GitHub" : "GitLab";
+  // GitLab starts a pipeline with variables; GitHub dispatches the deploy workflow, which takes inputs and is found by its name (CLD-11)
+  const start = () =>
+    forge.kind === "github" && forge.startRun
+      ? forge.startRun(run.gitlabProjectId, {
+          workflow: DEPLOY_WORKFLOW,
+          ref: plan.defaultBranch,
+          inputs: {
+            environment: plan.environment,
+            sha: plan.to,
+            ...(plan.previous ? { previous_sha: plan.previous } : {}),
+          },
+          name: deployRunName(plan.environment, plan.to),
+        })
+      : forge.pipelines.trigger(run.gitlabProjectId, plan.defaultBranch, promotionVariables(plan));
   // shortcut: two requests within seconds both pass the plan's "in progress" check, because the
   // table only knows what GitLab has reported; the resource group makes the second deploy wait and
   // run the same build again, which the script must tolerate (docs/deployments.md). Upgrade when
@@ -178,14 +207,26 @@ async function startDeployment(
       : undefined;
     if (plan.protected && !approval)
       throw approvalRequired(`Deploying ${plan.to.slice(0, 12)}`, [plan.environment]);
-    const pipeline = await gitlab.pipelines
-      .trigger(run.gitlabProjectId, plan.defaultBranch, promotionVariables(plan))
-      .catch((e) => {
-        throw deploymentProblem(e, "start the deployment");
-      });
-    await run.audit(tx, event(pipeline.id, false, approval?.id));
+    const pipeline = await start().catch((e) => {
+      // shortcut: a timeout or a conflict from `startRun` is taken as "GitHub accepted the dispatch", though a timeout of
+      // the first look is not; the approval is spent either way and the person checks Actions. Upgrade when startRun says which.
+      if (
+        forge.kind === "github" &&
+        e instanceof GitlabError &&
+        ["timeout", "conflict"].includes(e.kind)
+      )
+        return null;
+      throw deploymentProblem(e, "start the deployment", forgeName);
+    });
+    await run.audit(tx, event(pipeline?.id ?? null, false, approval?.id, !pipeline));
     return pipeline;
   });
+  if (!started)
+    throw new DomainError(
+      "deployment_outcome_unknown",
+      502,
+      "GitHub accepted the start, but the run could not be found. Check the repository's Actions before starting it again.",
+    );
   return {
     dryRun: false,
     plan: planDto(plan),
@@ -194,9 +235,9 @@ async function startDeployment(
 }
 
 /**
- * Deployments (ADR-0020): what GitLab says was deployed where. The worker stores them from GitLab's
- * Deployment Hook; refresh reads the newest from GitLab for a project whose hook is not set up, or has
- * missed some. A row is what GitLab answered, never what an event said, and holds no user or commit text.
+ * Deployments (ADR-0020): what the forge says was deployed where. The worker stores them from GitLab's
+ * Deployment Hook or GitHub's `deployment_status`; refresh reads the newest from the forge for a project whose hook
+ * is not set up, or has missed some. A row is what GitLab answered, never what an event said, and holds no user or commit text.
  */
 export const deploymentRoutes = ({
   db,
@@ -331,7 +372,7 @@ export const deploymentRoutes = ({
         const project = await getProject(db, orgId, projectId);
         if (!project) throw notFound("Project");
         if (project.gitlabProjectId === null) {
-          throw new DomainError("not_linked", 422, "This project was not imported from GitLab");
+          throw new DomainError("not_linked", 422, "This project is not linked to a repository");
         }
         // the connection the project's pipeline was set up with, else the one that last read a deployment of it
         const connectionId =
@@ -341,7 +382,7 @@ export const deploymentRoutes = ({
           throw new DomainError(
             "no_connection",
             409,
-            "No GitLab connection is known for this project: set up its pipeline first",
+            "No connection is known for this project: set up its pipeline first",
           );
         }
         const at = {
@@ -350,17 +391,18 @@ export const deploymentRoutes = ({
           gitlabProjectId: project.gitlabProjectId,
           connectionId,
         };
-        const gitlab = await gitlabFor(
+        const forge = await forgeOf(
           { db, keys, logger },
           orgId,
           connectionId,
           set.headers["x-request-id"],
         );
+        const forgeName = forge.kind === "github" ? "GitHub" : "GitLab";
         // taken before asking: of two reads the one that began later wins, whatever order they finish in
         const observedAt = await databaseTime(db);
         const seen: { row: NewDeployment; pipelineUrl: string | null }[] = [];
         try {
-          for await (const d of gitlab.deployments.list(project.gitlabProjectId, {
+          for await (const d of forge.deployments.list(project.gitlabProjectId, {
             orderBy: "updated_at",
             sort: "desc",
           })) {
@@ -368,7 +410,7 @@ export const deploymentRoutes = ({
             seen.push({ row: deploymentRow(at, d, observedAt), pipelineUrl: d.pipelineUrl });
           }
         } catch (e) {
-          throw deploymentProblem(e, "list its deployments");
+          throw deploymentProblem(e, "list its deployments", forgeName);
         }
         const recorded = await db.transaction(async (tx) => {
           let stored = 0;

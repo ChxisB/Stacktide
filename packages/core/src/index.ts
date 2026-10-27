@@ -2,6 +2,7 @@ export const APP_NAME = "orch";
 
 export * from "./audit-retention";
 export * from "./authz";
+export * from "./blueprints";
 export * from "./change-requests";
 export * from "./config";
 export * from "./cost";
@@ -17,6 +18,7 @@ export * from "./notifications";
 export * from "./policy";
 export * from "./pools";
 export * from "./project-types";
+export * from "./resource-state";
 export * from "./run-state";
 export * from "./secret-gate";
 export * from "./secret-report";

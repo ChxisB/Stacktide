@@ -102,9 +102,12 @@ function measureLayout(): Finding[] {
       });
   }
 
-  // (3) left edges of a column, and of a list of terms
+  // (3) left edges of a column (right edges where it is right-aligned), and of a list of terms
   // where a cell's content starts to the eye: its first text, icon, field, or box with a background or border (a pill
   // starts at its own edge, not at its text)
+  const hasBox = (cs: CSSStyleDeclaration) =>
+    (cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent") ||
+    parseFloat(cs.borderLeftWidth) > 0;
   const textLeft = (el: Element) => {
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_ALL, {
       acceptNode: (n) => {
@@ -119,10 +122,7 @@ function measureLayout(): Finding[] {
         if (cs.position === "absolute") return NodeFilter.FILTER_REJECT;
         // a summary's arrow is part of it
         if (e.matches("svg, input, select, img, summary")) return NodeFilter.FILTER_ACCEPT;
-        const box =
-          (cs.backgroundColor !== "rgba(0, 0, 0, 0)" && cs.backgroundColor !== "transparent") ||
-          parseFloat(cs.borderLeftWidth) > 0;
-        return box && e.getBoundingClientRect().width > 0
+        return hasBox(cs) && e.getBoundingClientRect().width > 0
           ? NodeFilter.FILTER_ACCEPT
           : NodeFilter.FILTER_SKIP;
       },
@@ -135,6 +135,17 @@ function measureLayout(): Finding[] {
     const r = range.getClientRects()[0];
     return r && r.width > 0 ? r.left : undefined;
   };
+  // a right-aligned cell (a number) lines up by its right edge: that is the edge the eye follows down the column
+  const textRight = (el: Element) => {
+    // words only a screen reader gets still have a text box, past the cell: left out, as textLeft leaves them out
+    const hidden = [...el.querySelectorAll<HTMLElement>(".visually-hidden")];
+    for (const h of hidden) h.style.display = "none";
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const r = range.getBoundingClientRect();
+    for (const h of hidden) h.style.display = "";
+    return r.width > 0 ? r.right : undefined;
+  };
   for (const table of document.querySelectorAll("table")) {
     if (!visible(table)) continue;
     const rows = [...table.querySelectorAll("tr")].filter(visible);
@@ -144,7 +155,7 @@ function measureLayout(): Finding[] {
       // a row that spans or holds a panel (colspan) has no column of its own
       if (cells.some((c) => c.hasAttribute("colspan"))) continue;
       cells.forEach((cell, i) => {
-        const x = textLeft(cell);
+        const x = getComputedStyle(cell).textAlign === "right" ? textRight(cell) : textLeft(cell);
         if (x !== undefined && visible(cell)) columns.set(i, [...(columns.get(i) ?? []), x]);
       });
     }
@@ -154,7 +165,7 @@ function measureLayout(): Finding[] {
         found.push({
           rule: "3 column edge",
           where: where(table),
-          detail: `column ${i + 1}: text starts ${spread.toFixed(1)}px apart over ${xs.length} rows`,
+          detail: `column ${i + 1}: text edges ${spread.toFixed(1)}px apart over ${xs.length} rows`,
         });
     }
   }
@@ -176,10 +187,22 @@ function measureLayout(): Finding[] {
   }
   for (const form of document.querySelectorAll("form")) {
     if (!visible(form)) continue;
-    const xs = [...form.querySelectorAll(":scope .field > label, :scope > label")]
-      .filter(visible)
-      .map(textLeft)
-      .filter((x) => x !== undefined) as number[];
+    // fields side by side (a grid form) share a line: the edge is where each line starts
+    const lines: { top: number; x: number }[] = [];
+    const labels = [...form.querySelectorAll(":scope .field > label, :scope > label")].filter(
+      visible,
+    );
+    for (const l of labels.sort(
+      (a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top,
+    )) {
+      const x = textLeft(l);
+      const top = l.getBoundingClientRect().top;
+      const line = lines.find((n) => top < n.top + 4);
+      if (x === undefined) continue;
+      if (line) line.x = Math.min(line.x, x);
+      else lines.push({ top, x });
+    }
+    const xs = lines.map((n) => n.x);
     const spread = xs.length ? Math.max(...xs) - Math.min(...xs) : 0;
     if (spread > 2)
       found.push({
@@ -243,7 +266,12 @@ function measureLayout(): Finding[] {
         )
       )
         continue;
-      const x = textLeft(child);
+      // a box (a callout) or a centred block (an empty state) starts at its own edge; what it holds is inset or centred in it
+      const look = getComputedStyle(child);
+      const x =
+        hasBox(look) || look.textAlign === "center"
+          ? child.getBoundingClientRect().left
+          : textLeft(child);
       if (x !== undefined && Math.abs(x - edge) > 2)
         found.push({
           rule: "4 not at the content edge",
@@ -315,6 +343,18 @@ async function look(page: Page, id: string) {
   );
 }
 
+/** Lets the fades that a pointer or the keyboard started finish, so what is read is the look the person ends up seeing. */
+async function settle(page: Page) {
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a instanceof CSSTransition)
+        .map((a) => a.finished.catch(() => undefined)),
+    ),
+  );
+}
+
 /** (5): each marked thing is pointed at, then given the keyboard; one that looks the same both times is a finding. */
 async function measureHover(page: Page): Promise<Finding[]> {
   const found: Finding[] = [];
@@ -323,6 +363,7 @@ async function measureHover(page: Page): Promise<Finding[]> {
     const target = page.locator(`[data-align="${item.id}"]`);
     await page.mouse.move(0, 0);
     await page.keyboard.press("Shift"); // so a script focus counts as the keyboard's
+    await settle(page);
     const before = await look(page, item.id);
     const nothingFocused = await target.evaluate((el) => document.activeElement !== el);
     if (!nothingFocused) await target.evaluate((el) => (el as HTMLElement).blur());
@@ -331,9 +372,11 @@ async function measureHover(page: Page): Promise<Finding[]> {
     } catch {
       continue; // covered or scrolled away: not something to point at
     }
+    await settle(page);
     const hovered = await look(page, item.id);
     await page.mouse.move(0, 0);
     await target.evaluate((el) => (el as HTMLElement).focus());
+    await settle(page);
     const focused = await look(page, item.id);
     await target.evaluate((el) => (el as HTMLElement).blur());
     if (before === hovered)
@@ -373,7 +416,7 @@ for (const theme of ["dark", "light"] as const) {
         await page.goto(`${APP}/#/${path}`);
         await page.getByRole("heading", { level: 1 }).first().waitFor();
         if (path === "state") {
-          await page.getByLabel("Stack").fill("network");
+          await page.getByLabel("Stack", { exact: true }).fill("network");
           await page.getByRole("button", { name: "Show state" }).click();
           await page.getByRole("heading", { name: "Resources in the newest version" }).waitFor();
         }

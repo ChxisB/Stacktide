@@ -9,6 +9,7 @@ export interface Org {
   slug: string;
   name: string;
   gitlabGroupId: number | null;
+  githubOrgId: number | null;
 }
 
 interface OrgState {

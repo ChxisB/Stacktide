@@ -127,6 +127,8 @@ export const runStacks = pgTable(
       columns: [t.runId, t.organizationId, t.projectId],
       foreignColumns: [runs.id, runs.organizationId, runs.projectId],
     }).onDelete("cascade"),
+    // A stack's newest run and whether it was ever applied (`resourceStates`), without reading the project's history.
+    index("run_stacks_stack_idx").on(t.projectId, t.stack, t.runId),
     // The mutex: a stack is applied by one run at a time, whatever the callers do.
     uniqueIndex("run_stacks_one_applying")
       .on(t.projectId, t.stack)

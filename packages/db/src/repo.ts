@@ -252,6 +252,18 @@ export async function gitlabLinks(db: Executor, deploymentUrl: string) {
   };
 }
 
+/** The organizations linked to a GitHub organization (FRG-34): whose members' roles GitHub is asked about. */
+export async function githubOrgLinks(db: Executor) {
+  const rows = await db
+    .select({ organizationId: organizations.id, githubOrgId: organizations.githubOrgId })
+    .from(organizations)
+    .where(isNotNull(organizations.githubOrgId))
+    .orderBy(asc(organizations.id));
+  return rows.flatMap((o) =>
+    o.githubOrgId === null ? [] : [{ ...o, githubOrgId: o.githubOrgId }],
+  );
+}
+
 /**
  * The repositories a GitHub account's project roles are read from (FRG-25): the projects bound to a github.com
  * connection, with the repository id (`gitlabProjectId` holds it for these projects) and the connection whose token

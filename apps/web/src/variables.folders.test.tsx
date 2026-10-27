@@ -131,6 +131,19 @@ describe("opening a folder", () => {
     expect(screen.queryByRole("table", { name: "Folders in /" })).toBeNull();
   });
 
+  // UXR-6: a count is read down its column, so the header and the counts sit at the right edge
+  test("the count of a folder's variables is aligned as a number, header and cell", async () => {
+    const s = await tree();
+    mount(s.client);
+    const user = userEvent.setup();
+    await openSecrets();
+    await open(user, "payments");
+    await screen.findByRole("table", { name: "Variables in dev" });
+    const inner = await folders("/payments");
+    expect(within(inner).getByRole("columnheader", { name: "Variables" }).className).toBe("num");
+    expect(within(inner).getByText("1 variable").className).toBe("num");
+  });
+
   test("a variable deleted in a folder is no longer counted by the folder's row", async () => {
     const s = await tree();
     mount(s.client);
@@ -140,7 +153,7 @@ describe("opening a folder", () => {
     await screen.findByRole("table", { name: "Variables in dev" });
     await user.click(screen.getByRole("button", { name: "More actions for PAY_KEY" }));
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    const form = await screen.findByRole("form", { name: "Delete PAY_KEY" });
+    const form = await screen.findByRole("alertdialog", { name: "Delete PAY_KEY" });
     await user.click(within(form).getByRole("button", { name: "Delete variable" }));
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "PAY_KEY" }) === null).toBe(true),

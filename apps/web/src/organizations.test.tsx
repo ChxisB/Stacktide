@@ -12,7 +12,7 @@ import {
 } from "@orch/db";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type Backend, mount, startBackend } from "./testing";
+import { type Backend, inMain, mount, startBackend } from "./testing";
 
 let backend: Backend;
 beforeAll(async () => {
@@ -48,6 +48,9 @@ const fill = async (label: string | RegExp, text: string) => {
   await userEvent.setup().type(input, text);
 };
 const controls = () => screen.queryAllByRole("button").map((b) => b.textContent);
+const toasted = () => document.querySelector(".toast-text")?.textContent ?? "";
+// a question asked in a dialog; a destructive one is an alertdialog
+const asked = (name: string) => screen.findByRole("alertdialog", { name }, { timeout: 5000 });
 
 describe("the organizations page", () => {
   test("a member or a viewer reads what the organization is and nothing more", async () => {
@@ -72,42 +75,46 @@ describe("the organizations page", () => {
     await fill("Name", "Acme Ltd");
     await press("Rename");
     await within(await section("This organization")).findByText("Acme Ltd", {}, { timeout: 5000 });
+    // the result is a toast, in a sentence
+    await waitFor(() => expect(toasted()).toBe("Renamed the organization to Acme Ltd."));
     expect((await getOrganization(backend.t.db, w.org.id))?.name).toBe("Acme Ltd");
     expect(w.org.slug).toBeTruthy();
     // an admin may not delete it, and the page does not offer it
     expect(controls().filter((c) => /delete/i.test(c ?? ""))).toEqual([]);
   });
 
-  test("an owner deletes it only by typing its slug; what it removes and what blocks it is said first", async () => {
+  test("an owner deletes it only by typing its slug, in a dialog; what it removes and what blocks it is said first", async () => {
     const w = await world();
     const project = await createProject(backend.t.db, { organizationId: w.org.id, name: "p" });
     mount(w.owner.client);
     await press("Delete organization…");
-    const text = (await section("This organization")).textContent ?? "";
+    const dialog = await asked("Delete Acme");
+    const text = dialog.textContent ?? "";
     for (const what of ["variables", "pools", "cost limits", "policy sets", "audit"]) {
       expect(text).toContain(what);
     }
     for (const what of ["projects", "connections", "notification sinks", "identity provider"]) {
       expect(text).toContain(what);
     }
-    const confirm = await screen.findByRole("button", { name: "Delete organization" });
+    // what it removes is said as a warning, which is not an alert: the only alert is an answer
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    const confirm = within(dialog).getByRole("button", { name: "Delete organization" });
     expect((confirm as HTMLButtonElement).disabled).toBe(true);
     await fill(`Type ${w.org.slug} to confirm`, w.org.slug.slice(0, -1));
     expect((confirm as HTMLButtonElement).disabled).toBe(true);
     await fill(`Type ${w.org.slug} to confirm`, w.org.slug);
     expect((confirm as HTMLButtonElement).disabled).toBe(false);
 
-    // refused while a project is there: the API's answer is shown, and nothing is deleted
+    // refused while a project is there: the API's answer is shown in the dialog, and nothing is deleted
     await userEvent.setup().click(confirm);
-    expect((await screen.findByRole("alert", {}, { timeout: 5000 })).textContent).toContain(
-      "projects",
-    );
+    const refusal = await within(dialog).findByRole("alert", {}, { timeout: 5000 });
+    expect(refusal.textContent).toContain("projects");
     expect(await getOrganization(backend.t.db, w.org.id)).toBeDefined();
 
     await deleteProject(backend.t.db, w.org.id, project.id);
     await userEvent
       .setup()
-      .click(await screen.findByRole("button", { name: "Delete organization" }));
+      .click(await within(dialog).findByRole("button", { name: "Delete organization" }));
     await waitFor(
       async () => expect(await getOrganization(backend.t.db, w.org.id)).toBeUndefined(),
       {
@@ -115,14 +122,35 @@ describe("the organizations page", () => {
       },
     );
     await screen.findByText(/not in an organization/, {}, { timeout: 5000 });
+    expect(toasted()).toBe("Deleted Acme.");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
-  test("keeping it changes nothing", async () => {
+  test("keeping it changes nothing: Keep and Esc both close the dialog, and focus is back on the button", async () => {
     const w = await world();
     mount(w.owner.client);
-    await press("Delete organization…");
+    const opener = await screen.findByRole(
+      "button",
+      { name: "Delete organization…" },
+      { timeout: 5000 },
+    );
+    const user = userEvent.setup();
+    await user.click(opener);
+    await asked("Delete Acme");
+    await fill(`Type ${w.org.slug} to confirm`, w.org.slug);
     await press("Keep");
-    await screen.findByRole("button", { name: "Delete organization…" }, { timeout: 5000 });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+
+    // what was typed is not kept for the next time
+    await user.click(opener);
+    await asked("Delete Acme");
+    expect(
+      ((await screen.findByLabelText(`Type ${w.org.slug} to confirm`)) as HTMLInputElement).value,
+    ).toBe("");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
     expect(await getOrganization(backend.t.db, w.org.id)).toBeDefined();
   });
 
@@ -135,9 +163,9 @@ describe("the organizations page", () => {
     await fill("Slug", "fresh-one");
     await fill("GitLab group ID", "4242");
     await press("Create organization");
-    const status = await screen.findByRole("status", {}, { timeout: 5000 });
+    const status = await inMain().findByRole("status", {}, { timeout: 5000 });
     expect(status.textContent).toContain("Fresh");
-    expect(status.textContent).toContain("GitLab group");
+    expect(status.textContent).toContain("GitLab group or GitHub organization");
     const made = await backend.t.db.query.organizations.findFirst({
       where: (o, { eq }) => eq(o.slug, "fresh-one"),
     });
@@ -148,6 +176,67 @@ describe("the organizations page", () => {
     await fill("GitLab group ID", "4243");
     await press("Create organization");
     expect((await screen.findByRole("alert", {}, { timeout: 5000 })).textContent).toContain("slug");
+  });
+
+  test("the form says what the slug and the links are before anything is sent, and checks the slug as it is typed", async () => {
+    const w = await world();
+    mount(w.platform.client);
+    const form = await screen.findByRole("form", { name: "New organization" }, { timeout: 5000 });
+    // the hints are there from the start and tied to their fields
+    const slug = within(form).getByLabelText("Slug");
+    expect(slug.getAttribute("aria-invalid")).toBeNull();
+    const hint = (field: HTMLElement) =>
+      document.getElementById(field.getAttribute("aria-describedby") ?? "")?.textContent;
+    expect(hint(slug)).toBe("Lowercase letters, digits and dashes. Cannot be changed afterwards.");
+    expect(hint(within(form).getByLabelText("GitLab group ID"))).toBe(
+      "Cannot be changed afterwards.",
+    );
+    expect(hint(within(form).getByLabelText("GitHub organization ID"))).toBe(
+      "Cannot be changed afterwards.",
+    );
+    const make = within(form).getByRole("button", { name: "Create organization" });
+
+    // a slug the API would refuse is said at once, by its rule, and is not sent
+    await fill("Name", "Fresh");
+    await fill("GitLab group ID", "4242");
+    for (const bad of ["Fresh One", "-fresh", "fresh-", "fresh--one"]) {
+      await fill("Slug", bad);
+      expect(slug.getAttribute("aria-invalid")).toBe("true");
+      expect(hint(slug)).toBe("Use lowercase letters and digits, separated by single dashes.");
+      expect((make as HTMLButtonElement).disabled).toBe(true);
+    }
+    await fill("Slug", "fresh-one");
+    expect(slug.getAttribute("aria-invalid")).toBeNull();
+    expect(hint(slug)).toContain("Cannot be changed afterwards");
+    expect((make as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("a refused create is a callout that says why, and the form keeps what was typed", async () => {
+    const w = await world();
+    mount(w.platform.client);
+    await fill("Name", "Dupe");
+    await fill("Slug", w.org.slug);
+    await fill("GitLab group ID", "5151");
+    await press("Create organization");
+    const alert = await screen.findByRole("alert", {}, { timeout: 5000 });
+    expect(alert.textContent).toContain("slug");
+    expect(alert.classList.contains("callout")).toBe(true);
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Dupe");
+  });
+
+  test("an organization may be linked to a GitHub organization alone, and then says so (FRG-34)", async () => {
+    const w = await world();
+    mount(w.platform.client);
+    await section("Create an organization");
+    await fill("Name", "Hubbed");
+    await fill("Slug", "hubbed");
+    await fill("GitHub organization ID", "7300000001");
+    await press("Create organization");
+    await inMain().findByRole("status", {}, { timeout: 5000 });
+    const made = await backend.t.db.query.organizations.findFirst({
+      where: (o, { eq }) => eq(o.slug, "hubbed"),
+    });
+    expect(made).toMatchObject({ gitlabGroupId: null, githubOrgId: 7300000001 });
   });
 
   test("nobody but a platform admin sees the form to create one", async () => {
@@ -232,7 +321,16 @@ describe("the members an organization has through its identity provider", () => 
     const w = await world();
     mount(w.admin.client);
     const members = await section("Members");
-    await within(members).findByText(/Nobody holds a role through/, {}, { timeout: 5000 });
+    // an empty state: a heading that says it, and a line that says when someone will appear
+    await within(members).findByRole(
+      "heading",
+      { name: "Nobody holds a role through the identity provider right now" },
+      { timeout: 5000 },
+    );
+    expect(members.textContent).toContain(
+      "People appear here once they sign in through the identity provider.",
+    );
+    expect(within(members).queryByRole("table")).toBeNull();
     cleanup();
     mount(w.member.client);
     await section("This organization");
@@ -274,9 +372,20 @@ describe("the DNS zones an organization has claimed", () => {
     await createProject(backend.t.db, { organizationId: w.org.id, name: "web" });
     mount(w.viewer.client);
     const here = await section("DNS zones");
-    await within(here).findByText(/No zone is claimed/, {}, { timeout: 5000 });
+    await within(here).findByRole("heading", { name: "No zone is claimed yet" }, { timeout: 5000 });
     expect(here.textContent).toContain("guard");
     expect(here.textContent).toContain("token");
+    // a reader is told who can claim one; an admin is told where
+    expect(here.textContent).toContain("An admin can claim a zone for a project's stack.");
+    cleanup();
+    const admin = await world("Beta");
+    await createProject(backend.t.db, { organizationId: admin.org.id, name: "web" });
+    mount(admin.admin.client);
+    const mine = await section("DNS zones");
+    await within(mine).findByRole("heading", { name: "No zone is claimed yet" }, { timeout: 5000 });
+    expect(mine.textContent).toContain(
+      "Claim a zone below to say which project's stack may manage it.",
+    );
   });
 
   test("an admin claims a zone for the project they choose, and it is there for everyone", async () => {
@@ -294,6 +403,7 @@ describe("the DNS zones an organization has claimed", () => {
       { timeout: 5000 },
     );
     expect(row.textContent).toContain("beta");
+    await waitFor(() => expect(toasted()).toBe("Claimed example.com."));
     expect((await claims(w.org.id)).map((c) => [c.zone, c.projectId, c.stack])).toEqual([
       ["example.com", beta.id, "example-com"],
     ]);
@@ -315,7 +425,7 @@ describe("the DNS zones an organization has claimed", () => {
     expect((await claims(w.org.id)).map((c) => c.stack)).toEqual(["first"]);
   });
 
-  test("a name that is not a zone, or a stack, is not sent", async () => {
+  test("a name that is not a zone, or a stack, is said at once and is not sent", async () => {
     const w = await world();
     await createProject(backend.t.db, { organizationId: w.org.id, name: "web" });
     mount(w.admin.client);
@@ -324,36 +434,69 @@ describe("the DNS zones an organization has claimed", () => {
       { name: "Claim zone" },
       { timeout: 5000 },
     )) as HTMLButtonElement;
+    const zone = screen.getByLabelText("Zone");
+    const stack = screen.getByLabelText("Stack");
+    const line = (field: HTMLElement) =>
+      document.getElementById(field.getAttribute("aria-describedby") ?? "")?.textContent;
     expect(button.disabled).toBe(true);
+    // nothing typed is nothing wrong: the line is a hint, and the field is not marked
+    expect(zone.getAttribute("aria-invalid")).toBeNull();
+    expect(line(zone)).toBe("The domain the stack manages.");
+    expect(line(stack)).toBe("Lowercase letters, digits and dashes, up to 63 characters.");
     await fill("Zone", "Not A Zone");
     await fill("Stack", "example-com");
     expect(button.disabled).toBe(true);
+    expect(zone.getAttribute("aria-invalid")).toBe("true");
+    expect(line(zone)).toBe(
+      "Enter a domain such as example.com: lowercase letters, digits and dashes, with at least one dot.",
+    );
+    expect(stack.getAttribute("aria-invalid")).toBeNull();
     await fill("Zone", "example.com");
+    expect(zone.getAttribute("aria-invalid")).toBeNull();
     await fill("Stack", "Not A Stack");
     expect(button.disabled).toBe(true);
+    expect(stack.getAttribute("aria-invalid")).toBe("true");
+    expect(line(stack)).toBe(
+      "Use lowercase letters, digits and dashes. Start and end with a letter or digit.",
+    );
     await fill("Stack", "example-com");
+    expect(stack.getAttribute("aria-invalid")).toBeNull();
     expect(button.disabled).toBe(false);
   });
 
-  test("releasing asks first; keeping changes nothing, and confirming removes the claim", async () => {
+  test("releasing asks first, in a dialog; keeping changes nothing, and confirming removes the claim", async () => {
     const w = await world();
     const project = await createProject(backend.t.db, { organizationId: w.org.id, name: "web" });
     await claim(w.org.id, project.id, "example.com");
     mount(w.admin.client);
-    await press("Release… example.com");
-    expect((await section("DNS zones")).textContent).toContain("stops being managed");
+    const opener = await screen.findByRole(
+      "button",
+      { name: "Release… example.com" },
+      { timeout: 5000 },
+    );
+    const user = userEvent.setup();
+    await user.click(opener);
+    const dialog = await asked("Release example.com");
+    expect(dialog.textContent).toContain("stops being managed");
+    expect(dialog.textContent).toContain("Its records at the provider are not touched.");
     await press("Keep");
-    await screen.findByRole("button", { name: "Release… example.com" }, { timeout: 5000 });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
     expect(await claims(w.org.id)).toHaveLength(1);
 
-    await press("Release… example.com");
+    await user.click(opener);
+    await asked("Release example.com");
     await press("Release example.com");
-    await within(await section("DNS zones")).findByText(
-      /No zone is claimed/,
-      {},
+    await within(await section("DNS zones")).findByRole(
+      "heading",
+      { name: "No zone is claimed yet" },
       { timeout: 5000 },
     );
     expect(await claims(w.org.id)).toEqual([]);
+    expect(toasted()).toBe("Released example.com.");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    // the row that had the focus is gone, so the focus goes to the page's main and not to nowhere
+    expect(document.activeElement).toBe(document.getElementById("main"));
   });
 
   test("an admin with no project is sent to import one, and is not offered a form that cannot work", async () => {

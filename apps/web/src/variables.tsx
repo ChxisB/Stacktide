@@ -5,7 +5,7 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { ApiError, allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { Card, Drawer, Icon, Popover, RowMenu } from "./components";
+import { Callout, Card, Dialog, Drawer, Icon, RowMenu, useToast } from "./components";
 import { ProjectPicker } from "./projects";
 import { useAccess } from "./settings";
 import { Loading } from "./ui";
@@ -164,17 +164,20 @@ type Panel =
   | { kind: "folder-rename"; folder: FolderItem }
   | { kind: "folder-delete"; folder: FolderItem };
 
+/** A panel of the drawer: a form or a screen. A delete is not one: it is a question, a dialog over whatever is open. */
+type DrawerPanel = Exclude<Panel, { kind: "delete" | "bulk" }>;
+const drawerPanel = (panel: Panel | undefined): DrawerPanel | undefined =>
+  panel?.kind === "delete" || panel?.kind === "bulk" ? undefined : panel;
+
 /** What a row's drawer says it is about: the variable, and the environment the row was in. */
 const drawerTitle = (cell: Cell, env: Env) => `${cell.key} in ${env.name}`;
 /** What a drawer is called: the form it holds, or the variable and environment a row's panel is about. */
-const panelTitle = (panel: Panel) => {
+const panelTitle = (panel: DrawerPanel) => {
   switch (panel.kind) {
     case "add":
       return "New variable";
     case "import":
       return "Import";
-    case "bulk":
-      return `Delete ${panel.cells.length} ${panel.cells.length === 1 ? "variable" : "variables"}`;
     case "folder":
       return "New folder";
     case "folder-rename":
@@ -186,22 +189,20 @@ const panelTitle = (panel: Panel) => {
   }
 };
 
-const SUB: Record<Panel["kind"], string> = {
+const SUB: Record<DrawerPanel["kind"], string> = {
   add: "Add a variable and say where it applies",
   edit: "Write a new value; the old one stays in the history",
   describe: "Change its description and tags",
-  delete: "Remove this variable",
   move: "Put it in another folder; its history goes with it",
   history: "Audit its history and roll back changes",
   rotation: "How this secret is rotated",
-  bulk: "Remove the variables you chose",
   import: "Bring variables in from a .env file or JSON",
   folder: "Make a folder to keep variables together",
   "folder-rename": "Change its name; what is in it stays in it",
   "folder-delete": "Remove a folder with nothing in it",
 };
 /** The line under a drawer's title: what is open in it, the panel or else the variable's details. */
-const panelSub = (panel: Panel | undefined) =>
+const panelSub = (panel: DrawerPanel | undefined) =>
   panel ? SUB[panel.kind] : "Details of this variable";
 
 /** A variable's value onto the clipboard: a secret's is read from the audited route, a plain one is already in the list. Nothing, or why it failed. */
@@ -418,6 +419,7 @@ function EditVariable({
   cancel: () => void;
 }) {
   const client = useClient();
+  const toast = useToast();
   const [value, setValue] = useState(cell.kind === "plain" ? (cell.value ?? "") : "");
   const write = useWrite(
     () =>
@@ -435,6 +437,7 @@ function EditVariable({
     async () => {
       setValue("");
       await done();
+      toast(`Saved a new value of ${cell.key}.`);
     },
   );
   return (
@@ -447,10 +450,10 @@ function EditVariable({
       onCancel={cancel}
     >
       {cell.level !== "environment" && (
-        <p>
+        <Callout tone="warn">
           This value belongs to {SOURCE[cell.level]}: changing it changes it everywhere it is passed
           down.
-        </p>
+        </Callout>
       )}
       {cell.kind !== "plain" && <p className="muted">The current value is not shown here.</p>}
       <ValueField kind={cell.kind} value={value} onChange={setValue} label="New value" />
@@ -527,28 +530,32 @@ function DeleteVariable({
   cancel: () => void;
 }) {
   const client = useClient();
+  const toast = useToast();
   const write = useWrite(
     () =>
       call(() =>
         variablesAt(client, orgId, projectId, cell.level, env.id)({ varId: cell.id }).delete(),
       ),
-    done,
+    async () => {
+      await done();
+      toast(`Deleted ${cell.key} from ${SOURCE[cell.level]}.`);
+    },
   );
   return (
-    <Form
+    <Dialog
       title={`Delete ${cell.key}`}
-      onSubmit={write.go}
+      sub={`Delete ${cell.key} from ${SOURCE[cell.level]}? Its history is kept, but nothing uses it any more.`}
+      confirm="Delete variable"
+      destructive
+      busy={write.pending}
       error={write.error}
-      pending={write.pending}
-      submit="Delete variable"
-      onCancel={cancel}
+      onConfirm={write.go}
+      close={cancel}
     >
-      <p>
-        Delete <code>{cell.key}</code> from {SOURCE[cell.level]}?
-        {cell.level !== "environment" && " Every environment that gets it from there loses it too."}{" "}
-        Its history is kept, but nothing uses it any more.
-      </p>
-    </Form>
+      {cell.level !== "environment" && (
+        <Callout tone="warn">Every environment that gets it from there loses it too.</Callout>
+      )}
+    </Dialog>
   );
 }
 
@@ -578,40 +585,49 @@ function BulkDelete({
   cancel: () => void;
 }) {
   const client = useClient();
+  const toast = useToast();
   const [rest, setRest] = useState(cells);
-  const write = useWrite(async () => {
-    const gone: string[] = [];
-    for (const level of LEVELS) {
-      const here = rest.filter((c) => c.level === level);
-      if (here.length === 0) continue;
-      try {
-        await call(() =>
-          variablesAt(client, orgId, projectId, level, env.id).bulk.post({
-            ops: here.map(({ key }) => ({ op: "delete" as const, key })),
-            dryRun: false,
-          }),
-        );
-      } catch (e) {
-        if (gone.length === 0) throw e;
-        const left = rest.filter((c) => !gone.includes(c.key)).map((c) => c.key);
-        setRest((r) => r.filter((c) => !gone.includes(c.key)));
-        await reload();
-        const verb = (keys: string[]) => (keys.length === 1 ? "was" : "were");
-        throw new Error(
-          `${gone.join(", ")} ${verb(gone)} deleted; ${left.join(", ")} ${verb(left)} not: ${e instanceof Error ? e.message : "that did not work"}`,
-        );
+  const write = useWrite(
+    async () => {
+      const gone: string[] = [];
+      for (const level of LEVELS) {
+        const here = rest.filter((c) => c.level === level);
+        if (here.length === 0) continue;
+        try {
+          await call(() =>
+            variablesAt(client, orgId, projectId, level, env.id).bulk.post({
+              ops: here.map(({ key }) => ({ op: "delete" as const, key })),
+              dryRun: false,
+            }),
+          );
+        } catch (e) {
+          if (gone.length === 0) throw e;
+          const left = rest.filter((c) => !gone.includes(c.key)).map((c) => c.key);
+          setRest((r) => r.filter((c) => !gone.includes(c.key)));
+          await reload();
+          const verb = (keys: string[]) => (keys.length === 1 ? "was" : "were");
+          throw new Error(
+            `${gone.join(", ")} ${verb(gone)} deleted; ${left.join(", ")} ${verb(left)} not: ${e instanceof Error ? e.message : "that did not work"}`,
+          );
+        }
+        gone.push(...here.map((c) => c.key));
       }
-      gone.push(...here.map((c) => c.key));
-    }
-  }, done);
+    },
+    async () => {
+      await done();
+      toast(`Deleted ${cells.length} ${cells.length === 1 ? "variable" : "variables"}.`);
+    },
+  );
   return (
-    <Form
-      title="Delete selected variables"
-      onSubmit={write.go}
+    <Dialog
+      title={`Delete ${cells.length} ${cells.length === 1 ? "variable" : "variables"}`}
+      sub="Their history is kept, but nothing uses them any more."
+      confirm="Delete variables"
+      destructive
+      busy={write.pending}
       error={write.error}
-      pending={write.pending}
-      submit="Delete variables"
-      onCancel={cancel}
+      onConfirm={write.go}
+      close={cancel}
     >
       <ul>
         {rest.map((c) => (
@@ -621,10 +637,11 @@ function BulkDelete({
         ))}
       </ul>
       {rest.some((c) => c.level !== "environment") && (
-        <p>Every environment that gets one from the project or the organization loses it too.</p>
+        <Callout tone="warn">
+          Every environment that gets one from the project or the organization loses it too.
+        </Callout>
       )}
-      <p>Their history is kept, but nothing uses them any more.</p>
-    </Form>
+    </Dialog>
   );
 }
 
@@ -637,6 +654,7 @@ function PanelView({
   folder = ROOT,
   revealMs,
   refresh,
+  finish,
   reload,
   close,
 }: {
@@ -648,6 +666,8 @@ function PanelView({
   folder?: string;
   revealMs: number;
   refresh: () => Promise<void>;
+  /** Where an answer that reports by toast ends: the drawer is closed too, since the toast sits under it. */
+  finish: () => Promise<void>;
   reload: () => Promise<void>;
   close: () => void;
 }) {
@@ -674,7 +694,7 @@ function PanelView({
           projectId={projectId}
           cell={panel.cell}
           env={panel.env}
-          done={refresh}
+          done={finish}
           cancel={close}
         />
       );
@@ -713,7 +733,7 @@ function PanelView({
           projectId={projectId}
           cell={panel.cell}
           env={panel.env}
-          done={refresh}
+          done={finish}
           cancel={close}
         />
       );
@@ -750,7 +770,7 @@ function PanelView({
           cells={panel.cells}
           env={panel.env}
           reload={reload}
-          done={refresh}
+          done={finish}
           cancel={close}
         />
       );
@@ -800,12 +820,12 @@ function PanelView({
   }
 }
 
-/** What an environment holds of a key: a green tick where it is set, a yellow circle where it is not, a cross where it does not resolve. The picture is for the eye, its words for the rest. */
+/** What an environment holds of a key: a green tick where it is set, a yellow circle where it is not, a cross where it does not resolve. The picture is for the eye, the words beside it for the rest. */
 function Mark({ state, words }: { state: "set" | "missing" | "broken"; words: string }) {
   return (
     <span className={`cell-mark ${state}`} title={words}>
       <Icon name={state === "set" ? "tick" : state === "missing" ? "circle" : "close"} />
-      <span className="visually-hidden">{words}</span>
+      <span className="words">{words}</span>
     </span>
   );
 }
@@ -854,19 +874,14 @@ function Toolbar({
         />
       </div>
       {tagNames.length > 0 && (
-        <Popover label="Filter" icon="filter" count={active ? 1 : 0}>
-          <label>
-            Tag
-            <select value={active} onChange={(e) => setTag(e.target.value)}>
-              <option value="">All tags</option>
-              {tagNames.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </label>
-        </Popover>
+        <select aria-label="Tag" value={active} onChange={(e) => setTag(e.target.value)}>
+          <option value="">All tags</option>
+          {tagNames.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
       )}
       {extra}
       <RowMenu
@@ -1099,11 +1114,31 @@ function Grid({
   ];
   const toggle = (key: string) =>
     setExpanded((now) => (now.includes(key) ? now.filter((k) => k !== key) : [...now, key]));
-  const titled = panel
-    ? panelTitle(panel)
+  const inDrawer = drawerPanel(panel);
+  const titled = inDrawer
+    ? panelTitle(inDrawer)
     : open && detailsEnv
       ? drawerTitle(open, detailsEnv)
       : undefined;
+  // an answer that reports by toast leaves nothing open: the toast sits under the drawer
+  const finish = async () => {
+    await reload();
+    closeDrawer();
+  };
+  const view = panel && (
+    <PanelView
+      panel={panel}
+      orgId={orgId}
+      projectId={projectId}
+      envs={envs}
+      folder={folder}
+      revealMs={revealMs}
+      refresh={refresh}
+      finish={finish}
+      reload={reload}
+      close={() => setPanel(undefined)}
+    />
+  );
 
   return (
     <div className="stack wide">
@@ -1188,21 +1223,35 @@ function Grid({
                             return (
                               <td key={env.id}>
                                 {cell ? (
-                                  <Mark
-                                    state="set"
-                                    words={
-                                      cell.level === "environment"
-                                        ? "Set here"
-                                        : `From ${cell.level}`
-                                    }
-                                  />
+                                  <button
+                                    type="button"
+                                    className="mx-cell"
+                                    aria-label={`${key} in ${env.name}: ${cell.level === "environment" ? "Set here" : `From ${cell.level}`}`}
+                                    onClick={() => pick(key, env)}
+                                  >
+                                    <Mark
+                                      state="set"
+                                      words={
+                                        cell.level === "environment"
+                                          ? "Set here"
+                                          : `From ${cell.level}`
+                                      }
+                                    />
+                                  </button>
                                 ) : issue ? (
                                   <Mark
                                     state="broken"
                                     words={`Does not resolve: ${ISSUES[issue.code] ?? issue.code}`}
                                   />
                                 ) : (
-                                  <Mark state="missing" words="Not set" />
+                                  <button
+                                    type="button"
+                                    className="mx-cell not-set"
+                                    aria-label={`Set ${key} in ${env.name}: Not set`}
+                                    onClick={() => setPanel({ kind: "add", key, scope: env.id })}
+                                  >
+                                    <Mark state="missing" words="Not set" />
+                                  </button>
                                 )}
                               </td>
                             );
@@ -1320,7 +1369,7 @@ function Grid({
         />
       </Card>
       {titled && (
-        <Drawer title={titled} sub={panelSub(panel)} close={closeDrawer}>
+        <Drawer title={titled} sub={panelSub(inDrawer)} close={closeDrawer}>
           {open && detailsEnv && (
             <Details
               key={`${open.id}:${epoch}`}
@@ -1346,21 +1395,10 @@ function Grid({
               }}
             />
           )}
-          {panel && (
-            <PanelView
-              panel={panel}
-              orgId={orgId}
-              projectId={projectId}
-              envs={envs}
-              folder={folder}
-              revealMs={revealMs}
-              refresh={refresh}
-              reload={reload}
-              close={() => setPanel(undefined)}
-            />
-          )}
+          {inDrawer && view}
         </Drawer>
       )}
+      {panel && !inDrawer && view}
       {changes && (
         <Drawer title={`Changes in ${changes.name}`} close={() => setChanges(undefined)}>
           <Changes
@@ -1596,7 +1634,27 @@ function Secrets({
       return next;
     });
   // the new-variable form, an import, a row's own panels and its details are all in a drawer
-  const titled = panel ? panelTitle(panel) : open && env ? drawerTitle(open, env) : undefined;
+  const inDrawer = drawerPanel(panel);
+  const titled = inDrawer ? panelTitle(inDrawer) : open && env ? drawerTitle(open, env) : undefined;
+  // an answer that reports by toast leaves nothing open: the toast sits under the drawer
+  const finish = async () => {
+    await renew();
+    pick(undefined);
+  };
+  const view = panel && (
+    <PanelView
+      panel={panel}
+      orgId={orgId}
+      projectId={projectId}
+      envs={envs}
+      folder={folder}
+      revealMs={revealMs}
+      refresh={refresh}
+      finish={finish}
+      reload={renew}
+      close={() => setPanel(undefined)}
+    />
+  );
   return (
     <div className="stack wide">
       <Card title={`Variables in ${name}`}>
@@ -1607,13 +1665,13 @@ function Secrets({
           extra={
             <button
               type="button"
-              className="icon"
-              aria-label="Download .env"
+              className="quiet"
               title="Download .env"
               disabled={busy}
               onClick={() => void download()}
             >
               <Icon name="download" />
+              Download .env
             </button>
           }
           onAdd={() => setPanel({ kind: "add", scope: envId })}
@@ -1823,7 +1881,7 @@ function Secrets({
         )}
       </Card>
       {titled && env && (
-        <Drawer title={titled} sub={panelSub(panel)} close={() => pick(undefined)}>
+        <Drawer title={titled} sub={panelSub(inDrawer)} close={() => pick(undefined)}>
           {open && (
             <Details
               key={`${open.id}:${epoch}`}
@@ -1850,21 +1908,10 @@ function Secrets({
               }}
             />
           )}
-          {panel && (
-            <PanelView
-              panel={panel}
-              orgId={orgId}
-              projectId={projectId}
-              envs={envs}
-              folder={folder}
-              revealMs={revealMs}
-              refresh={refresh}
-              reload={renew}
-              close={() => setPanel(undefined)}
-            />
-          )}
+          {inDrawer && view}
         </Drawer>
       )}
+      {panel && !inDrawer && view}
       {changes && env && (
         <Drawer title={`Changes in ${name}`} close={() => setChanges(false)}>
           <Changes

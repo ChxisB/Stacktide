@@ -115,14 +115,20 @@ describe("a row's actions", () => {
     expect(document.activeElement).toBe(more);
   });
 
-  test("Delete, Rotation and Add tags open in the dialog too", async () => {
+  test("Rotation and Add tags open in the drawer too, and Delete asks in a dialog of its own", async () => {
     const s = await scene();
     await s.put.env("dev", "TOKEN", "t0ken", true);
     mount(s.client);
     await openSecrets();
     const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "More actions for TOKEN" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(await screen.findByRole("alertdialog", { name: "Delete TOKEN" })).toBeTruthy();
+    // a question, not a form to fill in: no drawer behind it
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     for (const [item, form] of [
-      ["Delete", "Delete TOKEN"],
       ["Rotation", "Rotation of TOKEN"],
       ["Add tags", "Describe and tag TOKEN"],
     ] as const) {

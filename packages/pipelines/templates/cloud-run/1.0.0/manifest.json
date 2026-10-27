@@ -1,0 +1,81 @@
+{
+  "name": "cloud-run",
+  "version": "1.0.0",
+  "description": "Deploy a build to the Cloud Run service a `service` blueprint created. The job signs in with the forge's OIDC token (no key is stored), builds the image, pushes it to the service's Artifact Registry repository tagged with the commit, and updates the service. A pipeline started with ORCH_DEPLOY_ENV and ORCH_DEPLOY_SHA deploys that build: promote and rollback. The trust is the `deploy-identity` blueprint, applied once by a person.",
+  "params": {
+    "type": "object",
+    "properties": {
+      "project": {
+        "type": "string",
+        "description": "The Google Cloud project id.",
+        "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
+      },
+      "region": {
+        "type": "string",
+        "description": "The region of the service and of its Artifact Registry repository.",
+        "pattern": "^[a-z]+-[a-z]+[0-9]+$"
+      },
+      "service": {
+        "type": "string",
+        "description": "The Cloud Run service's name.",
+        "pattern": "^[a-z][a-z0-9-]{0,62}$"
+      },
+      "repository": {
+        "type": "string",
+        "description": "The Artifact Registry repository the service's images go to.",
+        "pattern": "^[a-z][a-z0-9-]{0,62}$"
+      },
+      "provider": {
+        "type": "string",
+        "description": "The workload identity provider's resource name, with the project number: projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER.",
+        "pattern": "^projects/[0-9]{1,20}/locations/global/workloadIdentityPools/[a-z0-9-]{4,32}/providers/[a-z0-9-]{4,32}$"
+      },
+      "serviceAccount": {
+        "type": "string",
+        "description": "The deploy service account's email.",
+        "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$"
+      },
+      "deployImage": {
+        "type": "string",
+        "description": "The image the GitLab job runs in. It needs the gcloud CLI and the Docker CLI; this was not checked against a public image. GitHub's hosted runner has both.",
+        "pattern": "^(?!.*\\.\\.)[a-z0-9][a-z0-9._/-]{0,127}(:[A-Za-z0-9._-]{1,128})?$"
+      },
+      "dockerVersion": {
+        "type": "string",
+        "description": "Tag of the docker:dind service that builds the image on GitLab. GitHub's runner has Docker and ignores it.",
+        "default": "27",
+        "pattern": "^[0-9][0-9A-Za-z.-]{0,30}$"
+      },
+      "dockerfile": {
+        "type": "string",
+        "description": "Path of the Dockerfile, from the repository root.",
+        "default": "Dockerfile",
+        "pattern": "^(?![/-])(?!.*\\.\\.)[A-Za-z0-9._/-]{1,100}$"
+      },
+      "context": {
+        "type": "string",
+        "description": "Build context directory, from the repository root.",
+        "default": ".",
+        "pattern": "^(?![/-])(?!.*\\.\\.)[A-Za-z0-9._/-]{1,100}$"
+      },
+      "environment": {
+        "type": "string",
+        "description": "The environment a merge to the default branch deploys to: its slug, which is the name GitLab and GitHub give it. The deploy identity trusts this one.",
+        "default": "staging",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+        "maxLength": 63
+      }
+    },
+    "required": [
+      "project",
+      "region",
+      "service",
+      "repository",
+      "provider",
+      "serviceAccount",
+      "deployImage"
+    ]
+  },
+  "detects": [],
+  "requiresVariables": []
+}

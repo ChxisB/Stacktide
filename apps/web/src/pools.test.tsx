@@ -58,6 +58,8 @@ const rowOf = (section: HTMLElement, name: string) => {
   if (!tr) throw new Error(`no row for ${name}`);
   return tr;
 };
+/** The state words of a row, as the badges say them. */
+const badges = (tr: HTMLElement) => [...tr.querySelectorAll(".st")].map((b) => b.textContent);
 const check = async () =>
   userEvent.setup().click(await screen.findByRole("button", { name: "Check health" }));
 
@@ -68,6 +70,10 @@ describe("the pools section of the settings page", () => {
     const section = await region();
     await waitFor(() => expect(section.textContent).toContain("No pool yet"), { timeout: 5000 });
     expect(section.textContent).toContain("do not isolate");
+    // the warning is a warning, not an alarm: a callout that is not announced
+    const warn = section.querySelector(".callout-warn");
+    expect(warn?.textContent).toContain("do not isolate");
+    expect(warn?.getAttribute("role")).toBeNull();
     expect(within(section).queryByRole("table")).toBeNull();
     expect(within(section).queryByRole("button", { name: "Check health" })).toBeNull();
   });
@@ -84,12 +90,15 @@ describe("the pools section of the settings page", () => {
     const section = await region();
     await within(section).findByRole("rowheader", { name: "plain" }, { timeout: 5000 });
     expect(rowOf(section, "plain").textContent).toContain("prod-runners");
-    expect(rowOf(section, "plain").textContent).toContain("Enabled");
+    expect(badges(rowOf(section, "plain"))).toEqual(["Enabled"]);
     expect(rowOf(section, "custom").textContent).toContain("prod-runners");
     expect(rowOf(section, "custom").textContent).toContain("gpu");
     expect(rowOf(section, "custom").textContent).toContain("registry.example.com/iac:1");
     expect(rowOf(section, "custom").textContent).toContain("Default");
-    expect(rowOf(section, "parked").textContent).toContain("Disabled");
+    expect(badges(rowOf(section, "parked"))).toEqual(["Disabled"]);
+    // the warning stays above the list
+    expect(section.querySelector(".callout-warn")?.textContent).toContain("do not isolate");
+    expect(within(section).queryByRole("columnheader", { name: /^Health/ })).toBeNull();
     expect(rowOf(section, "plain").textContent).not.toContain("Default");
   });
 
@@ -127,6 +136,8 @@ describe("a pool's health, as GitLab shows it for a project", () => {
     await waitFor(() => expect(rowOf(section, "prod").textContent).toContain("Healthy"), {
       timeout: 5000,
     });
+    expect(within(section).getByRole("columnheader", { name: "Health in web" })).toBeDefined();
+    expect(badges(rowOf(section, "prod"))).toEqual(["Enabled", "Healthy"]);
     expect(rowOf(section, "prod").textContent).toContain("1 of 1 runners online");
 
     w.mock.addRunner(w.path, { tags: ["prod-runners"], status: "offline" });
@@ -134,6 +145,7 @@ describe("a pool's health, as GitLab shows it for a project", () => {
     await waitFor(() => expect(rowOf(section, "prod").textContent).toContain("Degraded"), {
       timeout: 5000,
     });
+    expect(badges(rowOf(section, "prod"))).toEqual(["Enabled", "Degraded"]);
     expect(rowOf(section, "prod").textContent).toContain("1 of 2 runners online");
   });
 
@@ -147,6 +159,7 @@ describe("a pool's health, as GitLab shows it for a project", () => {
     await waitFor(() => expect(rowOf(section, "idle").textContent).toContain("Offline"), {
       timeout: 5000,
     });
+    expect(badges(rowOf(section, "idle"))).toEqual(["Enabled", "Offline"]);
     expect(rowOf(section, "idle").textContent).toContain("0 of 0 runners online");
   });
 
@@ -165,6 +178,7 @@ describe("a pool's health, as GitLab shows it for a project", () => {
     expect(rowOf(section, "prod").textContent).toContain(
       "the connection's token cannot list the project's runners",
     );
+    expect(badges(rowOf(section, "prod"))).toEqual(["Enabled", "Not known"]);
     expect(rowOf(section, "prod").textContent).not.toContain("Healthy");
   });
 
@@ -196,6 +210,7 @@ describe("a pool's health, as GitLab shows it for a project", () => {
         timeout: 5000,
       },
     );
+    expect(badges(rowOf(section, "prod"))).toEqual(["Enabled", "Not known"]);
     expect(rowOf(section, "prod").textContent).not.toContain("Healthy");
   });
 });

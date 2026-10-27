@@ -10,7 +10,7 @@ import { createOrganization, createSession, upsertUser } from "@orch/db";
 import { createTestDb } from "@orch/db/testing";
 import { createMockGithub } from "@orch/github/mock";
 import { createMockGitlab } from "@orch/gitlab/mock";
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { App, newQueryClient } from "./app";
 
 type Roles = Pick<Subject, "orgRoles" | "projectRoles">;
@@ -121,6 +121,9 @@ export async function startBackend(
   };
 }
 export type Backend = Awaited<ReturnType<typeof startBackend>>;
+
+/** The page without the shell's toast region, which is always there and says nothing until a result is reported (UXR-9). */
+export const inMain = () => within(screen.getByRole("main"));
 
 export const mount = (client: ReturnType<typeof createClient>, queries = newQueryClient()) => ({
   queries,

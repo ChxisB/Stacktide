@@ -23,6 +23,8 @@ export interface SessionOptions {
   githubRoles?: (githubId: number) => Promise<Roles> | Roles;
   /** GitLab user ids that may create organizations. */
   platformAdmins?: readonly number[];
+  /** GitHub user ids that may create organizations (FRG-34): a list of its own, GitLab and GitHub ids never cross. Read only where `githubRoles` is set. */
+  githubPlatformAdmins?: readonly number[];
 }
 
 /** What `user` may do, as the subject of a request made as them (by cookie, or by token). */
@@ -32,7 +34,11 @@ export const subjectOf =
     roles = () => ({ orgRoles: {}, projectRoles: {} }),
     githubRoles,
     platformAdmins = [],
-  }: Pick<SessionOptions, "db" | "roles" | "githubRoles" | "platformAdmins">) =>
+    githubPlatformAdmins = [],
+  }: Pick<
+    SessionOptions,
+    "db" | "roles" | "githubRoles" | "platformAdmins" | "githubPlatformAdmins"
+  >) =>
   async (user: User, kind: Subject["kind"]): Promise<Subject> => {
     const gitlab = hasGitlab(user) ? await roles(user) : { orgRoles: {}, projectRoles: {} };
     // What an identity provider gave this person (SSO-4), asked every time: it ends with the session or the provider.
@@ -42,9 +48,12 @@ export const subjectOf =
     for (const [org, role] of Object.entries(sso)) {
       if (rank(role) > rank(orgRoles[org])) orgRoles[org] = role;
     }
-    // What GitHub says of a person who signs in with it (FRG-25): project roles, the higher of the two where both speak.
+    // What GitHub says of a person who signs in with it (FRG-25, FRG-34): the higher of the two where both speak.
     const githubId = githubRoles ? await githubIdOf(db, user.id) : undefined;
     const github = githubRoles && githubId !== undefined ? await githubRoles(githubId) : undefined;
+    for (const [org, role] of Object.entries(github?.orgRoles ?? {})) {
+      if (rank(role) > rank(orgRoles[org])) orgRoles[org] = role;
+    }
     const projectRoles: Record<string, ProjectRole> = { ...gitlab.projectRoles };
     for (const [project, role] of Object.entries(github?.projectRoles ?? {})) {
       const held = projectRoles[project];
@@ -54,7 +63,9 @@ export const subjectOf =
     }
     return {
       kind,
-      platformAdmin: hasGitlab(user) && platformAdmins.includes(user.gitlabId),
+      platformAdmin:
+        (hasGitlab(user) && platformAdmins.includes(user.gitlabId)) ||
+        (githubId !== undefined && githubPlatformAdmins.includes(githubId)),
       orgRoles,
       projectRoles,
     };

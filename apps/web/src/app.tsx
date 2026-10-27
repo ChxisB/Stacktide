@@ -5,7 +5,7 @@ import { ClientContext } from "./api";
 import { AuthGate } from "./auth";
 import { PageHead } from "./components";
 import { FindingsPage } from "./findings";
-import { Checklist, Tiles } from "./onboarding";
+import { Overview } from "./onboarding";
 import { OrgProvider, RequireOrg } from "./org";
 import { OrganizationsPage } from "./organizations";
 import { PipelinePage } from "./pipeline";
@@ -19,29 +19,14 @@ import { VariablesPage } from "./variables";
 
 const Home = () => (
   <>
-    <PageHead
-      title="Welcome"
-      eyebrow="Delivery"
-      lede="Where your organization stands, and what to do next."
-    />
-    <RequireOrg>
-      {(org) => (
-        <>
-          <Tiles orgId={org.id} />
-          <Checklist orgId={org.id} />
-        </>
-      )}
-    </RequireOrg>
+    <PageHead title="Welcome" lede="Where your organization stands, and what to do next." />
+    <RequireOrg>{(org) => <Overview orgId={org.id} />}</RequireOrg>
   </>
 );
 
 const Projects = () => (
   <>
-    <PageHead
-      title="Projects"
-      eyebrow="Delivery"
-      lede="Connect GitLab or GitHub and choose the projects to manage."
-    />
+    <PageHead title="Projects" lede="Connect GitLab or GitHub and choose the projects to manage." />
     <RequireOrg>{(org) => <ProjectsPage key={org.id} orgId={org.id} />}</RequireOrg>
   </>
 );
@@ -50,7 +35,6 @@ const Projects = () => (
 const variablesHead = (choice?: ReactNode) => (
   <PageHead
     title="Variables"
-    eyebrow="Governance"
     lede="The variables of each project, by environment. Values stay masked until someone with access reveals one."
     actions={choice}
   />
@@ -66,7 +50,6 @@ const Sync = () => (
   <>
     <PageHead
       title="Sync"
-      eyebrow="Infrastructure"
       lede="Compare variables with where they are used, then apply the difference."
     />
     <RequireOrg>{(org) => <SyncPage key={org.id} orgId={org.id} />}</RequireOrg>
@@ -75,11 +58,7 @@ const Sync = () => (
 
 const Pipeline = () => (
   <>
-    <PageHead
-      title="Pipeline"
-      eyebrow="Delivery"
-      lede="Set up CI for a project through a merge request."
-    />
+    <PageHead title="Pipeline" lede="Set up CI for a project through a merge request." />
     <RequireOrg>{(org) => <PipelinePage key={org.id} orgId={org.id} />}</RequireOrg>
   </>
 );
@@ -88,7 +67,6 @@ const Status = () => (
   <>
     <PageHead
       title="Pipeline status"
-      eyebrow="Delivery"
       lede="Recent pipeline runs for each project, as their forge reports them."
     />
     <RequireOrg>{(org) => <RunsPage key={org.id} orgId={org.id} />}</RequireOrg>
@@ -99,7 +77,6 @@ const Findings = () => (
   <>
     <PageHead
       title="Findings"
-      eyebrow="Governance"
       lede="What the scans and policy checks found, and what was done about it."
     />
     <RequireOrg>{(org) => <FindingsPage key={org.id} orgId={org.id} />}</RequireOrg>
@@ -110,8 +87,7 @@ const State = () => (
   <>
     <PageHead
       title="State"
-      eyebrow="Infrastructure"
-      lede="Terraform state for each stack: its versions and its lock."
+      lede="Terraform state for each stack: its versions and its resources."
     />
     <RequireOrg>{(org) => <StatePage key={org.id} orgId={org.id} />}</RequireOrg>
   </>
@@ -121,7 +97,6 @@ const Settings = () => (
   <>
     <PageHead
       title="Settings"
-      eyebrow="Governance"
       lede="Connections, your access, API tokens, sign-in methods and worker pools."
     />
     <RequireOrg>{(org) => <SettingsPage key={org.id} org={org} />}</RequireOrg>
@@ -132,7 +107,6 @@ const Organizations = () => (
   <>
     <PageHead
       title="Organizations"
-      eyebrow="Governance"
       lede="Organizations, their members and how people sign in to them."
     />
     <OrganizationsPage />

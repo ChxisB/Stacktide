@@ -463,6 +463,34 @@
       "when": 1792676896850,
       "tag": "0065_github_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1792742533697,
+      "tag": "0066_organizations_github_link",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1792791937529,
+      "tag": "0067_resources",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1792796274231,
+      "tag": "0068_resources_outputs",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1793111899355,
+      "tag": "0069_resources_deploy_identity",
+      "breakpoints": true
     }
   ]
 }

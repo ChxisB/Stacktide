@@ -102,4 +102,104 @@ describe("the home page", () => {
       second?.querySelector("svg")?.innerHTML,
     );
   });
+
+  // UXR-14 (feature 32): how far along the setup is, as a number a screen reader gets and a bar everyone sees
+  test("a progress bar says how many steps are done, from none to all", async () => {
+    const s = await scene();
+    mount(s.client);
+    const list = await screen.findByRole("region", { name: "Getting started" });
+    const bar = within(list).getByRole("progressbar", { name: "Setup progress" });
+    expect(bar.getAttribute("aria-valuemin")).toBe("0");
+    expect(bar.getAttribute("aria-valuemax")).toBe("2");
+    expect(bar.getAttribute("aria-valuenow")).toBe("0");
+    expect(bar.getAttribute("aria-valuetext")).toBe("0 of 2 steps done");
+    expect(within(list).getByText("0 of 2 steps done")).toBeTruthy();
+  });
+
+  test("it moves as the steps are done, and a done list is a full bar", async () => {
+    const s = await scene();
+    await s.connect();
+    mount(s.client);
+    const bar = await screen.findByRole("progressbar", { name: "Setup progress" });
+    expect(bar.getAttribute("aria-valuenow")).toBe("1");
+    expect(bar.getAttribute("aria-valuetext")).toBe("1 of 2 steps done");
+  });
+
+  test("a full bar when both are done", async () => {
+    const s = await scene();
+    await s.connect();
+    await createProject(backend.t.db, { organizationId: s.org.id, name: "acme/one" });
+    mount(s.client);
+    const bar = await screen.findByRole("progressbar", { name: "Setup progress" });
+    expect(bar.getAttribute("aria-valuenow")).toBe("2");
+    expect(bar.getAttribute("aria-valuemax")).toBe("2");
+  });
+
+  test("a member's list has the one step they can see, so the bar counts one", async () => {
+    const s = await scene("member");
+    mount(s.client);
+    const bar = await screen.findByRole("progressbar", { name: "Setup progress" });
+    expect(bar.getAttribute("aria-valuemax")).toBe("1");
+    expect(bar.getAttribute("aria-valuenow")).toBe("0");
+  });
+
+  // a tile that has somewhere to go says so, in its foot
+  test("the tiles lead on: View projects and Manage connections, each to its screen", async () => {
+    const s = await scene();
+    mount(s.client);
+    const overview = await screen.findByRole("region", { name: "Overview" });
+    expect(within(overview).getByRole("link", { name: "View projects" }).getAttribute("href")).toBe(
+      "#/projects",
+    );
+    expect(
+      within(overview).getByRole("link", { name: "Manage connections" }).getAttribute("href"),
+    ).toBe("#/settings");
+  });
+
+  test("a member has no Manage connections link, as they have no connections tile", async () => {
+    const s = await scene("member");
+    mount(s.client);
+    const overview = await screen.findByRole("region", { name: "Overview" });
+    expect(within(overview).getByRole("link", { name: "View projects" })).toBeTruthy();
+    expect(within(overview).queryByRole("link", { name: "Manage connections" })).toBeNull();
+  });
+
+  test("each step is one link, which the row stretches over, so the whole row is the target", async () => {
+    const s = await scene();
+    mount(s.client);
+    const list = await screen.findByRole("region", { name: "Getting started" });
+    for (const li of within(list).getAllByRole("listitem")) {
+      expect(li.querySelectorAll("a")).toHaveLength(1);
+    }
+  });
+
+  // what is on its way is drawn, not left blank: the card and the tiles, under one busy marker
+  test("while the connections are on their way the page shows the shape of the cards, and then the cards", async () => {
+    const s = await scene();
+    await s.connect();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = clientVia(backend.api, s.cookie, async (request, send) => {
+      if (request.method === "GET" && pathOf(request).endsWith("/connections")) await gate;
+      return send();
+    });
+    mount(held);
+    await screen.findByRole("heading", { level: 1, name: "Welcome" });
+    const busy = await waitFor(
+      () => {
+        const grid = document.querySelector('.home-grid[aria-busy="true"]');
+        expect(grid).toBeTruthy();
+        return grid as Element;
+      },
+      { timeout: 5000 },
+    );
+    expect(within(busy as HTMLElement).getByRole("status").textContent).toBe("Loading");
+    expect(screen.queryByRole("region", { name: "Getting started" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Overview" })).toBeNull();
+    release();
+    await screen.findByRole("region", { name: "Overview" });
+    expect(document.querySelector('.home-grid[aria-busy="true"]')).toBeNull();
+  }, 15_000);
 });

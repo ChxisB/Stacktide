@@ -318,7 +318,7 @@ describe("the toolbar's controls", () => {
     expect(bar.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  test("an icon button has its name for a screen reader and the same words on hover, and no other text", async () => {
+  test("Download .env shows its words beside its picture, the same words on hover, and the picture is not read", async () => {
     const s = await scene();
     await s.put.project("REGION", "eu");
     mount(s.client);
@@ -326,7 +326,8 @@ describe("the toolbar's controls", () => {
     for (const name of ["Download .env"]) {
       const button = screen.getByRole("button", { name });
       expect(button.getAttribute("title")).toBe(name);
-      expect(button.textContent).toBe("");
+      // UXR-22 (moved): it had no text of its own, as an icon button; the board draws the word beside the picture
+      expect(button.textContent).toBe(name);
       expect(button.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     }
   });
@@ -427,7 +428,6 @@ describe("the strip and the table's foot", () => {
     await user.type(screen.getByRole("searchbox", { name: "Search variables" }), "lp");
     expect(foot().textContent).toBe("1 of 3 variables");
     await user.clear(screen.getByRole("searchbox", { name: "Search variables" }));
-    await user.click(screen.getByRole("button", { name: /Filter/ }));
     await user.selectOptions(screen.getByLabelText("Tag"), "eu");
     expect(foot().textContent).toBe("1 of 3 variables");
   });

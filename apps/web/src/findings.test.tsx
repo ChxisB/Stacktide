@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { eq } from "drizzle-orm";
 import { newQueryClient, Providers } from "./app";
 import { AuthGate } from "./auth";
+import { Toaster } from "./components";
 import { FindingsPage } from "./findings";
 import { OrgProvider, RequireOrg } from "./org";
 import { type Backend, clientVia, mount, pathOf, startBackend, visibleText } from "./testing";
@@ -44,28 +45,42 @@ const stored = (s: Scene) => listFindings(backend.t.db, s.org.id, s.project.id, 
 function mountPage(client: ReturnType<Backend["anonymous"]>) {
   render(
     <Providers client={client} queries={newQueryClient()}>
-      <AuthGate>
-        <OrgProvider>
-          <RequireOrg>{(org) => <FindingsPage orgId={org.id} />}</RequireOrg>
-        </OrgProvider>
-      </AuthGate>
+      <Toaster>
+        <AuthGate>
+          <OrgProvider>
+            <RequireOrg>{(org) => <FindingsPage orgId={org.id} />}</RequireOrg>
+          </OrgProvider>
+        </AuthGate>
+      </Toaster>
     </Providers>,
   );
 }
 
 const alertText = () => document.querySelector('[role="alert"]')?.textContent ?? undefined;
-const statusText = () => document.querySelector('[role="status"]')?.textContent ?? undefined;
+// a result is a toast, and the region it is read from is there before it
+const toastText = () => document.querySelector(".toast-text")?.textContent ?? "";
 // a role query is slow in happy-dom, and a slow one inside a wait starves the refresh it waits for
 const rowHeaders = () =>
   Array.from(document.querySelectorAll('th[scope="row"]')).map((h) => h.textContent);
 const table = () => screen.findByRole("table", { name: "Secret findings" });
+// a path breaks after a slash at a <wbr>, where happy-dom puts a space into the accessible name and a browser does not
+// (the e2e asks a browser): the name is the path all the same
+const named = (where: string) => (name: string) => name.replaceAll(" ", "") === where;
 const rowOf = (t: HTMLElement, where: string) => {
-  const tr = within(t).getByRole("rowheader", { name: where }).closest("tr");
+  const tr = within(t)
+    .getByRole("rowheader", { name: named(where) })
+    .closest("tr");
   if (!tr) throw new Error(`no row for ${where}`);
   return tr;
 };
+const CHIP: Record<string, string> = {
+  open: "Open",
+  dismissed: "Dismissed",
+  resolved: "Resolved",
+  all: "All",
+};
 const show = (status: string) =>
-  userEvent.setup().selectOptions(screen.getByLabelText("Show"), status);
+  userEvent.setup().click(screen.getByRole("button", { name: CHIP[status] }));
 const NOTICE = /revoke it at the source/i;
 
 describe("the page", () => {
@@ -77,10 +92,52 @@ describe("the page", () => {
       "page",
     );
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Findings");
-    await screen.findByText(/No open findings for this project/);
+    await screen.findByText("No open findings");
+    screen.getByText("Nothing in this project needs revoking right now.");
     expect(screen.queryByRole("table")).toBeNull();
     // nothing to revoke, nothing to be told
     expect(screen.queryByText(NOTICE)).toBeNull();
+  });
+
+  test("the lists are chips: found by name, the shown one pressed, and no select is left", async () => {
+    const s = await sceneOn(backend);
+    await seed(s, [finding("f1")]);
+    mountPage(s.client);
+    await table();
+    const group = screen.getByRole("group", { name: "Show findings" });
+    const chips = within(group).getAllByRole("button");
+    expect(chips.map((c) => c.textContent)).toEqual(["Open", "Dismissed", "Resolved", "All"]);
+    const pressed = () => chips.filter((c) => c.getAttribute("aria-pressed") === "true");
+    expect(pressed().map((c) => c.textContent)).toEqual(["Open"]);
+    expect(screen.queryByRole("combobox", { name: "Show" })).toBeNull();
+    await show("dismissed");
+    expect(pressed().map((c) => c.textContent)).toEqual(["Dismissed"]);
+    // the chip keeps the focus through the new list loading, and the card says how many it shows
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Dismissed" }));
+    await screen.findByText("No dismissed findings");
+    screen.getByText("A finding you dismiss is listed here with who dismissed it and why.");
+    await show("resolved");
+    await screen.findByText("No resolved findings");
+    await show("all");
+    await table();
+    screen.getByText(/^1 finding in /);
+  });
+
+  test("a long path may break after any slash, and its text is the same", async () => {
+    const s = await sceneOn(backend);
+    const deep = "services/billing/deploy/overlays/production/secrets.generated.yaml";
+    await seed(s, [finding("f1", { path: deep, line: 17 })]);
+    mountPage(s.client);
+    const header = within(await table()).getByRole("rowheader");
+    expect(header.textContent).toBe(`${deep}:17`);
+    // a break point after each of the five slashes, none in the name itself
+    expect(header.querySelectorAll("wbr")).toHaveLength(5);
+    expect(header.querySelector("code")?.firstChild?.textContent).toBe("services/");
+    expect(
+      within(header.closest("table") as HTMLElement).getByRole("rowheader", {
+        name: named(`${deep}:17`),
+      }),
+    ).toBe(header);
   });
 
   test("lists the open findings with where each is, and says to revoke at the source", async () => {
@@ -123,8 +180,8 @@ describe("the page", () => {
     await seed(s, [finding("f1", { path: "ours.ts" })]);
     mountPage(s.client);
     const t = await table();
-    expect(within(t).queryByRole("rowheader", { name: "theirs.ts:7" })).toBeNull();
-    within(t).getByRole("rowheader", { name: "ours.ts:7" });
+    expect(within(t).queryByRole("rowheader", { name: named("theirs.ts:7") })).toBeNull();
+    within(t).getByRole("rowheader", { name: named("ours.ts:7") });
   });
 
   test("a dismissed finding is under Dismissed, with who and why; resolved ones have their own view", async () => {
@@ -179,7 +236,16 @@ describe("dismissing", () => {
     const dismiss = within(t).getByRole("button", { name: "Dismiss src/config.ts:7" });
     expect(visibleText(dismiss)).toBe("Dismiss");
     await user.click(dismiss);
-    const submit = screen.getByRole("button", { name: "Dismiss finding" }) as HTMLButtonElement;
+    // a question with one field is a dialog, which says which finding and that the secret stays valid
+    const dialog = screen.getByRole("dialog", { name: "Dismiss this finding" });
+    expect(dialog.textContent).toContain("src/config.ts:7 matched aws-access-token on main.");
+    expect(dialog.textContent).toContain(
+      "The secret is still valid until it is revoked at its source.",
+    );
+    expect(document.activeElement).toBe(screen.getByLabelText("Reason"));
+    const submit = within(dialog).getByRole("button", {
+      name: "Dismiss finding",
+    }) as HTMLButtonElement;
     // no reason, or a blank one, is not enough
     expect(submit.disabled).toBe(true);
     await user.type(screen.getByLabelText("Reason"), "   ");
@@ -188,10 +254,12 @@ describe("dismissing", () => {
     expect(submit.disabled).toBe(false);
     await user.click(submit);
 
-    await waitFor(() => expect(statusText()).toContain("Dismissed src/config.ts:7"));
-    expect(statusText()).toMatch(/still valid|revoked at its source/i);
+    await waitFor(() => expect(toastText()).toContain("Dismissed src/config.ts:7"));
+    expect(toastText()).toMatch(/still valid|revoked at its source/i);
+    expect(document.querySelector(".toast-text")?.getAttribute("role")).toBe("status");
+    expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(rowHeaders()).not.toContain("src/config.ts:7"), { timeout: 5000 });
-    screen.getByRole("rowheader", { name: "keep.ts:7" });
+    screen.getByRole("rowheader", { name: named("keep.ts:7") });
     const rows = await stored(s);
     expect(rows.find((r) => r.path === "src/config.ts")).toMatchObject({
       status: "dismissed",
@@ -215,6 +283,20 @@ describe("dismissing", () => {
     expect(await s.audit("finding.dismiss")).toHaveLength(0);
   });
 
+  test("Esc closes the dialog and the focus goes back to the button that opened it", async () => {
+    const s = await sceneOn(backend);
+    await seed(s, [finding("f1")]);
+    mountPage(s.client);
+    const user = userEvent.setup();
+    const opener = within(await table()).getByRole("button", { name: "Dismiss src/config.ts:7" });
+    await user.click(opener);
+    screen.getByRole("dialog", { name: "Dismiss this finding" });
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(await s.audit("finding.dismiss")).toHaveLength(0);
+  });
+
   test("a reporter may see findings, and is told by the API when a dismissal is not theirs to make", async () => {
     const s = await sceneOn(backend, { reporter: true });
     await seed(s, [finding("f1")]);
@@ -226,10 +308,28 @@ describe("dismissing", () => {
     await user.type(screen.getByLabelText("Reason"), "not mine to say");
     await user.click(screen.getByRole("button", { name: "Dismiss finding" }));
     await waitFor(() => expect(alertText()).toBeTruthy());
-    // the finding is still on the list, still open
-    screen.getByRole("rowheader", { name: "src/config.ts:7" });
+    // the answer is in the dialog, which stays for another try; the finding is still on the list, still open
+    expect(within(screen.getByRole("dialog")).getByRole("alert")).toBeDefined();
+    screen.getByRole("rowheader", { name: named("src/config.ts:7") });
     expect((await stored(s))[0]?.status).toBe("open");
     expect(await s.audit("finding.dismiss")).toHaveLength(0);
+  });
+
+  test("Cancel after a refused dismissal does not move its error onto the page", async () => {
+    const s = await sceneOn(backend, { reporter: true });
+    await seed(s, [finding("f1")]);
+    mountPage(s.client);
+    const user = userEvent.setup();
+    await user.click(
+      within(await table()).getByRole("button", { name: "Dismiss src/config.ts:7" }),
+    );
+    await user.type(screen.getByLabelText("Reason"), "not mine to say");
+    await user.click(screen.getByRole("button", { name: "Dismiss finding" }));
+    await waitFor(() => expect(alertText()).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    // booleans: a failed toBeNull on a big element takes a minute to print in happy-dom
+    await waitFor(() => expect(screen.queryByLabelText("Reason") === null).toBe(true));
+    expect(alertText() === undefined).toBe(true);
   });
 
   test("one that was dismissed meanwhile is reported, and the list catches up", async () => {
@@ -246,6 +346,10 @@ describe("dismissing", () => {
     await user.click(screen.getByRole("button", { name: "Dismiss finding" }));
     await waitFor(() => expect(alertText()).toContain("already dismissed"));
     await waitFor(() => expect(rowHeaders()).not.toContain("src/config.ts:7"), { timeout: 5000 });
+    // the dialog still says which finding it was about, though the list no longer has it
+    expect(screen.getByRole("dialog", { name: "Dismiss this finding" }).textContent).toContain(
+      "src/config.ts:7",
+    );
   });
 });
 
@@ -257,10 +361,10 @@ describe("reopening", () => {
     must(await s.scope.findings({ findingId: row?.id ?? "" }).dismiss.post({ reason: "wrongly" }));
     mountPage(s.client);
     const user = userEvent.setup();
-    await screen.findByText(/No open findings for this project/);
+    await screen.findByText("No open findings");
     await show("dismissed");
     await user.click(await screen.findByRole("button", { name: "Reopen src/config.ts:7" }));
-    await waitFor(() => expect(statusText()).toContain("Reopened src/config.ts:7"));
+    await waitFor(() => expect(toastText()).toBe("Reopened src/config.ts:7."));
     await waitFor(() => expect(rowHeaders()).not.toContain("src/config.ts:7"), { timeout: 5000 });
     expect((await stored(s))[0]).toMatchObject({ status: "open", dismissedReason: null });
     expect(await s.audit("finding.reopen")).toHaveLength(1);

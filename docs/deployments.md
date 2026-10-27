@@ -14,7 +14,7 @@ The decision is [ADR-0020](adr/0020-deployments.md).
 |---|---|
 | The template `docker-deploy` | A pipeline that builds the image, pushes it to the project's registry and runs your `deploy.sh`. |
 | The records | GitLab tells the platform about each deployment; the **Deployments** card on the Status page and `orch deploy status` show what is where. |
-| Promote and roll back | The platform starts a pipeline that runs **only** the deploy, for a build you name: **Promote** and **Roll back** on the card, or `orch deploy promote` and `orch deploy rollback`. A protected environment needs an approval first. |
+| Promote and roll back | The platform starts a pipeline that runs **only** the deploy, for a build you name: **Promote** and **Roll back** on the card, or `orch deploy promote` and `orch deploy rollback`. A protected environment needs an approval first. On GitHub it dispatches the deploy workflow instead (see below). |
 
 ## The names must match
 
@@ -101,9 +101,29 @@ printed.
 
 A promotion is refused, in words that say why, when: the build was never deployed successfully in this project
 (`unknown_build`), it is already what is deployed there (`already_deployed`), a deployment to that environment is running
-(`deployment_in_progress`), the project is not imported from GitLab (`not_linked`), or the project's pipeline was not set up with the
-`docker-deploy` template (`no_deploy_pipeline`). A project maintainer may promote and roll back; the API is the gate, so a reporter who presses the
+(`deployment_in_progress`), the project is not linked to a repository (`not_linked`), or the project's pipeline was not set up with a
+deploy template: `docker-deploy`, `cloud-run` or `ecs` (`no_deploy_pipeline`). A project maintainer may promote and roll back; the API is the gate, so a reporter who presses the
 button is answered with the refusal, in the dialog.
+
+### On GitHub (CLD-11)
+
+The plan, the refusals and the approvals are the same; only the start differs. The platform dispatches the deploy workflow
+(`.github/workflows/orch.yml`, which the `cloud-run` and `ecs` templates commit) on the default branch with three inputs and
+nothing else: `environment`, `sha` and, when the environment has a build now, `previous_sha`. The workflow's `run-name` is
+`orch deploy <environment> <sha>` for a hand start, and a push names its run `orch deploy (push) <sha>`, which no
+environment slug can make, so a push of the same commit is never taken for the start. A dispatch answers no run id; the
+platform lists the runs before and after and takes the new one with that name.
+
+- **Unknown outcome.** When GitHub accepted the dispatch but the run could not be found, or two new runs had the name,
+  the answer is a 502 `deployment_outcome_unknown`. The approval of a protected environment **is spent** and the audit row
+  has `outcome: "unknown"` and no run: look at the repository's Actions before starting it again. The same code is given
+  when the look for the run times out before the dispatch (the adapter does not say which), which is the safe side.
+- **A start GitHub refuses** (the workflow is missing, or has no `workflow_dispatch`) is a 422 that names GitHub, is not
+  audited and leaves the approval for the next try.
+- **Two starts at once.** The platform only knows what GitHub has reported, so two starts within seconds both pass the
+  "in progress" check; the workflow's `concurrency` group makes the second wait, and it deploys the same build again.
+- The workflow reads no secret and the dispatch carries none. The cloud trusts the repository and the environment named
+  in the job (the `deploy-identity` blueprint), not the platform.
 
 ## Protected environments
 

@@ -1,10 +1,12 @@
-import { useState } from "react";
-/** Shown while a page's data loads; announced politely to screen readers. */
+import { useId, useState } from "react";
+/** Shown while a page's data loads: the words, announced politely, with two lines drawn under them (decoration). */
 export function Loading({ what = "Loading" }: { what?: string }) {
   return (
-    <p className="muted" role="status" aria-busy="true">
-      {what}…
-    </p>
+    <div className="loading" role="status" aria-busy="true">
+      <p className="muted">{what}…</p>
+      <span className="skel" aria-hidden="true" />
+      <span className="skel" aria-hidden="true" />
+    </div>
   );
 }
 
@@ -19,12 +21,22 @@ export const ssoPath = (slug: string, query: string) =>
 /** The organization to sign in through, typed by its slug, and the link that goes there once one is. */
 export function SsoEntry({ query, label }: { query: string; label: string }) {
   const [slug, setSlug] = useState("");
+  const id = useId();
   return (
     <div className="stack">
-      <label>
-        Organization slug
-        <input value={slug} onChange={(e) => setSlug(e.target.value)} autoComplete="off" />
-      </label>
+      <div className="field">
+        <label htmlFor={id}>Organization slug</label>
+        <input
+          id={id}
+          value={slug}
+          onChange={(e) => setSlug(e.target.value)}
+          autoComplete="off"
+          aria-describedby={`${id}-hint`}
+        />
+        <span className="hint" id={`${id}-hint`}>
+          The slug your administrator set for your organization.
+        </span>
+      </div>
       {slug.trim() && (
         <a className="button" href={ssoPath(slug, query)}>
           {label}

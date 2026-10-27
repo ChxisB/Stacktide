@@ -11,6 +11,8 @@ export const organizations = pgTable(
     // The GitLab group whose members are this organization's members (AUTH-5); fixed at creation.
     // shortcut: number mode loses precision above 2^53; GitLab ids are far below that.
     gitlabGroupId: bigint({ mode: "number" }),
+    // The GitHub organization (its account id) whose owners and members hold this organization's roles (FRG-34); fixed at creation.
+    githubOrgId: bigint({ mode: "number" }),
     // Days the audit events of this organization are kept; null keeps them for ever (GOV-1). Only `audit_purge_expired()` reads it to delete.
     auditRetentionDays: integer(),
     // What open secret findings on a project's default branch do to its applies: off, warn or deny (SCAN-6).
@@ -27,5 +29,8 @@ export const organizations = pgTable(
     uniqueIndex("organizations_gitlab_group_key")
       .on(t.gitlabGroupId)
       .where(sql`${t.gitlabGroupId} IS NOT NULL`),
+    uniqueIndex("organizations_github_org_key")
+      .on(t.githubOrgId)
+      .where(sql`${t.githubOrgId} IS NOT NULL`),
   ],
 );

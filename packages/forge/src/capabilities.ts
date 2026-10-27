@@ -53,7 +53,7 @@ const GITHUB_CAPABILITIES: ForgeCapabilities = {
   jobArtifactFile: false,
   childPipelines: false,
   ciLint: false,
-  deployments: false,
+  deployments: true,
   secretValuesReadable: false,
   fileVariables: false,
   accessTokens: false,

@@ -48,11 +48,6 @@ const keysOf = (table: HTMLElement) =>
     .getAllByRole("rowheader")
     .map((h) => h.querySelector("code")?.textContent);
 const tagSelect = () => screen.getByLabelText("Tag") as HTMLSelectElement;
-/** The Tag select is in the Filter popover: open it (once) before reaching for it. */
-const openFilter = async () => {
-  const button = screen.getByRole("button", { name: /^Filter/ });
-  if (button.getAttribute("aria-expanded") !== "true") await userEvent.setup().click(button);
-};
 const optionsOf = (select: HTMLSelectElement) => Array.from(select.options).map((o) => o.text);
 
 describe("chips and the Tag filter", () => {
@@ -74,7 +69,6 @@ describe("chips and the Tag filter", () => {
     mount(s.client);
     const table = await openSecrets();
     const user = userEvent.setup();
-    await openFilter();
     expect(optionsOf(tagSelect())).toEqual(["All tags", "alpha", "backend", "billing", "eu"]);
     await user.selectOptions(tagSelect(), "eu");
     expect(keysOf(table)).toEqual(["EU_TOO", "REGION"]);
@@ -91,34 +85,32 @@ describe("chips and the Tag filter", () => {
     const table = await openSecrets();
     expect(keysOf(table)).toContain("BROKEN");
     const user = userEvent.setup();
-    await openFilter();
     await user.selectOptions(tagSelect(), "eu");
     expect(keysOf(table)).toEqual(["REGION"]);
     await user.selectOptions(tagSelect(), "All tags");
     expect(keysOf(table)).toContain("BROKEN");
   });
 
-  test("the Filter button holds the Tag select, counts the tag chosen, and Esc closes it with the filter kept", async () => {
+  test("the Tag select is in the toolbar from the start, keeps the tag chosen, and has no Filter button to open (UXR-22)", async () => {
     const s = await tagged();
     mount(s.client);
     const table = await openSecrets();
     const user = userEvent.setup();
-    const button = screen.getByRole("button", { name: "Filter" });
-    expect(button.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByLabelText("Tag")).toBeNull();
-    await user.click(button);
+    // it was a Filter button that held the select and counted the tag chosen; the select is now always on show
+    expect(screen.queryByRole("button", { name: /^Filter/ })).toBeNull();
+    const bar = screen.getByRole("searchbox", { name: "Search variables" }).closest(".toolbar");
+    expect(bar?.contains(tagSelect())).toBe(true);
+    expect(tagSelect().value).toBe("");
     await user.selectOptions(tagSelect(), "eu");
     expect(keysOf(table)).toEqual(["REGION"]);
-    expect(screen.getByRole("button", { name: "Filter 1" })).toBe(button);
-    await user.keyboard("{Escape}");
-    expect(screen.queryByLabelText("Tag")).toBeNull();
-    expect(document.activeElement).toBe(button);
-    // the narrowed table and the count stay, and opening it again shows the tag still chosen
-    expect(keysOf(table)).toEqual(["REGION"]);
-    await user.click(button);
     expect(tagSelect().value).toBe("eu");
+    // the select takes the keyboard like any other: Tab reaches it and the choice stays when the focus leaves
+    tagSelect().focus();
+    await user.tab();
+    expect(tagSelect().value).toBe("eu");
+    expect(keysOf(table)).toEqual(["REGION"]);
     await user.selectOptions(tagSelect(), "All tags");
-    expect(screen.getByRole("button", { name: "Filter" })).toBe(button);
+    expect(keysOf(table)).toEqual(["API_KEY", "PLAIN_ONE", "REGION"]);
   });
 
   test("there is no Tag select while no variable has a tag", async () => {
@@ -126,8 +118,7 @@ describe("chips and the Tag filter", () => {
     await s.put.project("PLAIN_ONE", "v");
     mount(s.client);
     await openSecrets();
-    // nothing to filter by: no Filter button either, and so no Tag select
-    expect(screen.queryByRole("button", { name: /^Filter/ })).toBeNull();
+    // nothing to filter by: no Tag select
     expect(screen.queryByLabelText("Tag")).toBeNull();
   });
 
@@ -149,24 +140,20 @@ describe("chips and the Tag filter", () => {
     mount(s.client);
     await openSecrets();
     const user = userEvent.setup();
-    await openFilter();
     // "eu" is on a project variable, so staging has it too
     await user.selectOptions(tagSelect(), "eu");
     await showSecrets("staging");
     const table = await screen.findByRole("table", { name: "Variables in staging" });
     // choosing an environment is a press outside the popover, which closes it
-    await openFilter();
     expect(tagSelect().value).toBe("eu");
     expect(keysOf(table)).toEqual(["REGION"]);
     // "dev-only" is not in staging: the table is not left empty by a tag that is not offered
     await showSecrets("dev");
     const dev = await screen.findByRole("table", { name: "Variables in dev" });
-    await openFilter();
     await user.selectOptions(tagSelect(), "dev-only");
     expect(keysOf(dev)).toEqual(["DEV_ONLY"]);
     await showSecrets("staging");
     const staging = await screen.findByRole("table", { name: "Variables in staging" });
-    await openFilter();
     expect(tagSelect().value).toBe("");
     expect(optionsOf(tagSelect())).toEqual(["All tags", "backend", "billing", "eu", "stg"]);
     expect(keysOf(staging)).toEqual(["API_KEY", "PLAIN_ONE", "REGION", "STG_ONLY"]);
@@ -227,7 +214,6 @@ describe("a row's details", () => {
     const open = await screen.findByRole("region", { name: "API_KEY" });
     await within(open).findByText("The partner API");
     // the filter follows: a tag that is no longer used is gone, a new one is there
-    await openFilter();
     expect(optionsOf(tagSelect())).toEqual(["All tags", "billing", "eu", "ops"]);
     // one value version, still: tags and a description do not make one
     expect(within(open).getByText("Version").nextElementSibling?.textContent).toBe("1");

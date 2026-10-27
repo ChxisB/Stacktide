@@ -17,6 +17,7 @@ import userEvent from "@testing-library/user-event";
 import { eq } from "drizzle-orm";
 import { newQueryClient, Providers } from "./app";
 import { AuthGate } from "./auth";
+import { Toaster } from "./components";
 import { OrgProvider, RequireOrg } from "./org";
 import { RunsPage } from "./runs";
 import { type Backend, clientVia, down, mount, pathOf, startBackend, visibleText } from "./testing";
@@ -118,7 +119,11 @@ function mountPage(client: ReturnType<Backend["anonymous"]>, pollMs?: number) {
       <AuthGate>
         <OrgProvider>
           <RequireOrg>
-            {(org) => <RunsPage orgId={org.id} {...(pollMs ? { pollMs } : {})} />}
+            {(org) => (
+              <Toaster>
+                <RunsPage orgId={org.id} {...(pollMs ? { pollMs } : {})} />
+              </Toaster>
+            )}
           </RequireOrg>
         </OrgProvider>
       </AuthGate>
@@ -128,7 +133,8 @@ function mountPage(client: ReturnType<Backend["anonymous"]>, pollMs?: number) {
 
 // a role query is slow in happy-dom, and a slow one inside a wait starves the polling it waits for
 const alertText = () => document.querySelector('[role="alert"]')?.textContent ?? undefined;
-const statusText = () => document.querySelector('[role="status"]')?.textContent ?? undefined;
+// UXR-17: what a retry came to is a toast; its region is there from the start, so the text is what tells
+const toastText = () => document.querySelector(".toast-text")?.textContent ?? "";
 const table = () => screen.findByRole("table", { name: "Latest pipeline of each branch" });
 const rowOf = (t: HTMLElement, branch: string) => {
   const tr = within(t).getByRole("rowheader", { name: branch }).closest("tr");
@@ -152,6 +158,17 @@ describe("the page", () => {
     expect(screen.getByRole("link", { name: "Pipeline page" }).getAttribute("href")).toBe(
       "#/pipeline",
     );
+  });
+
+  // UXR-17: the empty case is the shared Empty, with a heading of its own and the sentence kept
+  test("the empty case is an Empty with a title, the old sentence and the link to the Pipeline page", async () => {
+    const s = await sceneOn(backend);
+    mountPage(s.client);
+    const title = await screen.findByRole("heading", { name: "No pipeline has run yet" });
+    const empty = title.parentElement as HTMLElement;
+    expect(empty.classList.contains("empty")).toBe(true);
+    expect(empty.textContent).toContain("Runs appear here once GitLab reports one.");
+    expect(within(empty).getByRole("link", { name: "Pipeline page" })).toBeDefined();
   });
 
   test("shows the newest pipeline of each branch, newest first", async () => {
@@ -359,6 +376,19 @@ describe("retrying", () => {
     );
   });
 
+  // UXR-17: the row's buttons are the small size, Jobs quiet, and the link out says it leaves
+  test("a row's buttons are small, Jobs is quiet, and the link to the forge carries the leaving icon", async () => {
+    const s = await sceneOn(backend);
+    await run(s, { status: "failed", ref: "main" });
+    mountPage(s.client);
+    const t = await table();
+    const row = rowOf(t, "main");
+    expect(within(row).getByRole("button", { name: "Retry main" }).className).toBe("small");
+    expect(within(row).getByRole("button", { name: "Jobs main" }).className).toBe("quiet small");
+    const link = within(row).getByRole("link", { name: /^Open pipeline #\d+$/ });
+    expect(link.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
   test("asks GitLab to run the failed jobs again, once, and shows what it is now", async () => {
     const s = await sceneOn(backend);
     const g = await live(s);
@@ -367,9 +397,13 @@ describe("retrying", () => {
     const t = await table();
     expect(within(t).getByText("Failed")).toBeDefined();
     await user.dblClick(screen.getByRole("button", { name: "Retry main" }));
-    expect((await screen.findByRole("status")).textContent).toMatch(
-      /^Retried the pipeline on main\. GitLab says it is now \w+\.$/,
+    await waitFor(
+      () =>
+        expect(toastText()).toMatch(/^Retried the pipeline on main\. GitLab says it is now \w+\.$/),
+      { timeout: 5000 },
     );
+    // a result by toast keeps its sentence and its role
+    expect(document.querySelector(".toast-text")?.getAttribute("role")).toBe("status");
     await waitFor(() => expect(within(t).queryByText("Failed") === null).toBe(true), {
       timeout: 5000,
     });
@@ -407,7 +441,7 @@ describe("retrying", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(
       "connection that read this pipeline has been deleted",
     );
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(toastText()).toBe("");
   });
 
   test("while one retry is under way no other can be started", async () => {
@@ -455,6 +489,8 @@ describe("retrying", () => {
         ["Retry main", true],
       ]),
     );
+    // UXR-17 (question 14): the busy button's name follows its words
+    expect(screen.getByRole("button", { name: "Retrying…" }).hasAttribute("disabled")).toBe(true);
     await user.click(screen.getByRole("button", { name: "Retry main" }));
     expect(posts).toBe(1);
     release();
@@ -476,12 +512,12 @@ describe("retrying", () => {
     const user = userEvent.setup();
     await table();
     await user.click(screen.getByRole("button", { name: "Retry main" }));
-    await waitFor(() => expect(statusText()).toMatch(/^Retried the pipeline on main/), {
+    await waitFor(() => expect(toastText()).toMatch(/^Retried the pipeline on main/), {
       timeout: 5000,
     });
     await user.click(screen.getByRole("button", { name: "Retry dev" }));
     await waitFor(() => expect(alertText()).toContain("has been deleted"), { timeout: 5000 });
-    expect(statusText()).toBeUndefined();
+    expect(toastText()).toBe("");
   });
 
   test("GitLab failing is shown, the run stays failed, and a retry afterwards works", async () => {
@@ -496,7 +532,9 @@ describe("retrying", () => {
     expect(within(t).getByText("Failed")).toBeDefined();
     expect((await latest(s)).map((r) => r.status)).toEqual(["failed"]);
     await user.click(screen.getByRole("button", { name: "Retry main" }));
-    await screen.findByRole("status");
+    await waitFor(() => expect(toastText()).toMatch(/^Retried the pipeline on main/), {
+      timeout: 5000,
+    });
     expect(screen.queryByRole("alert")).toBeNull(); // the old complaint is gone
     await waitFor(() => expect(within(t).queryByText("Failed") === null).toBe(true), {
       timeout: 5000,
@@ -824,6 +862,32 @@ describe("the jobs of a pipeline", () => {
       "false",
     );
     expect(count.n).toBe(1);
+  });
+
+  // UXR-18: the panels open one at a time, so a long table does not grow a panel under every row
+  test("opening another row's jobs closes the first, and the same button closes its own", async () => {
+    const s = await sceneOn(backend);
+    await run(s, { status: "success", ref: "one" });
+    await run(s, { status: "success", ref: "two" });
+    const count = { n: 0 };
+    mountPage(
+      jobsVia(
+        s,
+        () => Response.json({ jobs: [job({ name: "only-job" })], truncated: false }),
+        count,
+      ),
+    );
+    const expanded = (branch: string) =>
+      screen.getByRole("button", { name: `Jobs ${branch}` }).getAttribute("aria-expanded");
+    await open("one");
+    await screen.findByText("only-job", { selector: ".jobs-list code" });
+    await open("two");
+    await waitFor(() => expect(expanded("one")).toBe("false"));
+    expect(expanded("two")).toBe("true");
+    await waitFor(() => expect(document.querySelectorAll(".jobs-list")).toHaveLength(1));
+    await open("two");
+    await waitFor(() => expect(expanded("two")).toBe("false"));
+    expect(document.querySelectorAll(".jobs-list")).toHaveLength(0);
   });
 
   // NOD-7: a trigger is a node, and the child pipeline it started is a lane

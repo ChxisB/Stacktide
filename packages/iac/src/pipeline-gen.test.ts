@@ -10,6 +10,7 @@ import {
   COST_FILTER,
   GenerateError,
   generatePipeline,
+  OUTPUTS_FILTER,
   PLAN_RETENTION_MS,
   type PlanInput,
   SUMMARY_FILTER,
@@ -192,6 +193,7 @@ describe("a plan pipeline", () => {
       'login="$(orch ci login)"',
       'eval "$login"',
       `jq -c --arg stack db '${SUMMARY_FILTER}' stacks/db/plan.json > summary.json`,
+      `if jq -c '${OUTPUTS_FILTER}' stacks/db/plan.json > outputs.json && jq -c --slurpfile outputs outputs.json '. + {outputs: $outputs[0]}' summary.json > summary.merged; then mv summary.merged summary.json; fi`,
       'curl --fail --silent --show-error --request POST --header "Authorization: Bearer $ORCH_TOKEN" --header "Content-Type: application/json" --data @summary.json "$ORCH_API_URL/runs/0b9e5bd2/plan-summary"',
     ]);
   });
@@ -1119,6 +1121,7 @@ test("the only variables a job reads are the ones GitLab and the platform set, a
     "orch",
     "stack",
     "c",
+    "outputs",
   ]);
   for (const yaml of [
     generatePipeline(plan({ cloudTokens: { AWS_ID_TOKEN: "sts" } })),
@@ -1618,7 +1621,8 @@ exit \${FAKE_CONFTEST_EXIT:-0}
         }),
       ),
     )["summary:db"] as Job;
-    return (job.script as string[]).slice(4); // after the login and the summary
+    const script = job.script as string[];
+    return script.slice(script.findIndex((l) => l.startsWith("curl ")) + 1); // after the summary is posted
   };
 
   /** Runs the policy lines in a fresh directory; says how each ended and what was posted. */
@@ -2121,4 +2125,186 @@ describe("the cost doc (COST-6)", () => {
     expect(merge).toHaveLength(1);
     for (const line of [...estimate, ...merge]) expect(doc).toContain(`\n${line}\n`);
   });
+});
+
+describe("the outputs filter", () => {
+  const jq = Bun.which("jq");
+  const run = async (input: unknown) => {
+    const proc = Bun.spawn([jq as string, "-c", OUTPUTS_FILTER], {
+      stdin: new TextEncoder().encode(JSON.stringify(input)),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, err] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    expect(await proc.exited, err).toBe(0);
+    return { out, json: JSON.parse(out) };
+  };
+  const output = (value: unknown, sensitive = false) => ({
+    sensitive,
+    value,
+    type: typeof value === "string" ? "string" : "number",
+  });
+  const prior = (outputs: Record<string, unknown>) => ({
+    prior_state: { values: { outputs } },
+  });
+  const URL_ = "https://console.cloud.google.com/run/detail/us-central1/staging-api/metrics";
+
+  test("has no single quote, which would end the job's quoting", () => {
+    expect(OUTPUTS_FILTER).not.toContain("'");
+  });
+
+  test.skipIf(!jq)("takes url and console_url from the state the plan started from", async () => {
+    const { json } = await run(
+      prior({
+        url: output("https://api-abc123.a.run.app"),
+        console_url: output(URL_),
+        instance_name: output("staging-main"),
+      }),
+    );
+    expect(json).toEqual({ url: "https://api-abc123.a.run.app", consoleUrl: URL_ });
+  });
+
+  // the leak test (BLP-17): what a plan holds must not reach the summary
+  test.skipIf(!jq)("leaves out a sensitive output, though the plan shows it in clear", async () => {
+    const { out, json } = await run(
+      prior({
+        url: output("https://hunter2-sensitive.example.com", true),
+        console_url: output(URL_),
+        database_url: output("postgres://app:hunter2@10.0.0.3/app", true),
+      }),
+    );
+    expect(json).toEqual({ consoleUrl: URL_ });
+    expect(out).not.toContain("hunter2");
+  });
+
+  test.skipIf(!jq)(
+    "leaves out a value of more than 300 characters, and keeps one of 300",
+    async () => {
+      const at = (n: number) =>
+        `https://x.example.com/${"a".repeat(n - "https://x.example.com/".length)}`;
+      const { out, json } = await run(
+        prior({ url: output(at(301)), console_url: output(at(300)) }),
+      );
+      expect(json).toEqual({ consoleUrl: at(300) });
+      expect(out).not.toContain("a".repeat(301));
+    },
+  );
+
+  test.skipIf(!jq)("keeps only an http(s) link of printable characters", async () => {
+    for (const value of [
+      "javascript:alert(1)",
+      "ftp://files.example.com",
+      "https://x.example.com/a b",
+      "https://x.example.com/\n",
+      "https://x.example.com/\u202e",
+      "https://x.example.com/é",
+      "postgres://app:hunter2@10.0.0.3/app",
+      "",
+    ]) {
+      expect((await run(prior({ url: output(value) }))).json, JSON.stringify(value)).toEqual({});
+    }
+    expect(
+      (await run(prior({ url: output("http://alb-1.eu-west-2.elb.amazonaws.com") }))).json,
+    ).toEqual({
+      url: "http://alb-1.eu-west-2.elb.amazonaws.com",
+    });
+  });
+
+  test.skipIf(!jq)("leaves out a value that is not a string", async () => {
+    for (const value of [
+      42,
+      true,
+      null,
+      ["https://x.example.com"],
+      { a: "https://x.example.com" },
+    ]) {
+      expect((await run(prior({ url: { sensitive: false, value } }))).json).toEqual({});
+    }
+  });
+
+  test.skipIf(!jq)("reads what exists, not what the plan would create", async () => {
+    const { json } = await run({
+      planned_values: { outputs: { url: output("https://planned.example.com") } },
+      output_changes: { url: { actions: ["create"], after: "https://planned.example.com" } },
+    });
+    expect(json).toEqual({});
+  });
+
+  test.skipIf(!jq)(
+    "a plan with no prior state, or none of the outputs, is an empty object",
+    async () => {
+      expect((await run({ format_version: "1.2" })).json).toEqual({});
+      expect((await run(prior({}))).json).toEqual({});
+      expect((await run({ prior_state: { format_version: "1.0" } })).json).toEqual({});
+    },
+  );
+});
+
+describe("the summary job's outputs step", () => {
+  const jobOf = (over: Partial<PlanInput> = {}) =>
+    jobsOf(generatePipeline(plan(over)))["summary:db"] as Job;
+  const STEP = `if jq -c '${OUTPUTS_FILTER}' stacks/db/plan.json > outputs.json && jq -c --slurpfile outputs outputs.json '. + {outputs: $outputs[0]}' summary.json > summary.merged; then mv summary.merged summary.json; fi`;
+
+  test("a stack's summary carries the outputs of its state, merged before it is posted", () => {
+    const script = jobOf().script as string[];
+    expect(script).toContain(STEP);
+    expect(script.indexOf(STEP)).toBeGreaterThan(
+      script.findIndex((l) => l.includes("> summary.json")),
+    );
+    expect(script.indexOf(STEP)).toBeLessThan(script.findIndex((l) => l.startsWith("curl ")));
+  });
+
+  test("a zone has no plan.json and carries none", () => {
+    const jobs = jobsOf(
+      generatePipeline(
+        plan({
+          stacks: [stack("zone", { tool: "dnscontrol", version: "4.14.0" })],
+          select: ["zone"],
+          images: { dnscontrol: "registry.example.com/orch/dnscontrol" },
+        }),
+      ),
+    );
+    expect((jobs["summary:zone"] as Job).script.join("\n")).not.toContain("outputs");
+  });
+
+  test.skipIf(!Bun.which("jq"))(
+    "run by sh over a plan's JSON, the step adds the outputs to the summary, and a plan that cannot be read leaves it as it was",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "orch-outputs-"));
+      try {
+        await mkdir(join(dir, "stacks/db"), { recursive: true });
+        const summary = { stack: "db", add: 0, change: 0, destroy: 0, resources: [] };
+        const go = async () => {
+          await writeFile(join(dir, "summary.json"), JSON.stringify(summary));
+          const proc = Bun.spawn(["sh", "-c", STEP], { cwd: dir, stderr: "pipe" });
+          expect(await proc.exited, await new Response(proc.stderr).text()).toBe(0);
+          return JSON.parse(await readFile(join(dir, "summary.json"), "utf8"));
+        };
+        await writeFile(
+          join(dir, "stacks/db/plan.json"),
+          JSON.stringify({
+            prior_state: {
+              values: {
+                outputs: {
+                  url: { sensitive: false, value: "https://api.example.com", type: "string" },
+                  secret: { sensitive: true, value: "hunter2", type: "string" },
+                },
+              },
+            },
+          }),
+        );
+        const merged = await go();
+        expect(merged).toEqual({ ...summary, outputs: { url: "https://api.example.com" } });
+        expect(JSON.stringify(merged)).not.toContain("hunter2");
+
+        await writeFile(join(dir, "stacks/db/plan.json"), "not json");
+        expect(await go()).toEqual(summary);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });

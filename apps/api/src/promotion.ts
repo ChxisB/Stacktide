@@ -24,6 +24,9 @@ export interface PromotionPlan {
   variables: string[];
 }
 
+/** The templates that deploy a build named by `ORCH_DEPLOY_ENV` and `ORCH_DEPLOY_SHA`: the cloud ones are CLD-7 and CLD-8. */
+const DEPLOY_TEMPLATES = ["docker-deploy", "cloud-run", "ecs"];
+
 // The patterns the `docker-deploy` template's script checks (`is_slug`, `is_sha`), and the platform's
 // environment slugs: a value that passes here passes there.
 const SLUG = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -138,11 +141,11 @@ async function plan(
     );
 
   const config = await getPipelineConfig(db, project.organizationId, project.id);
-  if (config?.template !== "docker-deploy")
+  if (!config || !DEPLOY_TEMPLATES.includes(config.template))
     throw refused(
       "no_deploy_pipeline",
       422,
-      "This project's pipeline was not set up with the docker-deploy template",
+      `This project's pipeline was not set up with a deploy template (${DEPLOY_TEMPLATES.join(", ")})`,
     );
 
   const previous = here?.current?.sha ?? null;

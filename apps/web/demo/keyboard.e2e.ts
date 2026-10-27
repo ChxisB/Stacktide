@@ -221,7 +221,7 @@ test("every action of the Variables page, with the keyboard alone", async ({ pag
     const form = page.getByRole("form", { name: "Rotate DATABASE_URL now" });
     await reach(page, form.getByRole("button", { name: "Rotate now" }));
     await press("Enter");
-    await expect(page.getByRole("status")).toContainText("Rotated: DATABASE_URL is now version");
+    await expect(region.getByRole("status")).toContainText("Rotated: DATABASE_URL is now version");
     await reach(page, region.getByRole("button", { name: "Switch off" }));
     await press("Enter");
     await expect(region).toContainText("Switched off");
@@ -243,9 +243,9 @@ test("every action of the Variables page, with the keyboard alone", async ({ pag
   await test.step("delete a variable", async () => {
     await start();
     const n = await rowMenu("KEYS_ADDED", "Delete");
-    const form = page.getByRole("form", { name: "Delete KEYS_ADDED" });
-    await expect(form).toBeVisible();
-    await reach(page, form.getByRole("button", { name: /^Delete/ }));
+    const confirm = page.getByRole("alertdialog", { name: "Delete KEYS_ADDED" });
+    await expect(confirm).toBeVisible();
+    await reach(page, confirm.getByRole("button", { name: "Delete variable" }));
     await press("Enter");
     await expect(drawer).toHaveCount(0);
     await expect(rowOf("KEYS_ADDED")).toHaveCount(0);
@@ -268,6 +268,32 @@ test("every action of the Variables page, with the keyboard alone", async ({ pag
     await expect(page.getByRole("checkbox", { name: "qa" })).not.toBeChecked();
     await press("Escape");
     done("add an environment", n);
+  });
+
+  // UXR-12: at a phone width the sidebar is a menu; it opens onto Close, Escape gives the focus back, and a link chosen with keys closes it (last, as it leaves the phone viewport)
+  await test.step("choose a page from the phone menu", async () => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${APP}/#/projects`);
+    await page.reload();
+    const open = page.getByRole("button", { name: "Open menu" });
+    const menu = page.getByRole("dialog", { name: "Menu" });
+    await expect(open).toBeVisible();
+    let n = await reach(page, open);
+    await press("Enter");
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole("button", { name: "Close menu" })).toBeFocused();
+    await press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(open).toBeFocused();
+    await press("Enter");
+    n += await reach(page, menu.getByRole("link", { name: "Status", exact: true }));
+    await press("Enter");
+    await expect(menu).toHaveCount(0);
+    await expect(page).toHaveURL(/#\/status$/);
+    await expect(
+      page.getByRole("navigation", { name: "Breadcrumb" }).locator("[aria-current]"),
+    ).toHaveText("Status");
+    done("choose a page from the phone menu", n);
   });
 
   console.log(`\nKeyboard-only walk:\n  ${walked.join("\n  ")}\n`);

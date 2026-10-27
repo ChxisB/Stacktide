@@ -46,6 +46,7 @@ const orgSchema = z.object({
   slug: z.string(),
   name: z.string(),
   gitlabGroupId: z.number().int().nullable(),
+  githubOrgId: z.number().int().nullable(),
   ...stamps,
 });
 const orgDto = (o: typeof organizations.$inferSelect): z.infer<typeof orgSchema> => ({
@@ -53,6 +54,7 @@ const orgDto = (o: typeof organizations.$inferSelect): z.infer<typeof orgSchema>
   slug: o.slug,
   name: o.name,
   gitlabGroupId: o.gitlabGroupId,
+  githubOrgId: o.githubOrgId,
   createdAt: iso(o.createdAt),
   updatedAt: iso(o.updatedAt),
 });
@@ -83,7 +85,13 @@ const memberDto = (m: Awaited<ReturnType<typeof listSsoMembers>>[number]) => ({
 const params = z.object({ orgId: z.uuid() });
 // The GitLab group's members hold this organization's roles (AUTH-5). Like the slug it cannot change:
 // whoever could relink it to a group they control would make themselves its owner.
-const create = z.strictObject({ slug, name, gitlabGroupId: gitlabId.optional() });
+// The same goes for the GitHub organization (FRG-34): its owners and members hold this organization's roles.
+const create = z.strictObject({
+  slug,
+  name,
+  gitlabGroupId: gitlabId.optional(),
+  githubOrgId: gitlabId.optional(),
+});
 // The slug is the organization's identifier in other systems: it cannot change.
 const patch = z.strictObject({ name: name.optional() }).refine(nonEmpty, atLeastOne);
 
@@ -174,6 +182,7 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
               audited("organization.create", org, {
                 name: org.name,
                 gitlabGroupId: org.gitlabGroupId,
+                githubOrgId: org.githubOrgId,
               }),
             );
             return org;
@@ -182,6 +191,7 @@ export const organizationRoutes = ({ db, principal }: RouteDeps) =>
             mapDbError({
               organizations_slug_key: taken("slug_taken", "The slug"),
               organizations_gitlab_group_key: taken("gitlab_group_linked", "The GitLab group"),
+              organizations_github_org_key: taken("github_org_linked", "The GitHub organization"),
             }),
           );
         set.status = 201;

@@ -85,9 +85,11 @@ capability the interface reports when the forge cannot do it; a flagged feature 
 
 | Method | Callers | Needs back | On GitHub | Flag |
 |---|---|---|---|---|
-| `deployments.list` | routes/deployments | environment, ref, sha, status, times, paged | `GET /deployments` plus `GET /deployments/{id}/statuses`; webhook `deployment_status`. | `deployments: false` in the first cut (not built; follow-up) |
-| `deployments.get` | deployments | one deployment | `GET /deployments/{id}` | same |
-| `environments.list` | none | n/a | `GET /repos/{o}/{r}/environments` | none |
+| `deployments.list` | routes/deployments | environment, ref, sha, status, times, paged | **Built (CLD-10).** `GET /deployments` (the `environment` filter is GitHub's), then `GET /deployments/{id}/statuses` for the newest status of each; webhook `deployment_status` queues the deployment's id and the worker reads it. A deployment's `id` is its `iid` and is stored in `deployments.gitlab_deployment_id` (as a repository id is in `projects.gitlab_project_id`); `jobId` and `pipelineId` are null (a deployment is not tied to a run). `pipelineUrl` is the status's `log_url` when it is a web address. *Recalled and read from the docs; not run against GitHub.* | `deployments: true` |
+| `deployments.get` | deployments | one deployment | `GET /deployments/{id}` and its statuses, as above | same |
+| `environments.list` | none | n/a | `GET /repos/{o}/{r}/environments`, built with the above | none |
+
+A status becomes one of the platform's by a fixed table (`deploymentStatusOf`): `success` and `inactive` (a success a later one replaced) are `success`; `failure` and `error` are `failed`; `in_progress` is `running`; `queued`, `pending` and no status are `created`; a word GitHub adds later is `unknown`, never a guess. Every other ADR-0019 refusal (`pipelines.trigger`, `pipelines.artifact`, `ci.lint`, variables, access tokens, runners, instance, Terraform state) still refuses by name; `packages/forge/src/github.test.ts` pins it.
 
 ### Variables and secrets
 
@@ -143,7 +145,9 @@ is deeper than that setting:
    person. Feature 20's identities key a person by provider (ADR-0016); FRG-6 must key by connection or issuer as well.
 4. **Roles come from one handle.** `membership.ts` asks one deployment-wide GitLab (`GITLAB_MEMBERSHIP_TOKEN`) for every link.
    SSO roles come from the identity provider's group map, not membership. A second instance needs the membership read through
-   its own connection (FRG-6).
+   its own connection (FRG-6). FRG-34 adds a second deployment-wide handle for GitHub: an organization linked to a GitHub
+   organization (`organizations.github_org_id`) is read with `GITHUB_MEMBERSHIP_TOKEN`, because a new organization has no
+   connection yet (`apps/api/src/github-roles.ts`, `orgForge`).
 5. **No private CA.** `packages/gitlab/src/client.ts` has no TLS option (FRG-4).
 6. **Already fine:** webhooks are per connection; the plan-summary path is forge-neutral; connections hold a `baseUrl` each.
 

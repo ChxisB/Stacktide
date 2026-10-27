@@ -1,9 +1,9 @@
 import type { Client } from "@orch/api-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ApiError, allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { Card, StatusBadge, type Tone } from "./components";
+import { Callout, Card, Dialog, Icon, StatusBadge, type Tone, useToast } from "./components";
 import { ProjectPicker } from "./projects";
 import { SyncFlow } from "./sync-flow";
 import { Loading, when } from "./ui";
@@ -91,6 +91,12 @@ function Op({ action }: { action: Action }) {
   ) : null;
 }
 
+const TO: Record<"create" | "update" | "delete", string> = {
+  create: "create",
+  update: "change",
+  delete: "delete",
+};
+
 const scopeText = (scope: string) => (scope === "*" ? "All environments" : scope);
 const n = (counts: Partial<Record<string, number>>, action: string) => counts[action] ?? 0;
 const writes = (counts: Partial<Record<string, number>>) =>
@@ -157,6 +163,8 @@ function Plan({
   plan,
   busy,
   locked,
+  error,
+  clearError,
   apply,
   discard,
 }: {
@@ -165,23 +173,38 @@ function Plan({
   busy: boolean;
   /** An apply is already running on the target (started from elsewhere): the API would refuse this one. */
   locked: boolean;
+  /** Why the apply was refused, said in the dialog it was asked from. */
+  error?: string;
+  clearError: () => void;
   apply: () => void;
   discard: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const { counts } = plan;
   const todo = writes(counts);
+  const deletes = n(counts, "delete");
   const { unresolved, missingEnvironments } = plan.skipped;
   return (
     <section className="stack" aria-label={`Plan for ${target.name}`}>
       <h3>Plan</h3>
-      <p>
+      <p className="muted">
         Nothing has been changed on the target yet. This plan is good until {when(plan.expiresAt)}.
       </p>
-      <p>
-        {n(counts, "create")} to create, {n(counts, "update")} to change, {n(counts, "delete")} to
-        delete.
-      </p>
+      <div className="sync-counts">
+        {(["create", "update", "delete"] as const).map((a) => (
+          <span key={a} className="sync-count">
+            <Op action={a} />
+            {n(counts, a)} to {TO[a]}
+          </span>
+        ))}
+      </div>
+      {deletes > 0 && (
+        <Callout tone="bad">
+          {deletes === 1
+            ? "1 variable would be deleted from the target. This project does not hold its value, so it cannot be brought back from here."
+            : `${deletes} variables would be deleted from the target. This project does not hold their values, so they cannot be brought back from here.`}
+        </Callout>
+      )}
       <Lines items={plan.items} label={`What would change on ${target.name}`} />
       {unresolved.length > 0 && (
         <>
@@ -196,59 +219,79 @@ function Plan({
         </>
       )}
       {missingEnvironments.length > 0 && (
-        <p>
+        <Callout tone="info">
           Mapped to an environment that no longer exists, and left alone:{" "}
           {missingEnvironments.join(", ")}.
-        </p>
+        </Callout>
       )}
       {todo === 0 && <p>The target already has everything this project would put there.</p>}
-      {confirming ? (
-        <form
-          className="stack card"
-          aria-label={`Apply to ${target.name}`}
-          onSubmit={(e) => {
-            e.preventDefault();
-            apply();
-          }}
+      <div className="row">
+        {todo > 0 && (
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              clearError();
+              setConfirming(true);
+            }}
+            disabled={locked}
+          >
+            Apply…
+          </button>
+        )}
+        <button type="button" onClick={discard}>
+          Discard plan
+        </button>
+      </div>
+      {confirming && (
+        <Dialog
+          title={`Apply this plan to ${target.name}?`}
+          sub={`It creates ${n(counts, "create")}, changes ${n(counts, "update")} and deletes ${deletes} ${
+            deletes === 1 ? "variable" : "variables"
+          } on the target.`}
+          confirm={busy ? "Starting…" : "Apply plan"}
+          destructive={deletes > 0}
+          busy={busy}
+          disabled={locked}
+          error={error}
+          onConfirm={apply}
+          close={() => setConfirming(false)}
         >
-          <p>
-            Apply this plan to <strong>{target.name}</strong>? It creates {n(counts, "create")},
-            changes {n(counts, "update")} and deletes {n(counts, "delete")}{" "}
-            {todo === 1 ? "variable" : "variables"} on the target.
-          </p>
-          {n(counts, "delete") > 0 && (
-            <p className="error">
+          {deletes > 0 && (
+            <Callout tone="warn">
               A variable deleted from the target cannot be brought back from here: this project does
               not hold its value.
-            </p>
+            </Callout>
           )}
-          <div className="row">
-            <button type="submit" className="primary" disabled={busy || locked}>
-              {busy ? "Starting…" : "Apply plan"}
-            </button>
-            <button type="button" onClick={() => setConfirming(false)} disabled={busy}>
-              Cancel
-            </button>
-          </div>
-        </form>
-      ) : (
-        <div className="row">
-          {todo > 0 && (
-            <button
-              type="button"
-              className="primary"
-              onClick={() => setConfirming(true)}
-              disabled={locked}
-            >
-              Apply…
-            </button>
-          )}
-          <button type="button" onClick={discard}>
-            Discard plan
-          </button>
-        </div>
+        </Dialog>
       )}
     </section>
+  );
+}
+
+/** What the last sync did: shut unless a line failed, and the person's own choice holds until the next run. */
+function LastSync({ run, name }: { run: Run; name: string }) {
+  const [choice, setChoice] = useState<boolean>();
+  const open = choice ?? run.items.some((i) => i.result === "failed");
+  const panel = useId();
+  return (
+    <div>
+      <button
+        type="button"
+        className="quiet small"
+        aria-expanded={open}
+        aria-controls={panel}
+        onClick={() => setChoice(!open)}
+      >
+        <span className="chev">
+          <Icon name="down" />
+        </span>
+        What the last sync did
+      </button>
+      <div id={panel} hidden={!open}>
+        <Lines items={run.items} label={`Last sync of ${name}`} results />
+      </div>
+    </div>
   );
 }
 
@@ -307,6 +350,7 @@ function TargetCard({
 }) {
   const client = useClient();
   const queries = useQueryClient();
+  const toast = useToast();
   const at = () => targetAt(client, orgId, projectId, target.id);
   const drift = useQuery({
     queryKey: ["sync-drift", orgId, target.id],
@@ -342,6 +386,7 @@ function TargetCard({
       // the plan stays (and the buttons stay held) until the screen knows a run is going
       await queries.invalidateQueries({ queryKey: ["sync-last", orgId, target.id] });
       setPlan(undefined);
+      toast(`Sync started on ${target.name}.`);
     });
 
   const applying = last.data?.status === "applying";
@@ -350,6 +395,9 @@ function TargetCard({
     <Card
       label={`Sync target ${target.name}`}
       title={target.name}
+      sub={`${TYPE[target.type] ?? target.type}. ${
+        target.autoSync ? "Syncs by itself when a variable changes." : "Syncs when you ask."
+      }`}
       actions={
         !plan && (
           <button
@@ -362,10 +410,9 @@ function TargetCard({
         )
       }
     >
-      <p className="muted">
-        {TYPE[target.type] ?? target.type}. {POLICY[target.unmanagedPolicy]}{" "}
-        {target.autoSync ? "Syncs by itself when a variable changes." : "Syncs when you ask."}
-      </p>
+      <Callout tone={target.unmanagedPolicy === "prune" ? "warn" : "info"}>
+        {POLICY[target.unmanagedPolicy]}
+      </Callout>
       <SyncFlow
         project={projectName}
         target={{ name: target.name, type: TYPE[target.type] ?? target.type }}
@@ -385,26 +432,21 @@ function TargetCard({
       ) : (
         <Health drift={drift.data} last={last.data} />
       )}
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
+      {error && !plan && <Callout tone="bad">{error}</Callout>}
       {plan && (
         <Plan
           target={target}
           plan={plan}
           busy={busy === "apply"}
           locked={applying}
+          error={error}
+          clearError={() => setError(undefined)}
           apply={() => void apply()}
           discard={() => setPlan(undefined)}
         />
       )}
       {last.data?.items.some((i) => i.action !== "noop") && (
-        <details open={last.data.items.some((i) => i.result === "failed")}>
-          <summary>What the last sync did</summary>
-          <Lines items={last.data.items} label={`Last sync of ${target.name}`} results />
-        </details>
+        <LastSync key={last.data.id} run={last.data} name={target.name} />
       )}
     </Card>
   );

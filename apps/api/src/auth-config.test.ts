@@ -4,7 +4,14 @@ import { createOrganization, type Db, upsertUser } from "@orch/db";
 import { createTestDb } from "@orch/db/testing";
 import { createMockGitlab } from "@orch/gitlab/mock";
 import { z } from "zod";
-import { accessEnv, authEnv, authFromEnv, ciFromEnv, rolesFromEnv } from "./auth-config";
+import {
+  accessEnv,
+  authEnv,
+  authFromEnv,
+  ciFromEnv,
+  orgForgeFromEnv,
+  rolesFromEnv,
+} from "./auth-config";
 
 const SECRET = "client-secret-CANARY-8812";
 const full = {
@@ -227,6 +234,57 @@ describe("access config", () => {
     expect(access({ ORCH_PLATFORM_ADMIN_GITLAB_IDS: "" }).ORCH_PLATFORM_ADMIN_GITLAB_IDS).toEqual(
       [],
     );
+  });
+});
+
+describe("platform admins for GitHub (FRG-34)", () => {
+  const access = (env: Record<string, string>) => loadConfig(accessEnv, env);
+
+  test("are their own list of GitHub user ids, parsed like the GitLab one", () => {
+    expect(
+      access({ ORCH_PLATFORM_ADMIN_GITHUB_IDS: "12, 34" }).ORCH_PLATFORM_ADMIN_GITHUB_IDS,
+    ).toEqual([12, 34]);
+    expect(access({ ORCH_PLATFORM_ADMIN_GITHUB_IDS: "" }).ORCH_PLATFORM_ADMIN_GITHUB_IDS).toEqual(
+      [],
+    );
+    for (const v of ["12,", "alice", "-1", "1.5", "9007199254740993"]) {
+      expect(() => access({ ORCH_PLATFORM_ADMIN_GITHUB_IDS: v })).toThrow(ConfigError);
+    }
+    // the two lists are not one: a GitLab id never makes a GitHub account an admin
+    expect(access({ ORCH_PLATFORM_ADMIN_GITLAB_IDS: "5" }).ORCH_PLATFORM_ADMIN_GITHUB_IDS).toBe(
+      undefined,
+    );
+  });
+});
+
+describe("GitHub membership token (FRG-34)", () => {
+  const TOKEN = "ghp_membership-token-CANARY-6302";
+  const hub = {
+    GITHUB_OAUTH_CLIENT_ID: "hub-id",
+    GITHUB_OAUTH_CLIENT_SECRET: "hub-secret",
+    GITHUB_OAUTH_REDIRECT_URI: "https://orch.example.com/auth/github/callback",
+  };
+
+  test("is refused without the GitHub sign-in settings, by key and without echoing it", () => {
+    try {
+      loadConfig(authEnv, { GITHUB_MEMBERSHIP_TOKEN: TOKEN });
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as ConfigError).keys).toEqual(Object.keys(hub));
+      expect((e as ConfigError).message).not.toContain(TOKEN);
+    }
+    expect(loadConfig(authEnv, { ...hub, GITHUB_MEMBERSHIP_TOKEN: TOKEN })).toMatchObject({
+      GITHUB_MEMBERSHIP_TOKEN: TOKEN,
+    });
+    expect(() => loadConfig(authEnv, { ...hub, GITHUB_MEMBERSHIP_TOKEN: "" })).toThrow(ConfigError);
+  });
+
+  test("makes the forge that reads organizations; without it there is none", () => {
+    expect(orgForgeFromEnv(loadConfig(authEnv, {}))).toBeUndefined();
+    expect(
+      orgForgeFromEnv(loadConfig(authEnv, { ...hub, GITHUB_MEMBERSHIP_TOKEN: TOKEN })),
+    ).toHaveProperty("members");
   });
 });
 

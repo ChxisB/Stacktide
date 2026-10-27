@@ -1,8 +1,17 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { ApiError, allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { Card, StatusBadge } from "./components";
+import {
+  Callout,
+  Card,
+  Drawer,
+  Empty,
+  Icon,
+  StatusBadge,
+  useInDrawer,
+  useToast,
+} from "./components";
 import { href } from "./router";
 import { Loading } from "./ui";
 
@@ -155,18 +164,23 @@ const ADDRESS: Record<Forge, { url: string; hint: string; token: string }> = {
   },
 };
 
-/** Add a forge connection: the token is tested before it is stored, and kept here only while typing. */
+/**
+ * Add a forge connection: the token is tested before it is stored, and kept here only while typing. In a drawer the
+ * drawer's title is the heading, and the actions are its footer.
+ */
 export function AddConnection({
   orgId,
   onDone,
   onCancel,
 }: {
   orgId: string;
-  onDone: (id: string) => void;
+  onDone: (id: string, name: string) => void;
   onCancel?: (() => void) | undefined;
 }) {
   const client = useClient();
   const queries = useQueryClient();
+  const inDrawer = useInDrawer();
+  const hint = useId();
   const [forge, setForge] = useState<Forge>("gitlab");
   const [name, setName] = useState("GitLab");
   const [baseUrl, setBaseUrl] = useState(ADDRESS.gitlab.url);
@@ -188,7 +202,7 @@ export function AddConnection({
     onSuccess: async (connection) => {
       setToken("");
       await queries.invalidateQueries({ queryKey: ["connections", orgId] });
-      onDone(connection.id);
+      onDone(connection.id, connection.name);
     },
   });
   const submit = (event: FormEvent) => {
@@ -197,11 +211,7 @@ export function AddConnection({
   };
   return (
     <form onSubmit={submit} className="stack" aria-label={`Connect ${system}`}>
-      <h2>Connect {system}</h2>
-      <p className="muted">
-        Use {ADDRESS[forge].token}. It is checked with {system} first, then stored encrypted; it is
-        never shown again.
-      </p>
+      {!inDrawer && <h2>Connect {system}</h2>}
       <label>
         Forge
         <select value={forge} onChange={(e) => choose(e.target.value as Forge)}>
@@ -226,32 +236,35 @@ export function AddConnection({
           placeholder={ADDRESS[forge].hint}
         />
       </label>
-      <label>
-        Access token
-        <input
-          type="password"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          required
-          minLength={8}
-          autoComplete="off"
-          spellCheck={false}
-        />
-      </label>
-      {add.error && (
-        <p role="alert" className="error">
-          {add.error.message}
-        </p>
-      )}
-      <div className="row">
-        <button type="submit" className="primary" disabled={add.isPending}>
-          {add.isPending ? "Checking…" : "Connect"}
-        </button>
+      <div className="field">
+        <label>
+          Access token
+          <input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            required
+            minLength={8}
+            autoComplete="off"
+            spellCheck={false}
+            aria-describedby={hint}
+          />
+        </label>
+        <span className="hint" id={hint}>
+          Use {ADDRESS[forge].token}. It is checked with {system} first, then stored encrypted; it
+          is never shown again.
+        </span>
+      </div>
+      {add.error && <Callout tone="bad">{add.error.message}</Callout>}
+      <div className={inDrawer ? "drawer-foot" : "row"}>
         {onCancel && (
           <button type="button" onClick={onCancel}>
             Cancel
           </button>
         )}
+        <button type="submit" className="primary" disabled={add.isPending}>
+          {add.isPending ? "Checking…" : "Connect"}
+        </button>
       </div>
     </form>
   );
@@ -342,50 +355,70 @@ function Browse({
     setSearch(typed.trim());
   };
   const full = picked.size >= MAX_IMPORT;
+  const clearSearch = () => {
+    setTyped("");
+    setSearch("");
+  };
 
   return (
-    <div className="stack">
-      <form onSubmit={searching} className="row" aria-label={`Search ${system} ${things}`}>
-        <label>
-          <span className="visually-hidden">Search by name</span>
+    <>
+      <form onSubmit={searching} className="toolbar" aria-label={`Search ${system} ${things}`}>
+        <div className="search">
+          <Icon name="search" />
           <input
             type="search"
+            aria-label="Search by name"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
             placeholder="Search by name"
           />
-        </label>
+        </div>
         <button type="submit">Search</button>
       </form>
 
       {found.isPending && <Loading what={`Asking ${system}`} />}
       {found.error && <ErrorPanel error={found.error} retry={() => void found.refetch()} />}
       {found.data && rows.length === 0 && (
-        <p>
-          {search
-            ? `${system} shows no ${things} matching “${search}” for this token.`
-            : `${system} shows no ${things} for this token. ${
-                forge === "gitlab"
-                  ? "Check that the token's user is a member of the projects you want."
-                  : "Check that the token can read the repositories you want."
-              }`}
-        </p>
+        <Empty
+          title={search ? "Nothing matches" : `No ${things}`}
+          text={
+            search
+              ? `${system} shows no ${things} matching “${search}” for this token.`
+              : `${system} shows no ${things} for this token. ${
+                  forge === "gitlab"
+                    ? "Check that the token's user is a member of the projects you want."
+                    : "Check that the token can read the repositories you want."
+                }`
+          }
+          action={
+            search ? (
+              <button type="button" className="quiet" onClick={clearSearch}>
+                Clear search
+              </button>
+            ) : undefined
+          }
+        />
       )}
       {rows.length > 0 && (
-        <fieldset className="list">
+        <fieldset className="pj-list">
           <legend>{`${things[0]?.toUpperCase()}${things.slice(1)} in ${system}`}</legend>
           {rows.map((r) => (
-            <label key={r.gitlabProjectId} className="item">
+            <label
+              key={r.gitlabProjectId}
+              className={picked.has(r.gitlabProjectId) ? "pj-pick on" : "pj-pick"}
+            >
               <input
                 type="checkbox"
                 checked={picked.has(r.gitlabProjectId)}
                 disabled={full && !picked.has(r.gitlabProjectId)}
                 onChange={() => toggle(r.gitlabProjectId)}
               />
-              <span>{r.path}</span>
-              {r.archived && <StatusBadge tone="quiet">archived</StatusBadge>}
-              {r.projectId && <StatusBadge tone="ok">imported</StatusBadge>}
-              {!r.defaultBranch && <span className="muted">empty</span>}
+              <span className="path">{r.path}</span>
+              <span className="badges">
+                {r.archived && <StatusBadge tone="quiet">archived</StatusBadge>}
+                {r.projectId && <StatusBadge tone="ok">imported</StatusBadge>}
+                {!r.defaultBranch && <span className="muted">empty</span>}
+              </span>
             </label>
           ))}
         </fieldset>
@@ -407,23 +440,9 @@ function Browse({
         </p>
       )}
 
-      <div className="row">
-        <button
-          type="button"
-          className="primary"
-          disabled={picked.size === 0 || run.isPending}
-          onClick={() => run.mutate([...picked])}
-        >
-          {run.isPending ? "Importing…" : `Import ${picked.size} selected`}
-        </button>
-        {/* picks outlive a search, so they can be out of sight */}
-        <button type="button" disabled={picked.size === 0} onClick={() => setPicked(new Set())}>
-          Clear selection
-        </button>
-      </div>
       {run.error && <ErrorPanel error={run.error} />}
       {run.data && (
-        <section aria-label="Import results">
+        <section aria-label="Import results" className="pj-res">
           <h3>Import results</h3>
           <ul className="results">
             {run.data.results.map((r) =>
@@ -446,7 +465,30 @@ function Browse({
           </ul>
         </section>
       )}
-    </div>
+
+      <div className="pj-foot">
+        <p className="count muted" role="status">
+          {picked.size === 0 ? "Nothing selected" : `${picked.size} selected`}
+        </p>
+        {/* picks outlive a search, so they can be out of sight */}
+        <button
+          type="button"
+          className="quiet"
+          disabled={picked.size === 0}
+          onClick={() => setPicked(new Set())}
+        >
+          Clear selection
+        </button>
+        <button
+          type="button"
+          className="primary"
+          disabled={picked.size === 0 || run.isPending}
+          onClick={() => run.mutate([...picked])}
+        >
+          {run.isPending ? "Importing…" : `Import ${picked.size} selected`}
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -506,7 +548,7 @@ function RepositoryAddress({
     onFound(connection.id, pathOn(connection.type, address.path));
   };
   return (
-    <form onSubmit={submit} className="row middle" aria-label="Repository address">
+    <form onSubmit={submit} className="row pj-address" aria-label="Repository address">
       <label>
         Repository address
         {/* text, not url: the browser would hold back a bad address before this form could say what is wrong */}
@@ -527,9 +569,10 @@ function RepositoryAddress({
   );
 }
 
-/** The import flow of one organization: the connection (added here if there is none), then browsing. */
+/** The import flow of one organization: the connection (added here, in a drawer, if there is none), then browsing. */
 function Import({ orgId }: { orgId: string }) {
   const connections = useConnections(orgId);
+  const toast = useToast();
   const [chosen, setChosen] = useState<string>();
   const [want, setWant] = useState<string>();
   const [adding, setAdding] = useState(false);
@@ -543,33 +586,64 @@ function Import({ orgId }: { orgId: string }) {
   }
   const list = connections.data;
   const current = list.find((c) => c.id === chosen) ?? list[0];
-  if (!current || adding) {
+  const open = (
+    <button
+      type="button"
+      className={current ? undefined : "primary"}
+      onClick={() => setAdding(true)}
+    >
+      Add a connection
+    </button>
+  );
+  // the toast sits under the drawer's scrim, so the drawer closes first and the toast says what was done
+  const drawer = adding && (
+    <Drawer
+      title="Add a connection"
+      sub="The platform reads your projects with this token."
+      close={() => setAdding(false)}
+    >
+      <AddConnection
+        orgId={orgId}
+        onDone={(id, name) => {
+          setChosen(id);
+          setWant(undefined);
+          setAdding(false);
+          toast(`Connected ${name}.`);
+        }}
+        onCancel={() => setAdding(false)}
+      />
+    </Drawer>
+  );
+  if (!current) {
     return (
-      <Card>
-        <AddConnection
-          orgId={orgId}
-          onDone={(id) => {
-            setChosen(id);
-            setWant(undefined);
-            setAdding(false);
-          }}
-          onCancel={current ? () => setAdding(false) : undefined}
-        />
-      </Card>
+      <>
+        <Card title="Import projects">
+          <Empty
+            title="Connect a forge"
+            text="Give the platform a GitLab or GitHub token to read your projects."
+            action={open}
+          />
+        </Card>
+        {drawer}
+      </>
     );
   }
   const forge = isForge(current.type) ? current.type : "gitlab";
   return (
-    <Card title={`Import from ${FORGES[forge].name}`}>
-      <RepositoryAddress
-        connections={list}
-        onFound={(id, path) => {
-          setChosen(id);
-          setWant(path);
-        }}
-      />
-      <div className="row middle">
-        {list.length > 1 ? (
+    <>
+      <Card
+        title={`Import from ${FORGES[forge].name}`}
+        sub={list.length === 1 ? `Connection: ${current.name}` : undefined}
+        actions={open}
+      >
+        <RepositoryAddress
+          connections={list}
+          onFound={(id, path) => {
+            setChosen(id);
+            setWant(path);
+          }}
+        />
+        {list.length > 1 && (
           <label>
             Connection
             <select
@@ -586,39 +660,40 @@ function Import({ orgId }: { orgId: string }) {
               ))}
             </select>
           </label>
-        ) : (
-          <span>
-            Connection: <strong>{current.name}</strong>
-          </span>
         )}
-        <button type="button" onClick={() => setAdding(true)}>
-          Add a connection
-        </button>
-      </div>
-      <Browse
-        key={`${current.id} ${want ?? ""}`}
-        orgId={orgId}
-        connectionId={current.id}
-        forge={forge}
-        want={want}
-      />
-    </Card>
+        <Browse
+          key={`${current.id} ${want ?? ""}`}
+          orgId={orgId}
+          connectionId={current.id}
+          forge={forge}
+          want={want}
+        />
+      </Card>
+      {drawer}
+    </>
   );
 }
 
 /** The imported projects of an organization, and the way to import more. */
 export function ProjectsPage({ orgId }: { orgId: string }) {
   const projects = useProjects(orgId);
+  const count = projects.data?.length ?? 0;
   return (
-    <div className="stack wide">
-      <Card title="Imported projects">
+    <div className="pj-grid">
+      <Card
+        title="Imported projects"
+        sub={count > 0 ? `${count} ${count === 1 ? "project" : "projects"}` : undefined}
+      >
         {projects.isPending && <Loading />}
         {projects.error && (
           <ErrorPanel error={projects.error} retry={() => void projects.refetch()} />
         )}
         {projects.data &&
           (projects.data.length === 0 ? (
-            <p>No projects yet. Import some below.</p>
+            <Empty
+              title="No projects yet"
+              text="Pick repositories from a connected forge to import them. Each one is checked to see what it is."
+            />
           ) : (
             <table>
               <caption className="visually-hidden">Imported projects</caption>

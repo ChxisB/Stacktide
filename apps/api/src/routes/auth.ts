@@ -20,6 +20,8 @@ export interface AuthDeps {
   github?: GithubOAuth;
   /** What a GitHub account holds here, by its GitHub user id. A sign-in with no role is refused. */
   githubRoles?: (githubId: number) => Promise<Roles>;
+  /** GitHub user ids (FRG-34) that sign in with no role, to create the first organization: the same list the session holds. */
+  githubPlatformAdmins?: readonly number[];
   /** How long a session lasts, in total. Default 12 hours. */
   sessionTtlMs?: number;
   /** Cookies get `Secure`: set when the API is served over https. */

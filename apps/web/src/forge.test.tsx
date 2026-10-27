@@ -52,6 +52,7 @@ describe("connecting GitHub", () => {
     const s = await scene();
     mount(s.admin.client);
     const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Add a connection" }));
     // GitLab first, as it was
     expect(await screen.findByRole("form", { name: "Connect GitLab" })).toBeTruthy();
     await user.selectOptions(screen.getByLabelText("Forge"), "GitHub");
@@ -74,6 +75,7 @@ describe("connecting GitHub", () => {
     const s = await scene();
     mount(s.admin.client);
     const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Add a connection" }));
     await user.clear(await screen.findByLabelText("Name"));
     await user.type(screen.getByLabelText("Name"), "our forge");
     await user.selectOptions(screen.getByLabelText("Forge"), "GitHub");
@@ -91,6 +93,7 @@ describe("connecting GitHub", () => {
     const s = await scene();
     mount(s.admin.client);
     const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Add a connection" }));
     await user.selectOptions(await screen.findByLabelText("Forge"), "GitHub");
     await user.clear(screen.getByLabelText("GitHub address"));
     await user.type(screen.getByLabelText("GitHub address"), s.hub.url);
@@ -258,7 +261,7 @@ async function twoProjects(s: Awaited<ReturnType<typeof scene>>) {
 }
 
 describe("what a project's forge cannot do", () => {
-  test("deployments: GitHub's card says why there is nothing to refresh, GitLab's keeps its button", async () => {
+  test("deployments: GitHub's card is read and refreshed as GitLab's is, and never names the other forge", async () => {
     const s = await scene();
     await twoProjects(s);
     window.location.hash = "#/status";
@@ -266,11 +269,12 @@ describe("what a project's forge cannot do", () => {
     const user = userEvent.setup();
     await user.selectOptions(await screen.findByLabelText("Project"), "acme/svc");
     const card = await screen.findByRole("region", { name: "Deployments" });
-    expect(card.textContent).toContain("GitHub");
-    expect(card.textContent).toContain("deployments");
-    expect(within(card).queryByRole("button", { name: "Refresh" })).toBeNull();
+    expect(card.textContent).toContain("What GitHub says is deployed");
+    expect(card.textContent).not.toContain("GitLab");
+    await within(card).findByRole("button", { name: "Refresh" });
     await user.selectOptions(screen.getByLabelText("Project"), "grp/app");
     const lab = await screen.findByRole("region", { name: "Deployments" });
+    expect(lab.textContent).toContain("What GitLab says is deployed");
     await within(lab).findByRole("button", { name: "Refresh" });
   });
 

@@ -1,6 +1,7 @@
 import type { Logger } from "@orch/core";
 import { connectionsByIssuer, type Db } from "@orch/db";
-import { githubKeys, githubOAuth } from "@orch/github";
+import { githubForge } from "@orch/forge";
+import { createGithubClient, githubKeys, githubOAuth } from "@orch/github";
 import { createGitlab, gitlabKeys, gitlabOAuth } from "@orch/gitlab";
 import { z } from "zod";
 import { keyCache } from "./id-token";
@@ -42,7 +43,9 @@ const isCallback = (path: string) => (uri: string) => {
  * (`https://<host>/auth/sso/callback`, registered at each identity provider) turns on sign-in through an
  * organization's identity provider; it needs none of the GitLab settings. The three `GITHUB_OAUTH_*` settings (all or
  * none, FRG-25) turn on sign-in with GitHub; they need none of the others, and the roles it gives are read at start
- * (`index.ts`), so they also need `ORCH_MASTER_KEYS`.
+ * (`index.ts`), so they also need `ORCH_MASTER_KEYS`. `GITHUB_MEMBERSHIP_TOKEN` (needs the three, FRG-34) reads who
+ * owns or belongs to the GitHub organizations that organizations here are linked to: a token with the `read:org`
+ * scope, whose owner is a member of each of them.
  */
 export const authEnv = z
   .object({
@@ -56,6 +59,7 @@ export const authEnv = z
       .string()
       .refine(isCallback("/auth/sso/callback"), "an https URL ending /auth/sso/callback")
       .optional(),
+    GITHUB_MEMBERSHIP_TOKEN: z.string().min(1).optional(),
     GITHUB_OAUTH_CLIENT_ID: z.string().min(1).optional(),
     GITHUB_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
     GITHUB_OAUTH_REDIRECT_URI: z
@@ -67,7 +71,7 @@ export const authEnv = z
     if (c.ORCH_CI_AUDIENCE !== undefined && c.GITLAB_URL === undefined) {
       ctx.addIssue({ code: "custom", path: ["GITLAB_URL"], message: "required" });
     }
-    if (GITHUB_KEYS.some((k) => c[k] !== undefined)) {
+    if (GITHUB_KEYS.some((k) => c[k] !== undefined) || c.GITHUB_MEMBERSHIP_TOKEN !== undefined) {
       for (const k of GITHUB_KEYS) {
         if (c[k] === undefined) ctx.addIssue({ code: "custom", path: [k], message: "required" });
       }
@@ -88,6 +92,13 @@ export const accessEnv = z.object({
     .regex(/^(\d+(\s*,\s*\d+)*)?$/, "comma separated GitLab user ids")
     .transform((list) => (list ? list.split(",").map(Number) : [])) // empty means none
     .refine((ids) => ids.every(Number.isSafeInteger), "GitLab user id too large")
+    .optional(),
+  /** GitHub user ids (comma separated) that may create organizations: a list of their own, a GitLab id never counts here (FRG-34). */
+  ORCH_PLATFORM_ADMIN_GITHUB_IDS: z
+    .string()
+    .regex(/^(\d+(\s*,\s*\d+)*)?$/, "comma separated GitHub user ids")
+    .transform((list) => (list ? list.split(",").map(Number) : []))
+    .refine((ids) => ids.every(Number.isSafeInteger), "GitHub user id too large")
     .optional(),
 });
 
@@ -135,6 +146,12 @@ export function rolesFromEnv(
   const gitlab = createGitlab({ baseUrl, auth: { type: "private-token", token } });
   return gitlabRoles({ db, gitlab, baseUrl, logger });
 }
+
+/** The forge that reads GitHub organization membership (FRG-34), or nothing when no membership token is set. */
+export const orgForgeFromEnv = (c: Pick<z.output<typeof authEnv>, "GITHUB_MEMBERSHIP_TOKEN">) =>
+  c.GITHUB_MEMBERSHIP_TOKEN
+    ? githubForge(createGithubClient({ token: c.GITHUB_MEMBERSHIP_TOKEN }))
+    : undefined;
 
 /**
  * The CI `id_token` exchange, or nothing (it then answers 503) when no audience is set. Tokens of the deployment's

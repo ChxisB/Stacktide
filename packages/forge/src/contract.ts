@@ -613,6 +613,7 @@ export function forgeContract(
             "iid",
             "jobId",
             "pipelineId",
+            "pipelineUrl",
             "ref",
             "sha",
             "status",

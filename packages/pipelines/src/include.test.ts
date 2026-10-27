@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseAllDocuments } from "yaml";
+import { SAMPLE_PARAMS } from "./cloud-samples";
 import { loadTemplates, type Template } from "./loader";
 import { manifestSchema } from "./manifest";
 import {
@@ -303,7 +304,7 @@ describe("both modes", () => {
       const required = Object.fromEntries(
         t.manifest.params.required.map((k) => {
           const p = t.manifest.params.properties[k];
-          return [k, p?.enum?.[0] ?? "x"];
+          return [k, SAMPLE_PARAMS[t.manifest.name]?.[k] ?? p?.enum?.[0] ?? "x"];
         }),
       );
       const layers: Layer[] = [{ params: required }];

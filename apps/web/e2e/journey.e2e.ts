@@ -50,9 +50,11 @@ test("connect GitLab, import a project, set up its pipeline, give it variables a
   await page.goto("/#/projects");
 
   // 1. connect GitLab with a token, and import the project
+  await page.getByRole("button", { name: "Add a connection" }).click();
   await page.getByLabel("GitLab address").fill(state.gitlab.url);
   await page.getByLabel("Access token").fill(state.gitlab.token);
-  await page.getByRole("button", { name: "Connect" }).click();
+  // exact: the drawer's submit, not "Add a connection" behind it
+  await page.getByRole("button", { name: "Connect", exact: true }).click();
   await page.getByRole("checkbox", { name: /^acme\/web/ }).check();
   await page.getByRole("button", { name: "Import 1 selected" }).click();
   await expect(page.getByRole("region", { name: "Import results" })).toContainText(
@@ -135,7 +137,9 @@ test("connect GitLab, import a project, set up its pipeline, give it variables a
   ]);
   expect(download.suggestedFilename()).toBe("acme-web-dev.env");
   expect(readFileSync(await download.path(), "utf8")).toBe(`API_KEY=${SECRET}\nLOG_LEVEL=debug\n`);
-  await expect(page.getByRole("status")).toContainText("Downloaded acme-web-dev.env: 2 variables");
+  await expect(page.getByRole("main").getByRole("status")).toContainText(
+    "Downloaded acme-web-dev.env: 2 variables",
+  );
   expect(await page.content()).not.toContain(SECRET);
 
   // a folder, made on the page, with a variable in it; the target below reads the root, so GitLab never gets this one
@@ -210,4 +214,58 @@ test("connect GitLab, import a project, set up its pipeline, give it variables a
   expect(JSON.stringify(held)).not.toContain(FOLDER_SECRET);
   expect(await page.content()).not.toContain(SECRET);
   expect(await page.content()).not.toContain(state.gitlab.token);
+});
+
+// UXR-30: on a phone the sidebar is a menu. It is opened by its button, left by choosing a page, and it works with
+// the keyboard alone: a modal that keeps Tab inside, that Esc closes, and that gives the focus back.
+test("on a phone the menu opens, takes Settings, and the keyboard goes back and out again", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  await context.addCookies([{ name: "orch_session", value: state.session, url: String(baseURL) }]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/#/projects");
+  const opener = page.getByRole("button", { name: "Open menu" });
+  const menu = page.getByRole("dialog", { name: "Menu" });
+  const main = page.getByRole("navigation", { name: "Main" });
+  const here = page.getByRole("navigation", { name: "Breadcrumb" }).locator("[aria-current=page]");
+  const insideMenu = () =>
+    page.evaluate(() => document.activeElement?.closest("[role=dialog]") !== null);
+
+  // 1. the menu is not drawn until it is opened; it opens onto Close
+  await expect(main).toBeHidden();
+  await opener.click();
+  await expect(menu).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close menu" })).toBeFocused();
+
+  // 2. choosing Settings goes there and shuts the menu
+  await main.getByRole("link", { name: "Settings" }).click();
+  await expect(page).toHaveURL(/#\/settings$/);
+  await expect(here).toHaveText("Settings");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(main).toBeHidden();
+
+  // 3. back by keyboard: Enter opens it, Tab never leaves it, Enter on Projects goes back
+  await opener.focus();
+  await page.keyboard.press("Enter");
+  await expect(menu).toBeVisible();
+  for (let i = 0; i < 30; i++) {
+    await page.keyboard.press("Tab");
+    expect(await insideMenu(), `Tab ${i + 1} stays in the menu`).toBe(true);
+  }
+  await main.getByRole("link", { name: "Projects" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/#\/projects$/);
+  await expect(here).toHaveText("Projects");
+  await expect(main).toBeHidden();
+
+  // 4. Esc leaves without going anywhere, and the focus is on the button that opened it
+  await opener.focus();
+  await page.keyboard.press("Enter");
+  await expect(menu).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(main).toBeHidden();
+  await expect(opener).toBeFocused();
+  await expect(page).toHaveURL(/#\/projects$/);
 });

@@ -390,7 +390,7 @@ describe("adding", () => {
     await user.type(screen.getByLabelText("Name"), "EMPTY_FLAG");
     await user.click(screen.getByRole("button", { name: "Add variable" }));
     await screen.findByRole("rowheader", { name: "EMPTY_FLAG" });
-    expect(cellOf("EMPTY_FLAG", "dev").textContent).toContain("(empty)");
+    await waitFor(() => expect(cellOf("EMPTY_FLAG", "dev").textContent).toContain("(empty)"));
     const stored = must(await s.scope.variables.get({ query: { limit: 100 } })).items;
     expect(stored.map((v) => [v.key, v.value])).toEqual([["EMPTY_FLAG", ""]]);
   });
@@ -409,7 +409,9 @@ describe("adding", () => {
     );
     await user.click(screen.getByRole("button", { name: "Add variable" }));
     await screen.findByRole("rowheader", { name: "SHARED" });
-    expect(tagsOf(cellOf("SHARED", "dev"))).toEqual(["From organization", "secret"]);
+    await waitFor(() =>
+      expect(tagsOf(cellOf("SHARED", "dev"))).toEqual(["From organization", "secret"]),
+    );
 
     await addNew(user, "Add a variable");
     await user.type(screen.getByLabelText("Name"), "SHARED");
@@ -694,13 +696,19 @@ describe("revealing a secret", () => {
     await user.click(within(dialog).getByRole("button", { name: "Edit API_KEY in dev" }));
     await user.type(screen.getByLabelText("New value"), "replacement-77");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() =>
-      expect(screen.queryByRole("form", { name: "Edit API_KEY" }) === null).toBe(true),
+    // the save closes the drawer (a toast sits under it) and says so by toast
+    await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
+    expect(document.querySelector(".toast-text")?.textContent).toBe(
+      "Saved a new value of API_KEY.",
     );
+    expect(document.querySelector(".toast-text")?.getAttribute("role")).toBe("status");
     expect(document.body.textContent?.includes(SECRET)).toBe(false);
+    // opened again, it is masked, not left showing the old value
+    const again = await detailsOf(user, "API_KEY", "dev");
     expect(
-      await within(dialog).findByRole("button", { name: "Reveal API_KEY in dev" }),
+      await within(again).findByRole("button", { name: "Reveal API_KEY in dev" }),
     ).toBeTruthy();
+    expect(document.body.textContent?.includes(SECRET)).toBe(false);
   });
 
   test("hides itself after a while", async () => {
@@ -764,11 +772,11 @@ describe("deleting", () => {
     const user = userEvent.setup();
     await screen.findByRole("table");
     await fromMenu(user, "LOG_LEVEL", "dev", "Delete");
-    const form = screen.getByRole("form", { name: "Delete LOG_LEVEL" });
+    const form = screen.getByRole("alertdialog", { name: "Delete LOG_LEVEL" });
     expect(form.textContent).toContain("Delete LOG_LEVEL from this environment?");
     expect(form.textContent).not.toContain("Every environment that gets it");
     await user.click(within(form).getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("form", { name: "Delete LOG_LEVEL" })).toBeNull();
+    expect(screen.queryByRole("alertdialog", { name: "Delete LOG_LEVEL" })).toBeNull();
     expect(cellOf("LOG_LEVEL", "dev").textContent).toContain("info");
     expect(await s.audit("variable.delete")).toHaveLength(0);
   });
@@ -801,7 +809,7 @@ describe("deleting", () => {
     const user = userEvent.setup();
     await screen.findByRole("table");
     await fromMenu(user, "REGION", "staging", "Delete");
-    const form = screen.getByRole("form", { name: "Delete REGION" });
+    const form = screen.getByRole("alertdialog", { name: "Delete REGION" });
     expect(form.textContent).toContain("Delete REGION from the project?");
     expect(form.textContent).toContain("Every environment that gets it from there loses it too.");
     await user.click(within(form).getByRole("button", { name: "Delete variable" }));

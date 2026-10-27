@@ -4,7 +4,14 @@ import { createDb, pingDb } from "@orch/db";
 import { awsEnv, awsFromEnv } from "@orch/sync";
 import { z } from "zod";
 import { createApp } from "./app";
-import { accessEnv, authEnv, authFromEnv, ciFromEnv, rolesFromEnv } from "./auth-config";
+import {
+  accessEnv,
+  authEnv,
+  authFromEnv,
+  ciFromEnv,
+  orgForgeFromEnv,
+  rolesFromEnv,
+} from "./auth-config";
 import { callerPrincipal } from "./credentials";
 import { githubRoles } from "./github-roles";
 import { guardrailEnv, guardrailsOf } from "./guardrails";
@@ -73,12 +80,16 @@ if (!devAuth && !config.GITLAB_MEMBERSHIP_TOKEN) {
 }
 const auth = authFromEnv(config);
 // Sign in with GitHub needs the OAuth app and a way to read the connections' tokens (roles come from a repository's
-// permission, read with them).
-const hubRoles = auth.github && keys && !devAuth ? githubRoles({ db, keys, logger }) : undefined;
+// permission, read with them); an organization linked to a GitHub organization is read with GITHUB_MEMBERSHIP_TOKEN.
+const hubRoles =
+  auth.github && keys && !devAuth
+    ? githubRoles({ db, keys, logger, orgForge: orgForgeFromEnv(config) })
+    : undefined;
 if (auth.github && !hubRoles && !devAuth) {
   logger.warn("GitHub sign-in is off: it needs ORCH_MASTER_KEYS to read the connections' tokens");
 }
 auth.githubRoles = hubRoles;
+auth.githubPlatformAdmins = config.ORCH_PLATFORM_ADMIN_GITHUB_IDS;
 const app = createApp({
   logger,
   db,
@@ -87,6 +98,7 @@ const app = createApp({
     : callerPrincipal({
         db,
         platformAdmins: config.ORCH_PLATFORM_ADMIN_GITLAB_IDS,
+        githubPlatformAdmins: config.ORCH_PLATFORM_ADMIN_GITHUB_IDS,
         roles: rolesFromEnv(config, db, logger),
         githubRoles: hubRoles,
       }),

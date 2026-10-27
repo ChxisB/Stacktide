@@ -4,7 +4,7 @@ import { keepPreviousData, useQueries, useQuery, useQueryClient } from "@tanstac
 import { Fragment, useState } from "react";
 import { call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { Card, Chips, Named, StatusBadge } from "./components";
+import { Card, Chips, Empty, Icon, Named, StatusBadge, useToast } from "./components";
 import { Deployments } from "./deployments";
 import { type FlowJob, type FlowLane, JobFlow } from "./job-flow";
 import { webUrl } from "./pipeline-parts";
@@ -332,21 +332,20 @@ function Runs({ orgId, projectId, pollMs }: { orgId: string; projectId: string; 
   });
   const [retrying, setRetrying] = useState<string>();
   const [error, setError] = useState<string>();
-  const [done, setDone] = useState<string>();
+  const toast = useToast();
   const [show, setShow] = useState("all");
-  // the rows whose jobs are open, by run id
-  const [opened, setOpened] = useState<string[]>([]);
-  const toggle = (id: string) =>
-    setOpened((o) => (o.includes(id) ? o.filter((x) => x !== id) : [...o, id]));
+  // the row whose jobs are open, by run id: one panel at a time (UXR-18)
+  const [opened, setOpened] = useState<string>();
+  const toggle = (id: string) => setOpened((o) => (o === id ? undefined : id));
 
   const retry = async (run: Run) => {
     setRetrying(run.id);
     setError(undefined);
-    setDone(undefined);
+    toast(); // the news of the last retry goes before this one's is known
     try {
       const now = await call(() => at(client, orgId, projectId)({ runId: run.id }).retry.post());
       await queries.invalidateQueries({ queryKey: key });
-      setDone(
+      toast(
         `Retried the pipeline on ${run.ref}. GitLab says it is now ${statusOf(now.status)[0].toLowerCase()}.`,
       );
     } catch (e) {
@@ -366,10 +365,15 @@ function Runs({ orgId, projectId, pollMs }: { orgId: string; projectId: string; 
   }
   if (runs.length === 0) {
     return (
-      <p>
-        No pipeline has run for this project yet. Runs appear here once GitLab reports one. To set a
-        pipeline up, use the <a href={href("pipeline")}>Pipeline page</a>.
-      </p>
+      <Empty
+        title="No pipeline has run yet"
+        text={
+          <>
+            No pipeline has run for this project yet. Runs appear here once GitLab reports one. To
+            set a pipeline up, use the <a href={href("pipeline")}>Pipeline page</a>.
+          </>
+        }
+      />
     );
   }
   const shown = runs.filter((r) => show === "all" || toneOf(r) === show);
@@ -395,7 +399,6 @@ function Runs({ orgId, projectId, pollMs }: { orgId: string; projectId: string; 
           {error}
         </p>
       )}
-      {done && <p role="status">{done}</p>}
       {shown.length === 0 ? (
         <p className="muted">No branch has a pipeline in that state.</p>
       ) : (
@@ -418,7 +421,7 @@ function Runs({ orgId, projectId, pollMs }: { orgId: string; projectId: string; 
               {shown.map((r) => {
                 const [label, tone] = statusOf(r.status);
                 const link = webUrl(r.webUrl);
-                const isOpen = opened.includes(r.id);
+                const isOpen = opened === r.id;
                 return (
                   <Fragment key={r.id}>
                     <tr>
@@ -442,19 +445,25 @@ function Runs({ orgId, projectId, pollMs }: { orgId: string; projectId: string; 
                           {link && (
                             <a href={link} target="_blank" rel="noreferrer">
                               Open pipeline #{r.iid}
+                              <Icon name="external" />
                             </a>
                           )}
                           <button
                             type="button"
+                            className="quiet small"
                             aria-expanded={isOpen}
                             aria-controls={isOpen ? `jobs-${r.id}` : undefined}
                             onClick={() => toggle(r.id)}
                           >
                             <Named word="Jobs" name={r.ref} />
+                            <span className="chev">
+                              <Icon name="down" />
+                            </span>
                           </button>
                           {retryable(r) && (
                             <button
                               type="button"
+                              className="small"
                               disabled={retrying !== undefined}
                               onClick={() => void retry(r)}
                             >
@@ -688,6 +697,7 @@ export function RunsPage({ orgId, pollMs = POLL_MS }: { orgId: string; pollMs?: 
               orgId={orgId}
               projectId={project.id}
               pollMs={pollMs}
+              forge={project.forge}
             />
           )}
           <Plans key={`plans-${project.id}`} orgId={orgId} projectId={project.id} pollMs={pollMs} />

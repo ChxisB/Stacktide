@@ -156,6 +156,47 @@ describe("organizations", () => {
     }
   });
 
+  test("an organization can be created linked to a GitHub organization, once, audited, and never relinked (FRG-34)", async () => {
+    const hub = 7_000_000_000 + Math.floor(Math.random() * 1e6);
+    const r = await call("POST", "/organizations", {
+      slug: `h-${uniq()}`,
+      name: "H",
+      githubOrgId: hub,
+    });
+    expect(r.status).toBe(201);
+    expect(r.json).toMatchObject({ githubOrgId: hub, gitlabGroupId: null });
+    expect((await call("GET", `/organizations/${r.json.id}`)).json.githubOrgId).toBe(hub);
+    expect((await auditFor("organization.create", r.json.id))[0]?.metadata).toMatchObject({
+      githubOrgId: hub,
+    });
+    expect(
+      (await call("POST", "/organizations", { slug: `p-${uniq()}`, name: "P" })).json,
+    ).toMatchObject({
+      githubOrgId: null,
+    });
+    const before = await auditCount();
+    const again = await call("POST", "/organizations", {
+      slug: `h-${uniq()}`,
+      name: "M",
+      githubOrgId: hub,
+    });
+    expect(again.status).toBe(409);
+    expect(again.json.code).toBe("github_org_linked");
+    expect(again.text).not.toMatch(/_key|constraint|violates|SQL/i);
+    expect(await auditCount()).toBe(before);
+    for (const patch of [{ githubOrgId: hub + 1 }, { githubOrgId: null }]) {
+      expect((await call("PATCH", `/organizations/${r.json.id}`, patch)).status).toBe(422);
+    }
+    for (const bad of [0, -1, 1.5, "5", null, Number.MAX_SAFE_INTEGER + 2]) {
+      const res = await call("POST", "/organizations", {
+        slug: `h-${uniq()}`,
+        name: "x",
+        githubOrgId: bad,
+      });
+      expect([bad, res.status]).toEqual([bad, 422]);
+    }
+  });
+
   test("bad input is a 422 that lists paths and rules, never the submitted value", async () => {
     const canary = "Canary_VALUE-77";
     for (const body of [
@@ -616,6 +657,8 @@ describe("audit coverage", () => {
         ...["create", "update", "delete"].map((v) => `variable.${v}`),
         "stack.drift", // the same request, when the plan was a drift check and the stack's state changed
         "run.apply", // the apply of a run's saved plans
+        "resource.propose", // a resource asked for, as a merge or pull request (BLP-16)
+        "resource.propose", // and the same resource changed
         "lease.issue", // a short-lived read-only GitLab token, taken for a project
         "lease.revoke", // and ended early
         "finding.dismiss", // a secret finding called a false alarm, with the reason

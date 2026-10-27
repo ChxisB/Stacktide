@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "yaml";
+import { SAMPLE_PARAMS } from "./cloud-samples";
 import { loadTemplates, type Template, TemplateError } from "./loader";
 import { manifestSchema } from "./manifest";
 import { GENERATED, RenderError, render, renderWorkflow } from "./render";
@@ -17,6 +18,10 @@ const find = (name: string) => {
 };
 const withWorkflow = catalog.filter((t) => t.workflow !== undefined);
 const names = withWorkflow.map((t) => t.manifest.name);
+/** The workflow as a project that gave no parameters would get it (the cloud ones take the samples, which they cannot default). */
+const own = (name: string) => renderWorkflow(find(name), [{ params: SAMPLE_PARAMS[name] ?? {} }]);
+// the cloud workflows mint an OIDC token on purpose: cloud-templates.test.ts holds their permissions to account
+const readOnly = names.filter((n) => !(n in SAMPLE_PARAMS));
 
 /** An Actions expression, written so the linter does not take it for a template string. */
 const expr = (e: string) => `\${{ ${e} }}`;
@@ -33,25 +38,25 @@ const problemsOf = (fn: () => unknown) => {
 
 describe("the shipped workflows", () => {
   test("are those of the templates that run on any runner; docker-deploy has none yet", () => {
-    expect(names).toEqual(["bun-app", "docker-image", "node-app"]);
+    expect(names).toEqual(["bun-app", "cloud-run", "docker-image", "ecs", "node-app"]);
     expect(find("docker-deploy").workflow).toBeUndefined();
   });
 
   test.each(names)("%s renders with its defaults", (name) => {
-    expect(renderWorkflow(find(name))).toMatchSnapshot();
+    expect(own(name)).toMatchSnapshot();
   });
 
   test.each(names)(
     "%s begins as a file of ours does, so a re-run can tell it from a hand-written one",
     (name) => {
-      expect(renderWorkflow(find(name)).startsWith(GENERATED)).toBe(true);
+      expect(own(name).startsWith(GENERATED)).toBe(true);
     },
   );
 
-  test.each(names)(
+  test.each(readOnly)(
     "%s reads the repository and nothing more, and asks for no token to the platform",
     (name) => {
-      const doc = parse(renderWorkflow(find(name)), { version: "1.1" }) as {
+      const doc = parse(own(name), { version: "1.1" }) as {
         permissions: Record<string, string>;
         jobs: Record<string, { permissions?: Record<string, string> }>;
       };
@@ -63,7 +68,7 @@ describe("the shipped workflows", () => {
   );
 
   test.each(names)("%s: every action it uses is pinned to a commit", (name) => {
-    const uses = [...renderWorkflow(find(name)).matchAll(/uses: (\S+)/g)].map((m) => m[1] ?? "");
+    const uses = [...own(name).matchAll(/uses: (\S+)/g)].map((m) => m[1] ?? "");
     for (const u of uses) expect(u, u).toMatch(/^[\w-]+\/[\w-]+@[0-9a-f]{40}$/);
   });
 
@@ -220,7 +225,7 @@ describe.skipIf(!actionlint)("actionlint (opt in with ACTIONLINT_BIN)", () => {
     const dir = await mkdtemp(join(tmpdir(), "orch-actionlint-"));
     try {
       const file = join(dir, "orch.yml");
-      await writeFile(file, renderWorkflow(find(name)));
+      await writeFile(file, own(name));
       const run = Bun.spawnSync([actionlint as string, "-no-color", file]);
       expect(run.stdout.toString() + run.stderr.toString()).toBe("");
       expect(run.exitCode).toBe(0);

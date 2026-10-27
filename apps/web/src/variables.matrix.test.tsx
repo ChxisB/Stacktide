@@ -3,7 +3,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Icon } from "./components";
-import { type Backend, clientVia, mount, pathOf, startBackend } from "./testing";
+import { type Backend, clientVia, inMain, mount, pathOf, startBackend } from "./testing";
 import {
   cellOf,
   detailsOf,
@@ -20,6 +20,8 @@ import {
 // VUI-9: All environments as a matrix of marks: a green tick where the environment has the variable, a yellow circle
 // where it has not. The key opens its row, one line for each environment, with the buttons of a line shown for the
 // line that is pointed at. No value is in the collapsed matrix and no secret is anywhere in it.
+// UXR-22: each mark is a button with its words, and the button opens the details of that variable in that environment
+// (or the form to set it, where it is not set). A key that does not resolve has nothing to open, so it stays a mark.
 
 let backend: Backend;
 beforeAll(async () => {
@@ -89,19 +91,116 @@ describe("the marks", () => {
     expect(set?.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
   });
 
-  test("the collapsed matrix holds no value and no button but one for each key", async () => {
+  test("the collapsed matrix holds no value; its buttons are one for each key and one for each cell that can be opened", async () => {
     const s = await withKeys();
     mount(s.client);
     const grid = await matrix();
     const body = grid.querySelector("tbody") as HTMLElement;
-    const names = within(body)
-      .getAllByRole("button")
-      .map((b) => b.textContent);
-    expect(names).toEqual(["API_URL", "BROKEN", "DB_PASS", "ONLY_STAGING", "REGION"]);
-    for (const value of [PLAIN, "eu", "us", SECRET]) expect(body.textContent).not.toContain(value);
+    const buttons = within(body).getAllByRole("button");
+    // a key's button opens its row; a cell's button opens that cell (UXR-22: moved, the cells are buttons now)
+    expect(
+      buttons.filter((b) => b.hasAttribute("aria-expanded")).map((b) => b.textContent),
+    ).toEqual(["API_URL", "BROKEN", "DB_PASS", "ONLY_STAGING", "REGION"]);
+    expect(
+      buttons
+        .filter((b) => !b.hasAttribute("aria-expanded"))
+        .map((b) => b.getAttribute("aria-label")),
+    ).toEqual([
+      "API_URL in dev: From project",
+      "API_URL in staging: From project",
+      "DB_PASS in dev: From organization",
+      "DB_PASS in staging: From organization",
+      "Set ONLY_STAGING in dev: Not set",
+      "ONLY_STAGING in staging: Set here",
+      "REGION in dev: From project",
+      "REGION in staging: Set here",
+    ]);
+    // no value in the words, the names or the titles of any of it
+    const named = Array.from(body.querySelectorAll("[aria-label], [title]"))
+      .map((el) => `${el.getAttribute("aria-label")} ${el.getAttribute("title")}`)
+      .join(" ");
+    for (const value of [PLAIN, "eu", "us", SECRET]) {
+      expect(body.textContent).not.toContain(value);
+      expect(named).not.toContain(value);
+    }
     expect(within(body).queryByRole("list")).toBeNull();
-    for (const b of within(body).getAllByRole("button"))
+    for (const b of buttons.filter((b) => b.hasAttribute("aria-expanded")))
       expect(b.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  test("the words are on show beside the picture, in every cell", async () => {
+    const s = await withKeys();
+    mount(s.client);
+    await matrix();
+    for (const [key, env] of [
+      ["API_URL", "dev"],
+      ["ONLY_STAGING", "dev"],
+      ["BROKEN", "dev"],
+    ] as const) {
+      const mark = markOf(key, env).querySelector(".cell-mark") as HTMLElement;
+      expect(mark.querySelector(".visually-hidden")).toBeNull();
+      expect(mark.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    }
+  });
+});
+
+describe("the cells", () => {
+  const cellButton = (key: string, env: string) => within(markOf(key, env)).getByRole("button");
+
+  test("a cell where the variable is set opens its details, and Esc gives the focus back to the cell", async () => {
+    const s = await withKeys();
+    mount(s.client);
+    await matrix();
+    const user = userEvent.setup();
+    await user.click(cellButton("REGION", "staging"));
+    const dialog = await screen.findByRole("dialog", { name: "REGION in staging" });
+    const region = await within(dialog).findByRole("region", { name: "REGION" });
+    await within(region).findByText("Version");
+    expect(region.textContent).toContain("Overrides the Project value");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
+    expect(document.activeElement).toBe(cellButton("REGION", "staging"));
+    // a cell inherited from the project is its own details, not the staging one
+    await user.click(cellButton("REGION", "dev"));
+    const other = await screen.findByRole("dialog", { name: "REGION in dev" });
+    await within(other).findByText("Version");
+    expect(other.textContent).toContain("SourceProject");
+    // the row stays shut: the cell did not open it
+    expect(screen.queryByRole("list", { name: "REGION by environment" })).toBeNull();
+  });
+
+  test("a cell where it is not set opens Create with the key and the environment filled in", async () => {
+    const s = await withKeys();
+    mount(s.client);
+    await matrix();
+    const user = userEvent.setup();
+    await user.click(cellButton("ONLY_STAGING", "dev"));
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("ONLY_STAGING");
+    expect(
+      (screen.getByLabelText("Applies to") as HTMLSelectElement).selectedOptions[0]?.text,
+    ).toBe("Only dev");
+  });
+
+  test("a key that does not resolve has nothing to open: its cell is a mark with its reason", async () => {
+    const s = await withKeys();
+    mount(s.client);
+    await matrix();
+    expect(within(markOf("BROKEN", "dev")).queryByRole("button")).toBeNull();
+    expect(words(markOf("BROKEN", "dev"))).toMatch(/^Does not resolve: /);
+    expect(markOf("BROKEN", "dev").querySelector(".cell-mark.broken")).toBeTruthy();
+  });
+
+  test("a secret's cell opens details that hold the mask and not the value, anywhere in the page", async () => {
+    const s = await withKeys();
+    mount(s.client);
+    await matrix();
+    const user = userEvent.setup();
+    await user.click(cellButton("DB_PASS", "dev"));
+    const dialog = await screen.findByRole("dialog", { name: "DB_PASS in dev" });
+    await within(dialog).findByText("Version");
+    expect(within(dialog).getByRole("button", { name: "Reveal DB_PASS in dev" })).toBeTruthy();
+    expect(document.body.outerHTML).not.toContain(SECRET);
+    expect(await s.audit("variable.reveal")).toHaveLength(0);
   });
 });
 
@@ -226,7 +325,8 @@ describe("a line's buttons", () => {
     await user.type(field, "ap");
     await user.click(within(form).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(cellOf("REGION", "staging").textContent).toContain("ap"));
-    expect(screen.queryByRole("dialog") === null).toBe(true);
+    // the cell shows the new value a moment before the dialog is gone
+    await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
     // the row is still open, and the other environment is as it was
     expect(rowList("REGION")).toBeTruthy();
     expect(cellOf("REGION", "dev").textContent).toContain("eu");
@@ -249,7 +349,7 @@ describe("a line's buttons", () => {
         }),
       );
       await waitFor(() =>
-        expect(screen.getByRole("status").textContent).toBe("Copied the value of DB_PASS"),
+        expect(inMain().getByRole("status").textContent).toBe("Copied the value of DB_PASS"),
       );
       expect(written).toEqual([SECRET]);
       expect(reads).toHaveLength(1);
@@ -277,7 +377,7 @@ describe("a line's buttons", () => {
         }),
       );
       expect((await screen.findByRole("alert")).textContent).toBeTruthy();
-      expect(screen.queryByRole("status")).toBeNull();
+      expect(inMain().queryByRole("status")).toBeNull();
       nothingOf(SECRET);
     });
   });
@@ -357,7 +457,7 @@ describe("a line's buttons", () => {
     ).toBe("Only dev");
     await close();
     await choose("REGION", "staging", "Delete");
-    expect(await screen.findByRole("form", { name: "Delete REGION" })).toBeTruthy();
+    expect(await screen.findByRole("alertdialog", { name: "Delete REGION" })).toBeTruthy();
     expect(await s.audit("variable.delete")).toHaveLength(0);
   });
 

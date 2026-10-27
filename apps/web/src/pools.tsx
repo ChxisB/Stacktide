@@ -2,7 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { Card } from "./components";
+import { Callout, Card, Empty, StatusBadge } from "./components";
 import { lacks, type Project, ProjectPicker, useConnections } from "./projects";
 import { Loading } from "./ui";
 
@@ -29,13 +29,27 @@ const WHY = {
   unavailable: "GitLab did not answer",
 } as const;
 
+const capital = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+const TONE = { healthy: "ok", degraded: "warn", offline: "bad", unknown: "quiet" } as const;
+
 /** Said in words, not colour; an answer that is not known is never worded like a healthy one. */
-const said = (h: Health | string | undefined) => {
-  if (h === undefined) return "Not checked";
-  if (typeof h === "string") return `Not known: ${h}`;
-  if (h.state === "unknown") return `Not known: ${h.reason ? WHY[h.reason] : "no reason given"}`;
-  return `${h.state.charAt(0).toUpperCase()}${h.state.slice(1)}, ${h.online} of ${h.total} runners online`;
-};
+function Seen({ health }: { health: Health | string | undefined }) {
+  if (health === undefined) return <StatusBadge tone="quiet">Not checked</StatusBadge>;
+  const [badge, detail] =
+    typeof health === "string"
+      ? (["unknown", health] as const)
+      : health.state === "unknown"
+        ? (["unknown", health.reason ? WHY[health.reason] : "no reason given"] as const)
+        : ([health.state, `${health.online} of ${health.total} runners online`] as const);
+  return (
+    <>
+      <StatusBadge tone={TONE[badge]}>
+        {badge === "unknown" ? "Not known" : capital(badge)}
+      </StatusBadge>
+      <div className="note muted">{detail}</div>
+    </>
+  );
+}
 
 type Checked = { project: string; byPool: Record<string, Health | string> };
 
@@ -142,58 +156,79 @@ export function Pools({ orgId, actions }: { orgId: string; actions: readonly str
   const pools = usePools(orgId);
   const [checked, setChecked] = useState<Checked>();
   return (
-    <Card title="Worker pools">
-      <p className="muted">
-        The runner tags a stack's jobs ask for, so its plans and applies run on your own runners.
+    <Card
+      title="Worker pools"
+      sub={
+        <>
+          The runner tags a stack's jobs ask for, so its plans and applies run on your own runners.
+          Pools are managed with <code>orch pool</code>.
+        </>
+      }
+    >
+      <Callout tone="warn">
         Tags route a job; they do not isolate it: anyone who can register a runner with these tags
-        in GitLab receives these jobs, and the credentials they are given. Pools are managed with{" "}
-        <code>orch pool</code>.
-      </p>
+        in GitLab receives these jobs, and the credentials they are given.
+      </Callout>
       {pools.isPending && <Loading what="Loading pools" />}
       {pools.error && !pools.data && (
         <ErrorPanel error={pools.error} retry={() => void pools.refetch()} />
       )}
       {pools.data &&
         (pools.data.length === 0 ? (
-          <p>No pool yet. A stack that names none runs on the runners GitLab picks for it.</p>
+          <Empty
+            title="No pool yet"
+            text="A stack that names none runs on the runners GitLab picks for it."
+          />
         ) : (
           <>
-            <table>
-              <caption className="visually-hidden">Worker pools</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Name</th>
-                  <th scope="col">Tags</th>
-                  <th scope="col">Image</th>
-                  <th scope="col">State</th>
-                  {checked && <th scope="col">Health in {checked.project}</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {pools.data.map((p) => (
-                  <tr key={p.id}>
-                    <th scope="row">{p.name}</th>
-                    <td>
-                      <span className="tags">
-                        {p.tags.map((t) => (
-                          <span className="tag" key={t}>
-                            {t}
-                          </span>
-                        ))}
-                      </span>
-                    </td>
-                    <td>{p.image ?? <span className="muted">Standard image</span>}</td>
-                    <td>
-                      {p.enabled ? "Enabled" : "Disabled"}
-                      {p.isDefault && ", Default"}
-                    </td>
-                    {checked && <td>{said(checked.byPool[p.id])}</td>}
+            <div className="scroll">
+              <table>
+                <caption className="visually-hidden">Worker pools</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Name</th>
+                    <th scope="col">Tags</th>
+                    <th scope="col">Image</th>
+                    <th scope="col">State</th>
+                    {checked && <th scope="col">Health in {checked.project}</th>}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {pools.data.map((p) => (
+                    <tr key={p.id}>
+                      <th scope="row">{p.name}</th>
+                      <td>
+                        <span className="tags">
+                          {p.tags.map((t) => (
+                            <span className="tag" key={t}>
+                              {t}
+                            </span>
+                          ))}
+                        </span>
+                      </td>
+                      <td>{p.image ?? <span className="muted">Standard image</span>}</td>
+                      <td>
+                        <span className="row middle">
+                          <StatusBadge tone={p.enabled ? "ok" : "quiet"}>
+                            {p.enabled ? "Enabled" : "Disabled"}
+                          </StatusBadge>
+                          {p.isDefault && <span className="tag">Default</span>}
+                        </span>
+                      </td>
+                      {checked && (
+                        <td>
+                          <Seen health={checked.byPool[p.id]} />
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
             {actions.includes("pool.status") && (
-              <HealthCheck orgId={orgId} pools={pools.data} onChecked={setChecked} />
+              <div className="card-foot">
+                <HealthCheck orgId={orgId} pools={pools.data} onChecked={setChecked} />
+              </div>
             )}
           </>
         ))}

@@ -700,7 +700,7 @@ describe("the review", () => {
     const user = userEvent.setup();
     await toParams(user, "docs-site");
     const step = await preview(user);
-    expect(step.querySelector("p.warn")?.textContent).toContain("written by hand");
+    expect(step.querySelector(".callout-warn")?.textContent).toContain("written by hand");
     expect(step.textContent).toContain("replaces it");
     expect(step.textContent).toContain("read the diff in the merge request");
     expect(document.body.textContent).not.toContain(canary);
@@ -1252,5 +1252,161 @@ describe("how the wizard looks", () => {
       ["st st-ok", "Recommended"],
       ["st st-ok", "Recommended"],
     ]);
+  });
+});
+
+// UXR-16 (feature 32): the stepper says what each finished step settled, one callout says each state, the diff is a region a keyboard can scroll
+describe("the stepper, the callouts and the diff", () => {
+  const items = () => within(screen.getByRole("list", { name: "Steps" })).getAllByRole("listitem");
+  const caption = (li: HTMLElement | undefined) => li?.querySelector(".cap")?.textContent;
+  /** What the callouts of a tone inside `root` say, one string each. */
+  const said = (root: HTMLElement, tone: string) =>
+    Array.from(root.querySelectorAll(`.callout-${tone}`)).map((c) => c.textContent ?? "");
+
+  test("a done step says so in words and keeps what was chosen under it", async () => {
+    const w = await world();
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await detect();
+    expect(items().map((li) => li.textContent)).toEqual([
+      "1. Detect",
+      "2. Template",
+      "3. Parameters",
+      "4. Review",
+    ]);
+    await user.click(await button("Choose a template"));
+    expect(items()[0]?.textContent).toContain("(done)");
+    expect(caption(items()[0])).toContain("node");
+    expect(items()[1]?.textContent).not.toContain("(done)");
+    expect(caption(items()[1])).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await form();
+    expect(caption(items()[1])).toBe("web-app 1.0.0");
+    await team(user);
+    await preview(user);
+    expect(caption(items()[2])).toBe("Inline");
+    await create(user);
+    expect(items().map((li) => li.textContent?.includes("(done)"))).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(caption(items()[3])).toMatch(/^!\d+$/);
+  });
+
+  test("a project not set up yet has an info callout saying so", async () => {
+    const w = await world();
+    mountPage(w.client);
+    expect(said(await detect(), "info")).toContainEqual(
+      expect.stringContaining("No pipeline has been set up from here yet."),
+    );
+  });
+
+  test("a project with a merge request open has an info callout with the link", async () => {
+    const w = await world();
+    const { mr } = await w.applyVia({});
+    if (!mr) throw new Error("no merge request was opened");
+    mountPage(w.client);
+    const step = await detect();
+    expect(said(step, "info")).toContainEqual(expect.stringContaining("Set up with web-app 1.0.0"));
+    expect(within(step).getByRole("link", { name: `merge request !${mr.iid}` })).toBeDefined();
+  });
+
+  test("a project whose pipeline is on the default branch has an ok callout", async () => {
+    const first = await world();
+    const text = must(
+      await first.pipeline.preview.post({
+        connectionId: first.connection?.id ?? "",
+        template: "web-app",
+        params: { team: "ops" },
+      }),
+    ).text;
+    const w = await world({ files: { [FILE]: text } });
+    await w.applyVia({});
+    expect(must(await w.pipeline.get()).config).toMatchObject({ mrIid: null });
+    mountPage(w.client);
+    expect(said(await detect(), "ok")).toContainEqual(
+      expect.stringContaining("It is on the default branch."),
+    );
+  });
+
+  test("a project nothing fits has an info callout saying every template is on offer", async () => {
+    const w = await world({ types: [] });
+    mountPage(w.client);
+    expect(said(await detect(), "info")).toContainEqual(
+      expect.stringContaining("No template is a clear fit"),
+    );
+  });
+
+  test("the parameters open with an info callout about secrets", async () => {
+    const w = await world();
+    mountPage(w.client);
+    const f = await toParams(userEvent.setup(), "web-app");
+    expect(said(f, "info")).toContainEqual(expect.stringContaining("Do not put a secret here"));
+  });
+
+  test("the review says what is on the default branch, and a lint refusal is an alert", async () => {
+    const mine = "stages: [mine]\nmine:\n  stage: mine\n  script: [echo hi]\n";
+    const w = await world({ files: { [FILE]: mine } });
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await toParams(user, "broken-app");
+    const step = await preview(user);
+    expect(said(step, "warn")).toContainEqual(expect.stringContaining("written by hand"));
+    const errors = screen.getByRole("region", { name: "Lint errors" });
+    expect(within(errors).getByRole("alert").textContent).toContain("lint refuses this pipeline");
+    expect(within(errors).getByRole("alert").textContent).toContain(
+      "No merge request can be created",
+    );
+  });
+
+  test("a project with no file yet has an info callout saying the merge request adds it", async () => {
+    const w = await world();
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await toParams(user, "web-app");
+    await team(user);
+    expect(said(await preview(user), "info")).toContainEqual(
+      expect.stringContaining("The merge request adds it."),
+    );
+  });
+
+  test("what the pipeline needs, and what lint warns of, are warn callouts inside their regions", async () => {
+    const w = await world({ lintWarnings: ["heads up: nothing runs on tags"] });
+    await w.put.env("dev", "DEPLOY_TOKEN", SECRET, true);
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await toParams(user, "web-app");
+    await team(user);
+    await preview(user);
+    for (const name of ["Missing variables", "Lint warnings"]) {
+      const region = screen.getByRole("region", { name });
+      expect(region.querySelector(".callout-warn")).not.toBeNull();
+    }
+  });
+
+  test("the result is an ok callout that is announced as a status", async () => {
+    const w = await world();
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await toParams(user, "web-app");
+    await team(user);
+    await preview(user);
+    const done = await create(user);
+    const status = within(done).getByRole("status");
+    expect(said(status, "ok")).toContainEqual(expect.stringContaining("Opened merge request"));
+  });
+
+  test("the diff is a labelled region that a keyboard can reach and scroll", async () => {
+    const w = await world();
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await toParams(user, "web-app");
+    await team(user);
+    await preview(user);
+    const lines = within(diff()).getByRole("region", { name: `Lines of ${FILE}` });
+    expect(lines.getAttribute("tabindex")).toBe("0");
+    expect(lines.querySelector(".diff-add")).not.toBeNull();
   });
 });

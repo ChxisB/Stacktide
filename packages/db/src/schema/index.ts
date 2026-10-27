@@ -14,6 +14,7 @@ export * from "./pipeline-configs";
 export * from "./pipeline-runs";
 export * from "./policy";
 export * from "./projects";
+export * from "./resources";
 export * from "./run-plans";
 export * from "./runs";
 export * from "./schedules";

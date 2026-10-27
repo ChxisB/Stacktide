@@ -24,6 +24,18 @@ on:
         default: plan
 jobs: {}
 `;
+// the shape the cloud deploy workflows use (CLD-11): a fallback after `||`, a literal and the commit
+const FALLBACK = `name: Fallback
+run-name: orch deploy \${{ inputs.environment || '(push)' }} \${{ inputs.sha || github.sha }} \${{ github.run_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: false
+      sha:
+        required: false
+jobs: {}
+`;
 const PLAIN = "name: Plain\non: workflow_dispatch\njobs: {}\n";
 const PUSH_ONLY = "name: Push\non: push\njobs: {}\n";
 
@@ -35,6 +47,7 @@ function setup(opts: Parameters<typeof createMockGithub>[0] = {}) {
       "README.md": "x",
       [FILE]: WORKFLOW,
       ".github/workflows/plain.yml": PLAIN,
+      ".github/workflows/fallback.yml": FALLBACK,
       ".github/workflows/push.yml": PUSH_ONLY,
     },
   });
@@ -92,6 +105,18 @@ describe("the mock's dispatch is as strict as GitHub's", () => {
     await dispatch("plain.yml", { ref: "main" });
     expect((await listed()).workflow_runs[0]?.display_title).toBe("orch r2 apply");
     expect((await listed("plain.yml")).workflow_runs[0]?.display_title).toBe("Plain");
+  });
+
+  test("a run-name takes the first of several values that is not empty, and leaves an expression it cannot read as written", async () => {
+    const { dispatch, listed } = setup();
+    await dispatch("fallback.yml", { ref: "main", inputs: { environment: "staging" } });
+    const [run] = (await listed("fallback.yml")).workflow_runs;
+    // `sha` was left out, so the commit stands in; `github.run_id` is not one the mock reads
+    expect(run?.display_title).toBe(`orch deploy staging ${run?.head_sha} \${{ github.run_id }}`);
+    await dispatch("fallback.yml", { ref: "main" });
+    expect((await listed("fallback.yml")).workflow_runs.map((r) => r.display_title)).toContain(
+      `orch deploy (push) ${run?.head_sha} \${{ github.run_id }}`,
+    );
   });
 
   test.each([

@@ -43,12 +43,12 @@ const collect = async <T>(it: AsyncIterable<T>) => {
 
 const one = { action: "create" as const, path: "a.txt", content: "1" };
 
-test("the GitHub adapter names exactly the capabilities in the table, and says yes only to approvalState", () => {
+test("the GitHub adapter names exactly the capabilities in the table, and says yes only to approvalState and deployments", () => {
   const { forge } = setup();
   expect(forge.kind).toBe("github");
   expect(Object.keys(forge.capabilities).sort()).toEqual([...CAPABILITY_FLAGS].sort());
   for (const flag of CAPABILITY_FLAGS) {
-    expect(forge.capabilities[flag], flag).toBe(flag === "approvalState");
+    expect(forge.capabilities[flag], flag).toBe(flag === "approvalState" || flag === "deployments");
   }
 });
 
@@ -64,8 +64,26 @@ test("a group nothing has built refuses by name, and is not mistaken for a promi
   expect(e).toBeInstanceOf(GitlabError);
   expect(e?.message).toBe("variables.list is not available for GitHub yet");
   // awaiting the group itself must not wait on a `then`
-  expect(await Promise.resolve(forge.deployments)).toBe(forge.deployments);
+  expect(await Promise.resolve(forge.variables)).toBe(forge.variables);
   expect(mock.requests).toEqual([]);
+});
+
+test("deployments are built, and every other ADR-0019 refusal still refuses by name", () => {
+  const { forge } = setup();
+  const refusals: [string, () => unknown][] = [
+    ["pipelines.trigger", () => forge.pipelines.trigger("platform/api", "main", [])],
+    ["pipelines.artifact", () => forge.pipelines.artifact("platform/api", 1, "a", 1)],
+    ["ci.lint", () => forge.ci.lint("platform/api", "x")],
+    ["variables.list", () => forge.variables.list({ project: "platform/api" })],
+    ["accessTokens.create", () => forge.accessTokens.create("platform/api", {} as never)],
+    ["runners.list", () => forge.runners.list("platform/api")],
+    ["instance.info", () => forge.instance.info()],
+    ["users.current", () => forge.users.current()],
+  ];
+  for (const [name, call] of refusals) {
+    expect(call, name).toThrow(`${name} is not available for GitHub yet`);
+  }
+  expect(forge.capabilities.deployments).toBe(true);
 });
 
 test("members answer in GitLab's levels; the users group is still not built", async () => {

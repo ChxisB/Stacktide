@@ -1,6 +1,6 @@
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, type ErrorInfo, type ReactNode, useEffect, useRef, useState } from "react";
 import { ErrorPanel, useMe, useSignOut } from "./auth";
-import { ThemeToggle } from "./components";
+import { ThemeToggle, Toaster, useModal } from "./components";
 import { OrgSwitcher } from "./org";
 import { href, useRoute } from "./router";
 
@@ -72,8 +72,36 @@ export function Shell({ pages }: { pages: readonly Page[] }) {
   const signOut = useSignOut();
   const [home] = pages;
   const page = pages.find((p) => p.path === route) ?? home;
+  // the page the app opens on is already there and does not enter; every page reached after it does (adjusting state while rendering)
+  const [opened, setOpened] = useState(page?.path);
+  const [moved, setMoved] = useState(false);
+  // below 900 px the sidebar is a menu, and a modal while it is open; any route change closes it
+  const [menu, setMenu] = useState(false);
+  const side = useRef<HTMLElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  if (page?.path !== opened) {
+    setOpened(page?.path);
+    setMoved(true);
+    setMenu(false);
+  }
+  const closeMenu = () => setMenu(false);
+  useModal(side, closeMenu, menu);
+  // it opens onto Close (the modal hook has already noted the button that opened it, to give the focus back)
+  useEffect(() => {
+    if (menu) closeButton.current?.focus();
+  }, [menu]);
+  // a window made wider than the phone layout while the menu is open would leave a modal on a desktop page
+  useEffect(() => {
+    if (!menu) return;
+    const narrow = window.matchMedia?.("(max-width: 900px)");
+    const widened = () => {
+      if (!narrow?.matches) setMenu(false);
+    };
+    narrow?.addEventListener("change", widened);
+    return () => narrow?.removeEventListener("change", widened);
+  }, [menu]);
   return (
-    <>
+    <Toaster>
       {/* a button, not a #main link: the hash is the route */}
       <button
         type="button"
@@ -83,17 +111,45 @@ export function Shell({ pages }: { pages: readonly Page[] }) {
         Skip to content
       </button>
       <div className="app">
-        <aside className="side">
-          <a className="brandrow" href={href("")}>
-            <svg className="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-              <circle cx="16" cy="16" r="14" />
-              <circle cx="16" cy="16" r="8" />
-              <circle className="dot" cx="16" cy="16" r="3" />
-            </svg>
-            <span className="wordmark">
-              Orchastrature<small>Control plane</small>
-            </span>
-          </a>
+        {menu && (
+          <button
+            type="button"
+            className="drawer-scrim menu-scrim"
+            tabIndex={-1}
+            aria-hidden="true"
+            onClick={closeMenu}
+          />
+        )}
+        <aside
+          ref={side}
+          className={menu ? "side open" : "side"}
+          {...(menu
+            ? { role: "dialog", "aria-modal": true, "aria-label": "Menu", tabIndex: -1 }
+            : {})}
+        >
+          <div className="side-head">
+            <a className="brandrow" href={href("")} onClick={closeMenu}>
+              <svg className="mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+                <circle cx="16" cy="16" r="14" />
+                <circle cx="16" cy="16" r="8" />
+                <circle className="dot" cx="16" cy="16" r="3" />
+              </svg>
+              <span className="wordmark">
+                Orchastrature<small>Control plane</small>
+              </span>
+            </a>
+            <button
+              ref={closeButton}
+              type="button"
+              className="icon quiet menu-close"
+              aria-label="Close menu"
+              onClick={closeMenu}
+            >
+              <svg className="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M6 6l12 12M18 6L6 18" />
+              </svg>
+            </button>
+          </div>
           <OrgSwitcher />
           <nav aria-label="Main" className="navwrap">
             {grouped(pages).map(([group, list]) => (
@@ -104,6 +160,8 @@ export function Shell({ pages }: { pages: readonly Page[] }) {
                     key={p.path}
                     className="nav-item"
                     href={href(p.path)}
+                    // the current page's link is no route change, and the menu closes all the same
+                    onClick={closeMenu}
                     aria-current={p.path === page?.path ? "page" : undefined}
                   >
                     {p.icon && (
@@ -124,13 +182,30 @@ export function Shell({ pages }: { pages: readonly Page[] }) {
               </span>
               <span className="trunc">{me.name}</span>
             </div>
-            <button type="button" onClick={() => signOut.mutate()} disabled={signOut.isPending}>
+            <button
+              type="button"
+              className="quiet"
+              onClick={() => signOut.mutate()}
+              disabled={signOut.isPending}
+            >
               Sign out
             </button>
           </div>
         </aside>
         <div className="content">
           <header className="topbar">
+            <button
+              type="button"
+              className="icon quiet menu-btn"
+              aria-label="Open menu"
+              aria-haspopup="dialog"
+              aria-expanded={menu}
+              onClick={() => setMenu(true)}
+            >
+              <svg className="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+            </button>
             <nav aria-label="Breadcrumb">
               <ol className="crumbs">
                 {page?.group && <li>{page.group}</li>}
@@ -145,10 +220,13 @@ export function Shell({ pages }: { pages: readonly Page[] }) {
                 {signOut.error.message}
               </p>
             )}
-            <ErrorBoundary key={page?.path}>{page?.element}</ErrorBoundary>
+            {/* new on each route, so the page enters once per route change and a data refresh, which re-renders it in place, does not */}
+            <div key={page?.path} className={moved ? "page-enter" : undefined}>
+              <ErrorBoundary>{page?.element}</ErrorBoundary>
+            </div>
           </main>
         </div>
       </div>
-    </>
+    </Toaster>
   );
 }

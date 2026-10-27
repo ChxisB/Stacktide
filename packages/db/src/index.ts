@@ -29,6 +29,7 @@ export * from "./pipeline-runs";
 export * from "./policy";
 export * from "./project-connection";
 export * from "./repo";
+export * from "./resources";
 export * from "./rewrap";
 export * from "./rotations";
 export * from "./run-plans";

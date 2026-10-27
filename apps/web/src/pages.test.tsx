@@ -8,35 +8,35 @@ beforeAll(async () => {
 });
 afterAll(() => backend.stop());
 
-// every screen of the app, by its route: its one h1 (which the screens' own tests look for by name)
+// every screen of the app, by its route: its one h1 (which the screens' own tests look for by name), and the section
+// the sidebar and the breadcrumb put it in
 const PAGES = [
-  ["", "Welcome"],
-  ["projects", "Projects"],
-  ["variables", "Variables"],
-  ["sync", "Sync"],
-  ["pipeline", "Pipeline"],
-  ["status", "Pipeline status"],
-  ["findings", "Findings"],
-  ["state", "State"],
-  ["settings", "Settings"],
-  ["organizations", "Organizations"],
+  ["", "Welcome", "Delivery"],
+  ["projects", "Projects", "Delivery"],
+  ["variables", "Variables", "Governance"],
+  ["sync", "Sync", "Infrastructure"],
+  ["pipeline", "Pipeline", "Delivery"],
+  ["status", "Pipeline status", "Delivery"],
+  ["findings", "Findings", "Governance"],
+  ["state", "State", "Infrastructure"],
+  ["settings", "Settings", "Governance"],
+  ["organizations", "Organizations", "Governance"],
 ] as const;
 
 describe("page heads", () => {
+  // UXR-31: the design has no eyebrow above a title; the section is the breadcrumb's first item
   test.each(PAGES)(
-    "#/%s has the heading %p, an eyebrow that is its section, and a lede",
-    async (path, title) => {
+    "#/%s has the heading %p and a lede, no eyebrow, and the breadcrumb says it is in %p",
+    async (path, title, section) => {
       window.location.hash = `#/${path}`;
       const { client } = await backend.signIn("Head Tester");
       const { settled } = mount(client);
       const heading = await screen.findByRole("heading", { level: 1, name: title });
       expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
       const head = heading.closest("header") as HTMLElement;
-      const eyebrow = head.querySelector(".eyebrow")?.textContent;
-      // the eyebrow is the sidebar's heading for the page, which the breadcrumb also shows
+      expect(head.querySelectorAll(".eyebrow").length).toBe(0);
       const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
-      expect(eyebrow).toBeTruthy();
-      expect(within(crumbs).getAllByRole("listitem")[0]?.textContent).toBe(eyebrow);
+      expect(within(crumbs).getAllByRole("listitem")[0]?.textContent).toBe(section);
       expect((head.querySelector(".lede")?.textContent ?? "").length).toBeGreaterThan(20);
       await waitFor(() => settled());
     },

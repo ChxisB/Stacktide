@@ -70,8 +70,14 @@ describe("the toolbar", () => {
     mount(s.client);
     await matrix();
     expect(screen.getByRole("searchbox", { name: "Search variables" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^Filter/ })).toBeTruthy();
+    // UXR-22 (moved): the tag filter is a select in the bar, not a Filter button that opens one
+    const bar = screen.getByRole("searchbox", { name: "Search variables" }).closest(".toolbar");
+    expect(bar?.contains(screen.getByLabelText("Tag"))).toBe(true);
+    expect(screen.queryByRole("button", { name: /^Filter/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Add New" })).toBeTruthy();
+    // Reveal all and Download .env are the list's: the matrix has a Download .env in each column's menu
+    expect(screen.queryByRole("button", { name: /Reveal all|Hide all/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Download .env" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add a variable" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Import variables" })).toBeNull();
   });
@@ -120,7 +126,6 @@ describe("the toolbar", () => {
     mount(s.client);
     const table = await matrix();
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /^Filter/ }));
     const select = screen.getByLabelText("Tag") as HTMLSelectElement;
     expect(Array.from(select.options).map((o) => o.text)).toEqual(["All tags", "web"]);
     await user.selectOptions(select, "web");

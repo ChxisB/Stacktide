@@ -263,6 +263,15 @@ describe("what it refuses, in the order the SPEC lists them", () => {
     }
   });
 
+  test("a project set up with a cloud template (CLD-11) is planned as docker-deploy is", async () => {
+    for (const template of ["cloud-run", "ecs"]) {
+      const s = await scene({ template });
+      await s.deployed("staging", "success", SHA("b"));
+      expect((await s.plan("production", SHA("b"))).to, template).toBe(SHA("b"));
+      expect((await s.refusal("production", SHA("c"))).code, template).toBe("unknown_build");
+    }
+  });
+
   test("a value that is not a slug or a sha is a bad request, and is checked first", async () => {
     const s = await scene({ template: null });
     await s.deployed("staging", "success", SHA("b"));

@@ -221,7 +221,7 @@ if (keys) {
   const images = toolImages(config);
   const consumers = [
     pipelineEventHandler(runs),
-    deploymentEventHandler(gitlab),
+    deploymentEventHandler(runs),
     runEventHandler(runs),
     mrApplyHandler({ ...gitlab, images, platform: platformOf(apiUrl, audience) }),
   ];

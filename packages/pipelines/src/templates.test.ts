@@ -1,24 +1,27 @@
 import { describe, expect, test } from "bun:test";
 import { parse } from "yaml";
+import { SAMPLE_PARAMS } from "./cloud-samples";
 import { loadTemplates } from "./loader";
 import { render, SECRET_DETECTION_TEMPLATE } from "./render";
 
 const catalog = await loadTemplates();
 const names = catalog.map((t) => `${t.manifest.name}@${t.manifest.version}`);
 
-/** What a project would be handed with no parameters given. */
+/** What a project would be handed with no parameters given (the cloud templates, which have none to default, get the samples). */
 const rendered = (name: string) => {
   const t = catalog.find((c) => c.manifest.name === name);
   if (!t) throw new Error(`no template ${name}`);
-  return { t, text: render(t) };
+  return { t, text: render(t, [{ params: SAMPLE_PARAMS[name] ?? {} }]) };
 };
 
 describe("the starter templates", () => {
-  test("are the four the catalog starts with, all sound", () => {
+  test("are the six the catalog starts with, all sound", () => {
     expect(names).toEqual([
       "bun-app@1.0.0",
+      "cloud-run@1.0.0",
       "docker-deploy@1.0.0",
       "docker-image@1.0.0",
+      "ecs@1.0.0",
       "node-app@1.0.0",
     ]);
   });
@@ -29,6 +32,8 @@ describe("the starter templates", () => {
     ["docker-image", ["docker"]],
     // chosen, not recommended: a Docker project is still offered docker-image
     ["docker-deploy", []],
+    ["cloud-run", []],
+    ["ecs", []],
   ])("%s suits %j projects", (name, tags) => {
     expect<string[]>(rendered(name).t.manifest.detects).toEqual(tags);
   });
@@ -99,7 +104,7 @@ describe("the starter templates", () => {
       if (!t) throw new Error(`no template ${name}`);
       const taken = nasty.filter((value) => {
         try {
-          render(t, [{ params: { [param]: value } }]);
+          render(t, [{ params: { ...SAMPLE_PARAMS[name], [param]: value } }]);
           return true;
         } catch {
           return false;
@@ -115,7 +120,7 @@ describe("the starter templates with secret detection on (SCAN-5)", () => {
   const on = (name: string) => {
     const t = catalog.find((c) => c.manifest.name === name);
     if (!t) throw new Error(`no template ${name}`);
-    return render(t, [{ params: { secretDetection: true } }]);
+    return render(t, [{ params: { ...SAMPLE_PARAMS[name], secretDetection: true } }]);
   };
 
   test.each(starters)("%s renders with GitLab's template and its job", (name) => {
@@ -125,8 +130,11 @@ describe("the starter templates with secret detection on (SCAN-5)", () => {
   test.each(starters)("%s: off is what it always rendered, byte for byte", (name) => {
     const t = catalog.find((c) => c.manifest.name === name);
     if (!t) throw new Error(`no template ${name}`);
-    expect(render(t, [{ params: { secretDetection: false } }])).toBe(render(t));
-    expect(render(t)).not.toContain("secret_detection");
+    const own = { ...SAMPLE_PARAMS[name] };
+    expect(render(t, [{ params: { ...own, secretDetection: false } }])).toBe(
+      render(t, [{ params: own }]),
+    );
+    expect(render(t, [{ params: own }])).not.toContain("secret_detection");
   });
 
   test.each(starters)(

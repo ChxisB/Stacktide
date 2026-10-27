@@ -1,5 +1,17 @@
 import { readFileSync } from "node:fs";
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
+
+// UXR-7: an overlay enters over 120-320 ms, so its box is only where it will stay once the animation is over.
+// Spinners never finish and are left out; nothing asserted below changes.
+const settled = (page: Page) =>
+  page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY)
+        .map((a) => a.finished.catch(() => undefined)),
+    ),
+  );
 
 // RDS-17: happy-dom has no layout, so only a real browser can say whether a screen is wider than a phone.
 // Every screen, in both themes, at 390px: a wide table scrolls inside its card and never widens the page.
@@ -73,6 +85,56 @@ test("a table wider than the phone scrolls inside its card and never widens the 
   }
 });
 
+// UXR-24: a finding's path is the longest thing on its screen. With one far wider than a phone, the page still fits, the
+// path is on several lines (it breaks at the <wbr> after a slash), and a browser still names the row by the path whole.
+// The list is answered here, so it needs only the project the journey makes (the files run in order, on one worker).
+test("a long finding path wraps at phone width and never widens the page", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  const { session } = JSON.parse(readFileSync(`${import.meta.dirname}/.state.json`, "utf8"));
+  await context.addCookies([{ name: "orch_session", value: session, url: String(baseURL) }]);
+  const path = "services/billing/deploy/overlays/production/secrets.generated.yaml";
+  await page.route(/\/findings\?/, (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: "long",
+            rule: "generic-api-key",
+            path,
+            line: 17,
+            severity: "medium",
+            ref: "main",
+            status: "open",
+            dismissedBy: null,
+            dismissedReason: null,
+            dismissedAt: null,
+          },
+        ],
+        nextCursor: null,
+      },
+    }),
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("about:blank");
+  await page.goto("/#/findings");
+  const where = page.getByRole("rowheader", { name: `${path}:17`, exact: true });
+  await expect(where, "a project with findings (the journey made the project)").toBeVisible();
+  const lines = await where.locator("code").evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+  });
+  expect(lines, "the path is on several lines").toBeGreaterThan(1);
+  const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+    scrollWidth: document.scrollingElement?.scrollWidth ?? 0,
+    clientWidth: document.scrollingElement?.clientWidth ?? 0,
+  }));
+  expect(scrollWidth, "the page is wider than the screen").toBeLessThanOrEqual(clientWidth);
+});
+
 // VWS-6: the Variables page has two views, and the Secrets one has a row's details in a drawer (beside the list before VUI-6). Each view, with
 // the details open, at a desktop and a phone width. It needs the project the journey makes (the files run in order, on
 // one worker), so a page with no switch fails here and does not pass by showing nothing.
@@ -102,6 +164,7 @@ for (const theme of ["light", "dark"]) {
       await environment.click();
       const choices = page.getByRole("group", { name: "Environment" });
       await expect(choices).toBeVisible();
+      await settled(page);
       const menu = await choices.boundingBox();
       if (!menu) throw new Error("the menu has a box");
       expect(menu.x, `the menu's left edge at ${width}px`).toBeGreaterThanOrEqual(0);
@@ -139,6 +202,7 @@ for (const theme of ["light", "dark"]) {
       await list.getByRole("button", { name: "API_KEY", exact: true }).click();
       const details = page.getByRole("dialog", { name: "API_KEY in dev" });
       await expect(details).toBeVisible();
+      await settled(page);
       await expect(details.getByRole("region", { name: "API_KEY" })).toBeVisible();
       const of = await details.boundingBox();
       if (!of) throw new Error("the drawer has a box");
@@ -178,6 +242,7 @@ for (const theme of ["light", "dark"]) {
       await list.getByRole("button", { name: "DATABASE_URL", exact: true }).click();
       const inFolder = page.getByRole("dialog", { name: "DATABASE_URL in dev" });
       await expect(inFolder).toBeVisible();
+      await settled(page);
       const drawer = await inFolder.boundingBox();
       if (!drawer) throw new Error("the folder's drawer has a box");
       expect(drawer.x + drawer.width, `the folder's drawer's right edge at ${width}px`).toBeCloseTo(
@@ -190,18 +255,20 @@ for (const theme of ["light", "dark"]) {
       await path.getByRole("button", { name: "dev" }).click();
       await expect(list.getByRole("button", { name: "API_KEY", exact: true })).toBeVisible();
 
-      // VUI-11: with every row chosen the bar shows, the page still fits, and the confirm is a drawer that fits too; the
-      // journey's person is an organization owner, so a page without the boxes fails here
+      // VUI-11: with every row chosen the bar shows, the page still fits, and the confirm is a dialog (UXR-9: it was a drawer) that
+      // fits the screen too; the journey's person is an organization owner, so a page without the boxes fails here
       await list.getByRole("checkbox", { name: "Select all variables" }).check();
       const bar = page.getByRole("group", { name: "Selected variables" });
       await expect(bar).toBeVisible();
       expect(await sideways(), `the list with the bar at ${width}px`).toBe(false);
       await bar.getByRole("button", { name: "Delete selected" }).click();
-      const confirm = page.getByRole("dialog", { name: /^Delete \d+ variables?$/ });
+      const confirm = page.getByRole("alertdialog", { name: /^Delete \d+ variables?$/ });
       await expect(confirm).toBeVisible();
+      await settled(page);
       const at = await confirm.boundingBox();
       if (!at) throw new Error("the confirm has a box");
-      expect(at.x + at.width, `the confirm's right edge at ${width}px`).toBeCloseTo(width, 0);
+      expect(at.x, `the confirm's left edge at ${width}px`).toBeGreaterThanOrEqual(0);
+      expect(at.x + at.width, `the confirm's right edge at ${width}px`).toBeLessThanOrEqual(width);
       expect(await sideways(), `the confirm at ${width}px`).toBe(false);
       await page.keyboard.press("Escape");
       await expect(confirm).toBeHidden();
@@ -219,9 +286,12 @@ for (const theme of ["light", "dark"]) {
       // VUI-16: a column's menu opens whole, on the screen
       await page.getByRole("button", { name: "Options for dev" }).click();
       const columnMenu = page.getByRole("menu");
-      await expect(columnMenu).toBeVisible();
-      const m = await columnMenu.boundingBox();
-      if (!m) throw new Error("the column menu has a box");
+      // read in the frame it opens, at the end of its animation (UXR-7): at 390px the page scrolls after the click and a scroll closes the menu, so it cannot be waited for
+      const m = await columnMenu.evaluate((e) => {
+        for (const a of e.getAnimations()) a.finish();
+        return e.getBoundingClientRect().toJSON();
+      });
+      expect(m.width, `the column menu has a box at ${width}px`).toBeGreaterThan(0);
       expect(m.x, `the column menu's left edge at ${width}px`).toBeGreaterThanOrEqual(0);
       expect(m.x + m.width, `the column menu's right edge at ${width}px`).toBeLessThanOrEqual(
         width,
@@ -322,6 +392,7 @@ test("a row's menu opens whole and on top, for the last row, at desktop and phon
     await last.click();
     const menu = page.getByRole("menu");
     await expect(menu).toBeVisible();
+    await settled(page);
     const seen = await menu.evaluate((e) => {
       const r = e.getBoundingClientRect();
       const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);

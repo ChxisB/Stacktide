@@ -59,20 +59,27 @@ const section = () => screen.findByRole("region", { name: "Sign-in methods" }, {
 const rowsOf = (here: HTMLElement) => within(here).getAllByRole("row").slice(1);
 const press = async (within_: HTMLElement, name: string | RegExp) =>
   userEvent.setup().click(await within(within_).findByRole("button", { name }, { timeout: 5000 }));
+/** The unlink question, an alert dialog found by its name. */
+const asked = (name: string) => screen.findByRole("alertdialog", { name }, { timeout: 5000 });
+const toasted = () => document.querySelector(".toast-text")?.textContent || undefined;
 
 describe("the sign-in methods on the settings page", () => {
   test("lists GitLab and the organization's provider, with no way to give up GitLab and never the subject", async () => {
     const w = await world();
     mount(w.me.client);
     const here = await section();
-    await within(here).findByText(/Acme Corp/, {}, { timeout: 5000 });
+    await within(here).findByText(/Single sign-on: Acme Corp/, {}, { timeout: 5000 });
     const rows = rowsOf(here);
     expect(rows).toHaveLength(2);
     expect(rows[0]?.textContent).toContain("GitLab");
     expect(within(rows[0] as HTMLElement).queryByRole("button")).toBeNull();
     expect(rows[1]?.textContent).toContain(w.acme.slug);
     expect(rows[1]?.textContent).toContain("ada@acme.example");
-    expect(within(rows[1] as HTMLElement).getByRole("button", { name: "Unlink…" })).toBeTruthy();
+    expect(
+      within(rows[1] as HTMLElement).getByRole("button", { name: "Unlink… Acme Corp" }),
+    ).toBeTruthy();
+    // the method is what each row is about: its header
+    expect(within(here).getByRole("rowheader", { name: /Single sign-on: Acme Corp/ })).toBeTruthy();
     expect(here.textContent).not.toContain(SUB);
   });
 
@@ -83,7 +90,7 @@ describe("the sign-in methods on the settings page", () => {
       .values({ userId: w.me.user.id, provider: "github", subject: "90210424" });
     mount(w.me.client);
     const here = await section();
-    await within(here).findByText(/Acme Corp/, {}, { timeout: 5000 });
+    await within(here).findByText(/Single sign-on: Acme Corp/, {}, { timeout: 5000 });
     const github = rowsOf(here).find((r) => r.textContent?.startsWith("GitHub"));
     expect(github).toBeTruthy();
     expect(within(github as HTMLElement).queryByRole("button")).toBeNull();
@@ -94,16 +101,34 @@ describe("the sign-in methods on the settings page", () => {
     const w = await world();
     mount(w.me.client);
     const here = await section();
-    await within(here).findByText(/Acme Corp/, {}, { timeout: 5000 });
-    await press(here, "Unlink…");
-    await press(here, "Keep");
-    await within(here).findByRole("button", { name: "Unlink…" });
+    await within(here).findByText(/Single sign-on: Acme Corp/, {}, { timeout: 5000 });
+    const user = userEvent.setup();
+    const opener = () => within(here).getByRole("button", { name: "Unlink… Acme Corp" });
+    await user.click(opener());
+    let box = await asked("Unlink single sign-on: Acme Corp");
+    expect(box.textContent).toContain("ends the role it gave you");
+    // nothing has failed yet: no alert before an answer
+    expect(within(box).queryByRole("alert")).toBeNull();
+    await user.click(within(box).getByRole("button", { name: "Keep" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(document.activeElement === opener()).toBe(true);
     expect(await listIdentities(backend.t.db, w.me.user.id)).toHaveLength(2);
 
-    await press(here, "Unlink…");
-    await press(here, "Unlink");
+    await user.click(opener());
+    box = await asked("Unlink single sign-on: Acme Corp");
+    await user.click(within(box).getByRole("button", { name: "Unlink" }));
     // the page reads everything again once a role is gone, so `here` may be a new element by now
-    await waitFor(() => expect(screen.queryByText(/Acme Corp/)).toBeNull(), { timeout: 5000 });
+    // a boolean: a failed look at an element prints the whole page, and takes half a minute to
+    await waitFor(
+      () => expect(screen.queryByText(/Single sign-on: Acme Corp/) === null).toBe(true),
+      {
+        timeout: 5000,
+      },
+    );
+    await waitFor(() => expect(toasted()).toBe("Unlinked single sign-on: Acme Corp."), {
+      timeout: 5000,
+    });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(await listIdentities(backend.t.db, w.me.user.id)).toHaveLength(1);
     expect(await ssoRolesOf(backend.t.db, w.me.user.id)).toEqual({});
   });
@@ -139,21 +164,25 @@ describe("the sign-in methods on the settings page", () => {
     );
     mount(client);
     const here = await section();
-    await within(here).findByText(/Acme Corp/, {}, { timeout: 5000 });
-    await press(here, "Unlink…");
-    await press(here, "Unlink");
-    expect((await within(here).findByRole("alert", {}, { timeout: 5000 })).textContent).toContain(
+    await within(here).findByText(/Single sign-on: Acme Corp/, {}, { timeout: 5000 });
+    await press(here, /^Unlink…/);
+    const box = await asked("Unlink single sign-on: Acme Corp");
+    await userEvent.setup().click(within(box).getByRole("button", { name: "Unlink" }));
+    // the refusal is said in the dialog, which stays
+    expect((await within(box).findByRole("alert", {}, { timeout: 5000 })).textContent).toContain(
       "only way to sign in",
     );
+    expect(box.isConnected).toBe(true);
+    expect(toasted()).toBeUndefined();
     expect(await listIdentities(backend.t.db, w.me.user.id)).toHaveLength(2);
   });
 
   test("linking asks the API to start it by the organization's slug, then goes where it says", async () => {
     const w = await world();
-    const asked: string[] = [];
+    const started: string[] = [];
     const client = clientVia(backend.api, w.me.cookie, async (request, send) => {
       if (request.method !== "POST" || !pathOf(request).startsWith("/auth/sso/")) return send();
-      asked.push(`${pathOf(request)}${new URL(request.url).search}`);
+      started.push(`${pathOf(request)}${new URL(request.url).search}`);
       return Response.json({ location: "https://idp.example.com/auth?state=s" });
     });
     const go = spyOn(window.location, "assign").mockImplementation(() => {});
@@ -161,13 +190,22 @@ describe("the sign-in methods on the settings page", () => {
       mount(client);
       const here = await section();
       expect(within(here).queryByRole("button", { name: "Link with single sign-on" })).toBeNull();
-      await userEvent
-        .setup()
-        .type(await within(here).findByLabelText("Organization slug"), "  a b  ");
+      const form = await within(here).findByRole("form", { name: "Link another" });
+      const user = userEvent.setup();
+      const field = within(form).getByLabelText("Organization slug");
+      // nothing typed: Enter starts nothing
+      await user.type(field, "{Enter}");
+      expect(started).toEqual([]);
+      await user.type(field, "  a b  ");
       expect(here.textContent).toContain("whoever runs it can sign in as you");
       await press(here, "Link with single sign-on");
       await waitFor(() => expect(go).toHaveBeenCalledWith("https://idp.example.com/auth?state=s"));
-      expect(asked).toEqual(["/auth/sso/a%20b/link?return_to=%2F%23%2Fsettings"]);
+      expect(started).toEqual(["/auth/sso/a%20b/link?return_to=%2F%23%2Fsettings"]);
+      // the keyboard does the same: the field and Enter
+      go.mockClear();
+      await user.type(field, "{Enter}");
+      await waitFor(() => expect(go).toHaveBeenCalledTimes(1));
+      expect(started).toHaveLength(2);
     } finally {
       go.mockRestore();
     }

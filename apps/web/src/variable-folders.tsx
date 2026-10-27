@@ -127,7 +127,9 @@ export function FolderRows({
         <thead>
           <tr>
             <th scope="col">Folder</th>
-            <th scope="col">Variables</th>
+            <th scope="col" className="num">
+              Variables
+            </th>
             <th scope="col">
               <span className="visually-hidden">Actions</span>
             </th>
@@ -139,7 +141,7 @@ export function FolderRows({
               <th scope="row">
                 <code>{nameOf(f.path)}</code>
               </th>
-              <td>
+              <td className="num">
                 {f.variableCount} {f.variableCount === 1 ? "variable" : "variables"}
               </td>
               <td>

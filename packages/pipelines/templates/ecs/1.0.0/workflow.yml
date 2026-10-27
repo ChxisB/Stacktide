@@ -1,0 +1,132 @@
+# ecs: deploy to ECS Fargate from GitHub Actions. On the default branch a push deploys to the parameter's environment; the platform's promote and rollback
+# start this workflow by hand with an environment and a commit. The job asks GitHub for an identity token for the cloud, and the cloud's trust (the `deploy-identity` blueprint) names this
+# repository and this environment exactly. There is no stored secret and no pull-request trigger. The script is packages/pipelines/scripts/deploy-ecs.sh, copied whole (a test fails when the two differ).
+name: ecs
+# The platform finds the run it started by this name (`deployRunName`); a push gets one no environment slug can make.
+run-name: orch deploy ${{ inputs.environment || '(push)' }} ${{ inputs.sha || github.sha }}
+on:
+  push: {}
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: The environment to deploy to (its slug).
+        required: true
+        type: string
+      sha:
+        description: The commit whose image is deployed. An image already in the repository is not built again.
+        required: true
+        type: string
+      previous_sha:
+        description: The commit the environment runs now. Recorded by the platform, not used here.
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: deploy-${{ inputs.environment || '{{ params.environment }}' }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || '{{ params.environment }}' }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
+      - env:
+          ORCH_DEPLOY_ENV: ${{ inputs.environment || '{{ params.environment }}' }}
+          ORCH_DEPLOY_SHA: ${{ inputs.sha || github.sha }}
+          ORCH_DOCKERFILE: "{{ params.dockerfile }}"
+          ORCH_CONTEXT: "{{ params.context }}"
+          ORCH_CLOUD_ACCOUNT: "{{ params.account }}"
+          ORCH_CLOUD_REGION: "{{ params.region }}"
+          ORCH_CLOUD_ROLE: "{{ params.role }}"
+          ORCH_CLOUD_CLUSTER: "{{ params.cluster }}"
+          ORCH_CLOUD_SERVICE: "{{ params.service }}"
+          ORCH_CLOUD_REPOSITORY: "{{ params.repository }}"
+        shell: sh
+        run: |
+          set -eu
+          # the identity token, for the cloud's audience; it stays in this step's environment
+          ORCH_OIDC_TOKEN="$(curl --fail --silent --show-error -G --data-urlencode "audience=sts.amazonaws.com" \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+            | sed -n 's/.*"value":"\([^"]*\)".*/\1/p')"
+          export ORCH_OIDC_TOKEN
+          # Deploys one build of the repository to the ECS Fargate service a `service` blueprint created (ADR-0025).
+          # The forge's runner runs this; the platform never does. It reads only the ORCH_* names validated below, assumes the
+          # deploy role with the runner's OIDC token (no access key), and never prints a variable's value.
+          set -eu
+
+          fail() { echo "deploy-ecs: $1" >&2; exit 1; }
+          # every value reaches a shell, a JSON file or a command line: only a closed set of characters goes on
+          safe() { case "$2" in ""|-*|*[!A-Za-z0-9._/@:-]*) fail "$1 is missing or has a character it may not have" ;; esac; }
+          is_sha() { case "$1" in ""|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" -eq 40 ]; }
+          is_slug() { case "$1" in ""|*[!a-z0-9-]*|-*|*-|*--*) return 1 ;; esac; [ "${#1}" -le 63 ]; }
+          is_path() { case "$1" in ""|/*|-*|*..*|*[!A-Za-z0-9._/-]*) return 1 ;; esac; }
+
+          for name in ORCH_DEPLOY_ENV ORCH_DEPLOY_SHA ORCH_CLOUD_ACCOUNT ORCH_CLOUD_REGION ORCH_CLOUD_ROLE \
+            ORCH_CLOUD_CLUSTER ORCH_CLOUD_SERVICE ORCH_CLOUD_REPOSITORY; do
+            eval "safe \$name \"\${$name:-}\""
+          done
+          [ -n "${ORCH_OIDC_TOKEN:-}" ] || fail "ORCH_OIDC_TOKEN is missing: the job must ask the forge for an identity token"
+          is_slug "$ORCH_DEPLOY_ENV" || fail "ORCH_DEPLOY_ENV is not an environment slug"
+          is_sha "$ORCH_DEPLOY_SHA" || fail "ORCH_DEPLOY_SHA is not a 40-character commit sha"
+          case "$ORCH_CLOUD_ACCOUNT" in *[!0-9]*) fail "ORCH_CLOUD_ACCOUNT is not a 12-digit account id" ;; esac
+          [ "${#ORCH_CLOUD_ACCOUNT}" -eq 12 ] || fail "ORCH_CLOUD_ACCOUNT is not a 12-digit account id"
+          dockerfile="${ORCH_DOCKERFILE:-Dockerfile}"
+          context="${ORCH_CONTEXT:-.}"
+          is_path "$dockerfile" || fail "ORCH_DOCKERFILE is not a path inside the repository"
+          is_path "$context" || fail "ORCH_CONTEXT is not a path inside the repository"
+          [ -z "${ORCH_SERVICE_URL:-}" ] || safe ORCH_SERVICE_URL "$ORCH_SERVICE_URL"
+
+          # the CLI takes the identity from these variables and the token file; any access key the runner holds is dropped first,
+          # since a key outranks the token. The token file and the docker login live in a directory removed on exit
+          umask 077
+          work="$(mktemp -d "${TMPDIR:-/tmp}/orch-deploy.XXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+          unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE AWS_CONFIG_FILE AWS_SHARED_CREDENTIALS_FILE
+          printf %s "$ORCH_OIDC_TOKEN" > "$work/token"
+          export AWS_ROLE_ARN="arn:aws:iam::$ORCH_CLOUD_ACCOUNT:role/$ORCH_CLOUD_ROLE" AWS_WEB_IDENTITY_TOKEN_FILE="$work/token" \
+            AWS_ROLE_SESSION_NAME=orch-deploy AWS_REGION="$ORCH_CLOUD_REGION" AWS_DEFAULT_REGION="$ORCH_CLOUD_REGION" \
+            AWS_EC2_METADATA_DISABLED=true DOCKER_CONFIG="$work/docker"
+
+          aws sts get-caller-identity > /dev/null 2>&1 || fail "could not assume the deploy role with the identity token"
+          registry="$ORCH_CLOUD_ACCOUNT.dkr.ecr.$ORCH_CLOUD_REGION.amazonaws.com"
+          image="$registry/$ORCH_CLOUD_REPOSITORY:$ORCH_DEPLOY_SHA"
+
+          # the repository is immutable: a tag is pushed once. A rollback, or a re-run, finds the commit's image and deploys it as it is
+          if found="$(aws ecr describe-images --repository-name "$ORCH_CLOUD_REPOSITORY" --image-ids "imageTag=$ORCH_DEPLOY_SHA" \
+            --query 'imageDetails[0].imageDigest' --output text 2>&1)"; then
+            echo "deploy-ecs: the image for $ORCH_DEPLOY_SHA is already in $ORCH_CLOUD_REPOSITORY"
+          else
+            case "$found" in *ImageNotFoundException*) ;; *) fail "could not read the repository $ORCH_CLOUD_REPOSITORY" ;; esac
+            aws ecr get-login-password | docker login --username AWS --password-stdin "$registry" > /dev/null 2>&1 \
+              || fail "could not sign in to $registry"
+            docker build --pull -f "$dockerfile" -t "$image" "$context"
+            docker push "$image"
+          fi
+
+          # a new revision of the service's task definition, the same but for its one image. The service is Terraform's, and it
+          # ignores changes to its task definition (`ignore_changes`), so this revision survives the next apply
+          # shortcut: only the fields the platform's own module sets are copied; a hand-added field (placement, runtime platform) is dropped, so a volume stops the deploy and the rest is not checked
+          current="$(aws ecs describe-services --cluster "$ORCH_CLOUD_CLUSTER" --services "$ORCH_CLOUD_SERVICE" \
+            --query 'services[0].taskDefinition' --output text)"
+          safe "the service's task definition" "$current"
+          [ "$(aws ecs describe-task-definition --task-definition "$current" --query 'length(taskDefinition.volumes)' --output text)" = 0 ] \
+            || fail "the task definition has volumes, which this script does not copy"
+          aws ecs describe-task-definition --task-definition "$current" --output json \
+            --query 'taskDefinition.{family:family,taskRoleArn:taskRoleArn,executionRoleArn:executionRoleArn,networkMode:networkMode,requiresCompatibilities:requiresCompatibilities,cpu:cpu,memory:memory,containerDefinitions:containerDefinitions}' \
+            > "$work/definition.json"
+          [ "$(grep -c '"image":' "$work/definition.json")" = 1 ] || fail "the task definition does not have exactly one container"
+          sed "s|\"image\": *\"[^\"]*\"|\"image\": \"$image\"|" "$work/definition.json" > "$work/next.json"
+          revision="$(aws ecs register-task-definition --cli-input-json "file://$work/next.json" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)"
+          safe "the new task definition" "$revision"
+          aws ecs update-service --cluster "$ORCH_CLOUD_CLUSTER" --service "$ORCH_CLOUD_SERVICE" --task-definition "$revision" > /dev/null
+          aws ecs wait services-stable --cluster "$ORCH_CLOUD_CLUSTER" --services "$ORCH_CLOUD_SERVICE"
+          echo "deploy-ecs: $ORCH_CLOUD_SERVICE is running $ORCH_DEPLOY_SHA in $ORCH_DEPLOY_ENV${ORCH_SERVICE_URL:+ at $ORCH_SERVICE_URL}"

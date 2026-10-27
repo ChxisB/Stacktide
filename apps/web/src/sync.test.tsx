@@ -5,6 +5,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { newQueryClient, Providers } from "./app";
 import { AuthGate } from "./auth";
+import { Toaster } from "./components";
 import { OrgProvider, RequireOrg } from "./org";
 import { SyncPage } from "./sync";
 import { type Backend, clientVia, down, mount, pathOf, startBackend } from "./testing";
@@ -110,11 +111,13 @@ function mountPage(client: ReturnType<Backend["anonymous"]>, pollMs = 20) {
     queries,
     ...render(
       <Providers client={client} queries={queries}>
-        <AuthGate>
-          <OrgProvider>
-            <RequireOrg>{(org) => <SyncPage orgId={org.id} pollMs={pollMs} />}</RequireOrg>
-          </OrgProvider>
-        </AuthGate>
+        <Toaster>
+          <AuthGate>
+            <OrgProvider>
+              <RequireOrg>{(org) => <SyncPage orgId={org.id} pollMs={pollMs} />}</RequireOrg>
+            </OrgProvider>
+          </AuthGate>
+        </Toaster>
       </Providers>,
     ),
   };
@@ -164,6 +167,15 @@ const planIt = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.click(await screen.findByRole("button", { name: "Plan sync" }));
   return plan();
 };
+/** What the plan counts, one pill each: "3 to create", "1 to change", "0 to delete". */
+const counts = (p: HTMLElement) =>
+  Array.from(p.querySelectorAll(".sync-counts > .sync-count")).map((e) => e.textContent);
+/** The button that opens what the last sync did, and the part of the page it opens. */
+const disclosure = async () => {
+  const toggle = await screen.findByRole("button", { name: "What the last sync did" });
+  const panel = () => document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+  return { toggle, panel };
+};
 const finished = (text: RegExp) =>
   waitFor(() => expect(facts(document.body)["Last sync"]).toMatch(text), { timeout: 5000 });
 
@@ -197,6 +209,27 @@ describe("before there is a target", () => {
       }),
     );
   });
+});
+
+describe("what the target does with what only it holds", () => {
+  const policies = [
+    ["ignore", "info", "Variables only on the target are left alone."],
+    ["adopt", "info", "Variables only on the target are listed and left alone."],
+    ["prune", "warn", "Variables only on the target are deleted."],
+  ] as const;
+  for (const [policy, tone, sentence] of policies) {
+    test(`${policy} is a ${tone} callout in the card, not part of the sub line`, async () => {
+      const w = await world({ policy });
+      mountPage(w.client);
+      const c = await card();
+      expect(c.querySelector(`.callout-${tone}`)?.textContent).toContain(sentence);
+      expect(c.querySelector(".callout-warn") !== null).toBe(tone === "warn");
+      // an unmanaged policy is not announced: it is how the target is set, not news
+      expect(c.querySelector(".callout")?.getAttribute("role")).toBeNull();
+      const sub = c.querySelector(".card-sub")?.textContent;
+      expect(sub).toBe("GitLab CI/CD variables. Syncs when you ask.");
+    });
+  }
 });
 
 // FLW-5: the environments of a target as a flow, with the counts of an open plan on each line
@@ -337,7 +370,7 @@ describe("a plan", () => {
     const p = await planIt(user);
     expect(p.textContent).toContain("Nothing has been changed on the target yet.");
     expect(p.textContent).toMatch(/good until \d{4}-\d\d-\d\d \d\d:\d\d UTC/);
-    expect(p.textContent).toContain("3 to create, 1 to change, 0 to delete.");
+    expect(counts(p)).toEqual(["3 to create", "1 to change", "0 to delete"]);
     expect(rowsOf(within(p).getByRole("table"))).toEqual([
       ["A_PLAIN", "All environments", "Create", ""],
       ["B_SECRET", "All environments", "Create", ""],
@@ -381,7 +414,7 @@ describe("a plan", () => {
     expect(p.textContent).toContain(
       "The target already has everything this project would put there.",
     );
-    expect(p.textContent).toContain("0 to create, 0 to change, 0 to delete.");
+    expect(counts(p)).toEqual(["0 to create", "0 to change", "0 to delete"]);
     expect(within(p).queryByRole("table")).toBeNull();
     expect(within(p).queryByRole("button", { name: "Apply…" })).toBeNull();
     await user.click(within(p).getByRole("button", { name: "Discard plan" }));
@@ -422,7 +455,7 @@ describe("a plan", () => {
       ["G_EXTRA", "All environments", "Delete from the target", ""],
       ["KEPT", "All environments", "Create", ""],
     ]);
-    expect(p.textContent).toContain("1 to create, 0 to change, 1 to delete.");
+    expect(counts(p)).toEqual(["1 to create", "0 to change", "1 to delete"]);
     expect(document.body.textContent).not.toContain("not-wanted-value");
   });
 
@@ -444,6 +477,54 @@ describe("a plan", () => {
     mountPage(w.client);
     const p = await planIt(userEvent.setup());
     expect(p.textContent).toMatch(/no longer exists, and left alone: .*dev/);
+  });
+
+  test("the counts are pills, each with a mark that is not read out and its words", async () => {
+    const w = await filled();
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    const pills = Array.from(p.querySelectorAll(".sync-counts > .sync-count"));
+    expect(pills.map((e) => e.textContent)).toEqual(["3 to create", "1 to change", "0 to delete"]);
+    const marks = pills.map((e) => e.querySelector("svg.op"));
+    expect(marks.map((m) => m?.getAttribute("aria-hidden"))).toEqual(["true", "true", "true"]);
+    expect(
+      marks.map((m) => Array.from(m?.classList ?? []).find((c) => c.startsWith("op-"))),
+    ).toEqual(["op-create", "op-update", "op-delete"]);
+  });
+
+  test("a danger callout says what is deleted, and only when something is", async () => {
+    const w = await world({ policy: "prune" });
+    await w.put.project("KEPT", "kept-value");
+    await w.gitlab.variables.create(w.of, "G_EXTRA", { value: "not-wanted-value" });
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    const danger = p.querySelector(".callout-bad");
+    expect(danger?.getAttribute("role")).toBe("alert");
+    expect(danger?.textContent).toContain("1 variable would be deleted from the target.");
+    expect(danger?.textContent).toContain("cannot be brought back from here");
+    expect(document.body.textContent).not.toContain("not-wanted-value");
+  });
+
+  test("the danger callout counts what is deleted, and says they, not it, for more than one", async () => {
+    const w = await world({ policy: "prune" });
+    await w.put.project("KEPT", "kept-value");
+    await w.gitlab.variables.create(w.of, "G_EXTRA", { value: "not-wanted-value" });
+    await w.gitlab.variables.create(w.of, "H_EXTRA", { value: "also-not-wanted" });
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    expect(p.querySelector(".callout-bad")?.textContent).toBe(
+      "2 variables would be deleted from the target. This project does not hold their values, so they cannot be brought back from here.",
+    );
+  });
+
+  test("a plan that deletes nothing has no danger callout, even where the target deletes what it holds alone", async () => {
+    const w = await world({ policy: "prune" });
+    await w.put.project("KEPT", "kept-value");
+    mountPage(w.client);
+    const p = await planIt(userEvent.setup());
+    expect(counts(p)).toEqual(["1 to create", "0 to change", "0 to delete"]);
+    expect(p.querySelector(".callout-bad")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   test("the plan the API refuses to make says why", async () => {
@@ -468,12 +549,12 @@ describe("applying a plan", () => {
     const user = userEvent.setup();
     const p = await planIt(user);
     await user.click(within(p).getByRole("button", { name: "Apply…" }));
-    const form = screen.getByRole("form", { name: "Apply to main" });
-    expect(form.textContent).toContain("creates 3, changes 1 and deletes 0 variables");
+    const dialog = screen.getByRole("dialog", { name: "Apply this plan to main?" });
+    expect(dialog.textContent).toContain("creates 3, changes 1 and deletes 0 variables");
     // asking is not doing
     expect(w.writes()).toBe(0);
-    await user.click(within(form).getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("form", { name: "Apply to main" })).toBeNull();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Apply this plan to main?" })).toBeNull();
     expect(w.writes()).toBe(0);
 
     await user.click(within(await plan()).getByRole("button", { name: "Apply…" }));
@@ -490,9 +571,12 @@ describe("applying a plan", () => {
     // the plan is spent: the screen goes back to asking for one, and says what was done, still with no value
     expect(screen.queryByRole("region", { name: "Plan for main" })).toBeNull();
     expect(screen.getByRole("button", { name: "Plan sync" })).toBeTruthy();
-    const done = await screen.findByRole("group");
-    expect(done.textContent).toContain("What the last sync did");
-    expect(rowsOf(within(done).getByRole("table")).map((r) => [r[0], r[4]])).toEqual([
+    const { toggle, panel } = await disclosure();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await user.click(toggle);
+    expect(
+      rowsOf(within(panel() as HTMLElement).getByRole("table")).map((r) => [r[0], r[4]]),
+    ).toEqual([
       ["A_PLAIN", "Done"],
       ["B_SECRET", "Done"],
       ["D_CHANGED", "Done"],
@@ -508,6 +592,28 @@ describe("applying a plan", () => {
       ),
     ).not.toContain(SECRET);
     expect(await w.audit("sync_run.apply")).toHaveLength(1);
+  });
+
+  test("what the last sync did is a button that opens and shuts it, and says which", async () => {
+    const w = await filled();
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await user.click(screen.getByRole("button", { name: "Apply…" }));
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    await finished(/^Applied /);
+    const { toggle, panel } = await disclosure();
+    // nothing went wrong, so it is shut and its table is not on offer
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(panel()?.hidden).toBe(true);
+    expect(within(panel() as HTMLElement).queryByRole("table")).toBeNull();
+    await user.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(panel()?.hidden).toBe(false);
+    expect(within(panel() as HTMLElement).getByRole("table")).toBeTruthy();
+    await user.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(panel()?.hidden).toBe(true);
   });
 
   test("the last sync is still there after a reload of the page", async () => {
@@ -657,6 +763,93 @@ describe("applying a plan", () => {
     expect(posts).toBe(1);
   });
 
+  test("the confirmation is a dialog that says what it will do, and Cancel gives the focus back", async () => {
+    const w = await filled();
+    mountPage(w.client);
+    const user = userEvent.setup();
+    const p = await planIt(user);
+    const opener = within(p).getByRole("button", { name: "Apply…" });
+    await user.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "Apply this plan to main?" });
+    // nothing is deleted, so it is not an alert, has no warning, and its answer is the plain one
+    expect(dialog.getAttribute("role")).toBeNull();
+    expect(dialog.querySelector(".callout")).toBeNull();
+    // the noun follows the number of deletes, not the number of changes
+    expect(dialog.textContent).toMatch(/and deletes 0 variables on the target\./);
+    const answer = within(dialog).getByRole("button", { name: "Apply plan" });
+    expect(answer.classList.contains("primary")).toBe(true);
+    expect(answer.classList.contains("danger")).toBe(false);
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(opener);
+  });
+
+  test("a plan that deletes asks as an alert, with the warning in the dialog and a danger answer", async () => {
+    const w = await world({ policy: "prune" });
+    await w.put.project("KEPT", "kept-value");
+    await w.gitlab.variables.create(w.of, "G_EXTRA", { value: "not-wanted-value" });
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await user.click(screen.getByRole("button", { name: "Apply…" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Apply this plan to main?" });
+    expect(dialog.textContent).toMatch(/and deletes 1 variable on the target\./);
+    const warning = dialog.querySelector(".callout-warn");
+    expect(warning?.textContent).toBe(
+      "A variable deleted from the target cannot be brought back from here: this project does not hold its value.",
+    );
+    expect(warning?.getAttribute("role")).toBeNull();
+    const answer = within(dialog).getByRole("button", { name: "Apply plan" });
+    expect(answer.classList.contains("danger") && answer.classList.contains("solid")).toBe(true);
+  });
+
+  test("a started sync closes the dialog and is told by a toast", async () => {
+    const w = await filled();
+    mountPage(w.client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await user.click(screen.getByRole("button", { name: "Apply…" }));
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    const told = await screen.findByText("Sync started on main.");
+    expect(told.closest("[role=status]")).not.toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await finished(/^Applied /);
+  });
+
+  test("an apply the server refuses is said in the dialog, which stays to try again", async () => {
+    const w = await filled();
+    let refusals = 2;
+    const client = clientVia(backend.api, w.cookie, async (request, send) => {
+      if (refusals > 0 && request.method === "POST" && pathOf(request).endsWith("/apply")) {
+        refusals -= 1;
+        return down("the apply store is down");
+      }
+      return send();
+    });
+    mountPage(client);
+    const user = userEvent.setup();
+    await planIt(user);
+    await user.click(screen.getByRole("button", { name: "Apply…" }));
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    const dialog = screen.getByRole("dialog", { name: "Apply this plan to main?" });
+    // the one alert on the page is in the dialog, where the person is looking
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.length).toBe(1);
+    expect(dialog.contains(alerts[0] ?? null)).toBe(true);
+    expect(alerts[0]?.textContent).toContain("the apply store is down");
+    const again = within(dialog).getByRole("button", { name: "Apply plan" }) as HTMLButtonElement;
+    expect(again.disabled).toBe(false);
+    expect(w.writes()).toBe(0);
+    // giving up and asking again does not show what went wrong the time before
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Apply…" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("the apply store is down");
+    await user.click(screen.getByRole("button", { name: "Apply plan" }));
+    await finished(/^Applied /);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   test("what would be deleted is said again before it is", async () => {
     const w = await world({ policy: "prune" });
     await w.put.project("KEPT", "kept-value");
@@ -665,11 +858,13 @@ describe("applying a plan", () => {
     const user = userEvent.setup();
     await planIt(user);
     await user.click(screen.getByRole("button", { name: "Apply…" }));
-    const form = screen.getByRole("form", { name: "Apply to main" });
-    expect(form.textContent).toContain("creates 1, changes 0 and deletes 1 variables");
-    expect(form.textContent).toContain("cannot be brought back from here");
+    const dialog = screen.getByRole("alertdialog", { name: "Apply this plan to main?" });
+    expect(dialog.textContent).toContain(
+      "creates 1, changes 0 and deletes 1 variable on the target.",
+    );
+    expect(dialog.textContent).toContain("cannot be brought back from here");
     expect(Object.keys(await w.held())).toContain("G_EXTRA *");
-    await user.click(within(form).getByRole("button", { name: "Apply plan" }));
+    await user.click(within(dialog).getByRole("button", { name: "Apply plan" }));
     await finished(/^Applied /);
     expect(Object.keys(await w.held())).toEqual(["KEPT *"]);
   });
@@ -682,7 +877,9 @@ describe("applying a plan", () => {
     await w.put.project("LATE", "late-value");
     await user.click(screen.getByRole("button", { name: "Apply…" }));
     await user.click(screen.getByRole("button", { name: "Apply plan" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("plan again");
+    const refused = await screen.findByRole("alert");
+    expect(refused.textContent).toContain("plan again");
+    expect(refused.classList.contains("callout-bad")).toBe(true);
     // it can never be applied now, so it is gone, and nothing was written
     expect(screen.queryByRole("region", { name: "Plan for main" })).toBeNull();
     expect(w.writes()).toBe(0);
@@ -710,9 +907,9 @@ describe("applying a plan", () => {
       "1 of 4 changes failed (1 variable failed)",
     );
     // what went wrong is open without asking for it, and holds no value
-    const done = await screen.findByRole("group");
-    expect((done as HTMLDetailsElement).open).toBe(true);
-    const results = rowsOf(within(done).getByRole("table")).map((r) => r[4]);
+    const { toggle, panel } = await disclosure();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const results = rowsOf(within(panel() as HTMLElement).getByRole("table")).map((r) => r[4]);
     expect(results.filter((r) => r?.startsWith("Failed: "))).toHaveLength(1);
     expect(results.filter((r) => r === "Done")).toHaveLength(3);
     noValues();

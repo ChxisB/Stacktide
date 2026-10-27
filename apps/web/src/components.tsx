@@ -1,8 +1,10 @@
 import {
+  type ComponentProps,
   createContext,
   type KeyboardEvent as ReactKeyEvent,
   type ReactNode,
   type RefObject,
+  useCallback,
   useContext,
   useEffect,
   useId,
@@ -18,6 +20,8 @@ const ICONS = {
   filter: "M4 6h16M7 12h10M10 18h4",
   download: "M12 4v11M7 11l5 5 5-5M5 20h14",
   down: "M6 9l6 6 6-6",
+  next: "M9 6l6 6-6 6",
+  external: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
   key: "M8 11a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM11 12l9-9M17 6l3 3M14 9l2 2",
   copy: "M9 9h11v11H9zM5 15V4h11",
   more: "M5 12h.01M12 12h.01M19 12h.01",
@@ -30,6 +34,11 @@ const ICONS = {
     "M3 3l18 18M10.6 6.1A9.7 9.7 0 0 1 12 6c6 0 10 6 10 6a17 17 0 0 1-3.1 3.7M6.6 7.6C3.9 9.3 2 12 2 12s4 7 10 7c1.5 0 2.9-.4 4.1-1M9.9 9.9a3 3 0 0 0 4.2 4.2",
   restore: "M4 12a8 8 0 1 0 2.5-5.8M4 4v4h4",
   clock: "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM12 8v4l3 2",
+  folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  info: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 11v5M12 7.5v.1",
+  success: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM8 12.4l2.7 2.7L16 9.6",
+  warning: "M12 3.5l9 15.5H3zM12 10v4M12 16.5v.1",
+  error: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7.5v5M12 16v.1",
 };
 
 /** A decorative icon: a screen reader gets the name of the button around it, never the picture. */
@@ -66,17 +75,11 @@ export function ThemeToggle() {
   );
 }
 
-/** The top of a page: the page's one `<h1>`, with an eyebrow above, a lede below and actions beside it. */
-export function PageHead(props: {
-  title: string;
-  eyebrow?: string;
-  lede?: string;
-  actions?: ReactNode;
-}) {
+/** The top of a page: the page's one `<h1>`, with a lede below and actions beside it. */
+export function PageHead(props: { title: string; lede?: string; actions?: ReactNode }) {
   return (
     <header className="head">
       <div>
-        {props.eyebrow && <p className="eyebrow">{props.eyebrow}</p>}
         <h1>{props.title}</h1>
         {props.lede && <p className="lede">{props.lede}</p>}
       </div>
@@ -89,7 +92,7 @@ export function PageHead(props: {
 export function Card(props: {
   title?: string;
   label?: string;
-  sub?: string;
+  sub?: ReactNode;
   actions?: ReactNode;
   children?: ReactNode;
 }) {
@@ -137,6 +140,50 @@ export function Glyph({ tone }: { tone: Tone }) {
   );
 }
 
+export type CalloutTone = "info" | "ok" | "warn" | "bad";
+const CALLOUT_ICON = { info: "info", ok: "success", warn: "warning", bad: "error" } as const;
+
+/** A message in a box: a glyph and words in one of four tones, and under them the button that answers it (`action`). Only a bad one is announced at once (`role="alert"`). */
+export function Callout(props: {
+  tone: CalloutTone;
+  title?: string;
+  children: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div
+      className={`callout callout-${props.tone}`}
+      role={props.tone === "bad" ? "alert" : undefined}
+    >
+      <Icon name={CALLOUT_ICON[props.tone]} />
+      <div>
+        {props.title && (
+          <>
+            <b>{props.title}</b>{" "}
+          </>
+        )}
+        {props.children}
+        {props.action && <div className="callout-action">{props.action}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** A place with nothing in it, or that failed (`tone="bad"`, announced): what belongs here and the button that fixes it. */
+export function Empty(props: { title: string; text: ReactNode; action?: ReactNode; tone?: "bad" }) {
+  const bad = props.tone === "bad";
+  return (
+    <div className={bad ? "empty empty-bad" : "empty"} role={bad ? "alert" : undefined}>
+      <div className="orb">
+        <Icon name={bad ? "error" : "folder"} />
+      </div>
+      <h3 className="empty-title">{props.title}</h3>
+      <p>{props.text}</p>
+      {props.action && <div className="empty-action">{props.action}</div>}
+    </div>
+  );
+}
+
 /** A state in words with a shape beside it. The words are always there; the shape is decoration. */
 export function StatusBadge({ tone, children }: { tone: Tone; children: ReactNode }) {
   return (
@@ -157,12 +204,13 @@ export function Named({ word, name }: { word: string; name: string }) {
   );
 }
 
-/** One figure with its label. shortcut: no trend or meter, as no screen has a history to draw from. */
+/** One figure with its label, and a foot line that is a link when `footHref` is given. shortcut: no trend or meter, as no screen has a history to draw from. */
 export function Kpi(props: {
   label: string;
   value: string | number;
   unit?: string;
   foot?: string;
+  footHref?: string;
 }) {
   return (
     <div className="kpi">
@@ -176,7 +224,11 @@ export function Kpi(props: {
           </>
         )}
       </span>
-      {props.foot && <span className="kpi-foot">{props.foot}</span>}
+      {props.foot && (
+        <span className="kpi-foot">
+          {props.footHref ? <a href={props.footHref}>{props.foot}</a> : props.foot}
+        </span>
+      )}
     </div>
   );
 }
@@ -308,7 +360,14 @@ export function RowMenu(props: {
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
-  const [at, setAt] = useState<{ top?: number; bottom?: number; right: number }>({ right: 0 });
+  const [at, setAt] = useState<{
+    top?: number;
+    bottom?: number;
+    right: number;
+    transformOrigin?: string;
+    /** -1 when the menu is over its button: the pop-in keyframe moves it toward the button either way. */
+    "--menu-dir"?: number;
+  }>({ right: 0 });
   const [active, setActive] = useState(0);
   const box = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -337,12 +396,16 @@ export function RowMenu(props: {
     if (r) {
       const high = props.items.length * ITEM_HEIGHT + 10;
       const below = window.innerHeight - r.bottom;
-      // under the button, or over it when the page ends before the menu does
+      // under the button, or over it when the page ends before the menu does; it pops from the corner by the button
       setAt({
         right: window.innerWidth - r.right,
         ...(below < high && r.top > below
-          ? { bottom: window.innerHeight - r.top + 4 }
-          : { top: r.bottom + 4 }),
+          ? {
+              bottom: window.innerHeight - r.top + 4,
+              transformOrigin: "bottom right",
+              "--menu-dir": -1,
+            }
+          : { top: r.bottom + 4, transformOrigin: "top right" }),
       });
     }
     setActive(0);
@@ -430,38 +493,40 @@ const InDrawer = createContext(false);
 /** True under a `Drawer`: what it holds drops the heading its header already gives. */
 export const useInDrawer = () => useContext(InDrawer);
 
+/** The boxes of the modals that are open, the last one on top. */
+let openModals: HTMLElement[] = [];
+let pageOverflow = "";
+
 /**
- * A panel from the right edge, as a modal dialog: named by `title` (a line, not a heading: what it holds brings its own),
- * focus goes in and comes back to what opened it, Tab stays inside, Esc and the scrim close it, and the page behind does
- * not scroll. It is drawn on the body, so no card or table around its caller can cut it off or sit over it.
+ * What a modal does around its box, for `Drawer` and `Dialog` alike: focus goes in and comes back to what opened it, Tab
+ * stays inside, Esc closes it, and the page behind does not scroll. `on` is false while the box is not a modal (the shell's
+ * sidebar is one only as the phone menu, and is always mounted).
  * shortcut: the page behind is covered, not `inert`, so a screen reader's own virtual cursor can still leave it; add `inert` to the app root if that matters.
  */
-export function Drawer(props: {
-  title: string;
-  /** One line under the title for what the drawer is for; the dialog's description. */
-  sub?: string;
-  close: () => void;
-  /** In the middle of the screen, as a box, for a form of a field or two. */
-  centered?: boolean;
-  children: ReactNode;
-}) {
-  const id = useId();
-  const subId = useId();
-  const box = useRef<HTMLDialogElement>(null);
-  const { close } = props;
+export function useModal(box: RefObject<HTMLElement | null>, close: () => void, on = true) {
   useEffect(() => {
+    if (!on) return;
     // what had the focus before it moved in: the button that opened this
     const opener = document.activeElement;
-    const { overflow } = document.body.style;
+    const mine = box.current;
+    // the page's own overflow is kept by the first modal and given back by the last, in whatever order they go
+    if (openModals.length === 0) pageOverflow = document.body.style.overflow;
+    if (mine) openModals = [...openModals, mine];
     document.body.style.overflow = "hidden";
     box.current?.focus();
     return () => {
-      document.body.style.overflow = overflow;
+      openModals = openModals.filter((m) => m !== mine);
+      if (openModals.length === 0) document.body.style.overflow = pageOverflow;
+      // what opened it may be gone with what it did (a row deleted): then the page's main, not the body
       if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+      else document.getElementById("main")?.focus();
     };
-  }, []);
+  }, [box, on]);
   useEffect(() => {
+    if (!on) return;
     const keys = (e: KeyboardEvent) => {
+      // a dialog over a drawer: Esc and Tab are the one on top's alone
+      if (openModals.at(-1) !== box.current) return;
       if (e.key === "Escape") {
         e.preventDefault();
         close();
@@ -484,7 +549,28 @@ export function Drawer(props: {
     };
     document.addEventListener("keydown", keys);
     return () => document.removeEventListener("keydown", keys);
-  }, [close]);
+  }, [box, close, on]);
+}
+
+/**
+ * A panel from the right edge, as a modal dialog: named by `title` (a line, not a heading: what it holds brings its own),
+ * focus goes in and comes back to what opened it, Tab stays inside, Esc and the scrim close it, and the page behind does
+ * not scroll. It is drawn on the body, so no card or table around its caller can cut it off or sit over it.
+ */
+export function Drawer(props: {
+  title: string;
+  /** One line under the title for what the drawer is for; the dialog's description. */
+  sub?: string;
+  close: () => void;
+  /** In the middle of the screen, as a box, for a form of a field or two. */
+  centered?: boolean;
+  children: ReactNode;
+}) {
+  const id = useId();
+  const subId = useId();
+  const box = useRef<HTMLDialogElement>(null);
+  const { close } = props;
+  useModal(box, close);
   return createPortal(
     <div className="drawer-layer">
       <button
@@ -530,5 +616,189 @@ export function Drawer(props: {
       </dialog>
     </div>,
     document.body,
+  );
+}
+
+const FIELDS = "input:not([disabled]), select:not([disabled]), textarea:not([disabled])";
+
+/**
+ * One question with two answers, as a modal: a heading, what it means, the fields it needs (`children`), an error line,
+ * and Cancel then the answer. A destructive one is an alert dialog, its answer is the solid danger button and the focus
+ * starts on Cancel; one with fields starts on the first. While `busy` both buttons are disabled and the answer says so, and
+ * when the work stops (the error says why) the focus is back on the answer. Enter in a field answers it.
+ * `children` are fields, not a form: the dialog is the form. Under 600px it is a sheet on the bottom edge.
+ */
+export function Dialog(props: {
+  title: string;
+  /** What it means, in one line; the dialog's description. */
+  sub?: string;
+  /** The answer that closes it without doing anything; "Cancel" unless the caller says what it keeps. */
+  cancel?: string;
+  /** The answer that does it, named for what it does ("Delete variable"), never "OK". */
+  confirm: string;
+  destructive?: boolean;
+  busy?: boolean;
+  /** The answer cannot be given yet (what it would do is not known): shut, but nothing is under way, so nothing says busy. */
+  disabled?: boolean;
+  error?: string;
+  onConfirm: () => void;
+  close: () => void;
+  children?: ReactNode;
+}) {
+  const id = useId();
+  const subId = useId();
+  const box = useRef<HTMLDialogElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const confirm = useRef<HTMLButtonElement>(null);
+  const wasBusy = useRef(false);
+  const { busy, destructive } = props;
+  // in the middle of the work, Esc and the scrim wait as the Cancel button does: the answer would be lost
+  const close = busy ? () => {} : props.close;
+  useModal(box, close);
+  // after the modal's own focus move, which also took the opener to give it back to
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only the first render decides where the focus starts
+  useEffect(() => {
+    (destructive ? cancel.current : box.current?.querySelector<HTMLElement>(FIELDS))?.focus();
+  }, []);
+  useEffect(() => {
+    if (wasBusy.current && !busy) confirm.current?.focus();
+    wasBusy.current = !!busy;
+  }, [busy]);
+  return createPortal(
+    <div className="drawer-layer">
+      <button
+        type="button"
+        className="drawer-scrim"
+        tabIndex={-1}
+        aria-hidden="true"
+        onClick={close}
+      />
+      <dialog
+        open
+        ref={box}
+        tabIndex={-1}
+        className="dialog"
+        role={destructive ? "alertdialog" : undefined}
+        aria-modal="true"
+        aria-labelledby={id}
+        aria-describedby={props.sub ? subId : undefined}
+      >
+        <form
+          className="dialog-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            // React bubbles a portal's events to its parent: without this, answering from inside a form would submit that form too
+            e.stopPropagation();
+            if (!busy && !props.disabled) props.onConfirm();
+          }}
+        >
+          <div className="dialog-body">
+            <h2 id={id} className="dialog-title">
+              {props.title}
+            </h2>
+            {props.sub && (
+              <p id={subId} className="dialog-sub">
+                {props.sub}
+              </p>
+            )}
+            {props.children}
+            {props.error && <Callout tone="bad">{props.error}</Callout>}
+          </div>
+          <div className="dialog-foot">
+            <button
+              type="button"
+              ref={cancel}
+              className="quiet"
+              disabled={busy}
+              onClick={props.close}
+            >
+              {props.cancel ?? "Cancel"}
+            </button>
+            <button
+              type="submit"
+              ref={confirm}
+              className={destructive ? "danger solid" : "primary"}
+              disabled={busy || props.disabled}
+              aria-busy={busy || undefined}
+            >
+              {props.confirm}
+            </button>
+          </div>
+        </form>
+      </dialog>
+    </div>,
+    document.body,
+  );
+}
+
+/**
+ * The one delete question of the Settings screens: what it costs as a warning, what blocks it as a note, "Keep", and the
+ * answer named for what it does (`go`). A refusal (`error`) is said in the dialog, which stays.
+ */
+export function Confirm({
+  warn,
+  note,
+  go,
+  ...rest
+}: Omit<ComponentProps<typeof Dialog>, "confirm" | "cancel" | "destructive" | "children"> & {
+  warn: ReactNode;
+  note?: ReactNode;
+  go: string;
+}) {
+  return (
+    <Dialog {...rest} cancel="Keep" confirm={go} destructive>
+      <Callout tone="warn">{warn}</Callout>
+      {note && <p className="muted">{note}</p>}
+    </Dialog>
+  );
+}
+
+const ToastContext = createContext<(text?: ReactNode) => void>(() => {});
+/**
+ * Report the result of an action: `const toast = useToast(); toast("Variable deleted.")`; `toast()` takes the one on screen away.
+ * Does nothing outside a `Toaster`. The words may carry a link, but a toast is gone in 5 s: keep the link somewhere that stays too.
+ */
+export const useToast = () => useContext(ToastContext);
+
+const TOAST_MS = 5000;
+
+/**
+ * Where results are reported, mounted once in the shell. One toast at a time: a new one replaces the one on screen, and it
+ * leaves after 5 s or on Dismiss. The words go to a live region that is there before them, so a screen reader hears them;
+ * a toast never takes the focus.
+ * shortcut: the same words twice in a row are announced once (the region does not change); key the text if that matters.
+ */
+export function Toaster(props: { children: ReactNode }) {
+  const [toast, setToast] = useState<{ text: ReactNode; held?: boolean }>();
+  const show = useCallback((text?: ReactNode) => setToast(text ? { text } : undefined), []);
+  // while the pointer is on it or the focus is in it the 5 s wait, and start again whole when it leaves
+  const hold = (held: boolean) => setToast((t) => t && { ...t, held });
+  useEffect(() => {
+    if (!toast || toast.held) return;
+    const timer = setTimeout(() => setToast(undefined), TOAST_MS);
+    return () => clearTimeout(timer);
+  }, [toast]);
+  return (
+    <ToastContext.Provider value={show}>
+      {props.children}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: it only tells the timer whether the pointer or focus is on the toast */}
+      <div
+        className={toast ? "toasts on" : "toasts"}
+        onMouseEnter={() => hold(true)}
+        onMouseLeave={() => hold(false)}
+        onFocus={() => hold(true)}
+        onBlur={() => hold(false)}
+      >
+        {toast && <Icon name="success" />}
+        <p role="status" className="toast-text">
+          {toast?.text}
+        </p>
+        {toast && (
+          <button type="button" className="quiet small" onClick={() => setToast(undefined)}>
+            Dismiss
+          </button>
+        )}
+      </div>
+    </ToastContext.Provider>
   );
 }

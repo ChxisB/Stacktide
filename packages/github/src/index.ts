@@ -7,6 +7,7 @@ export {
   actionsApi,
 } from "./actions";
 export * from "./client";
+export { deploymentStatusOf, deploymentsApi } from "./deployments";
 export { type GithubE2eConfig, readGithubE2eConfig } from "./e2e-config";
 export { type ApplyGate, environmentsApi } from "./environments";
 export { membersApi } from "./members";

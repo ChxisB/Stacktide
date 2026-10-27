@@ -74,6 +74,7 @@ test("connect GitLab, import a project, set up its pipeline, give it variables a
     );
 
   // 1. connect GitLab with a token, and import the project
+  await user.click(await screen.findByRole("button", { name: "Add a connection" }));
   await user.clear(await screen.findByLabelText("GitLab address"));
   await user.type(screen.getByLabelText("GitLab address"), mock.url);
   await user.type(screen.getByLabelText("Access token"), mock.token);

@@ -3,8 +3,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { StatusBadge } from "./components";
-import { Delivery } from "./pipeline-delivery";
+import { Callout, Icon, StatusBadge } from "./components";
+import { Delivery, modeName } from "./pipeline-delivery";
 import {
   type Applied,
   type Config,
@@ -76,7 +76,7 @@ function Detect({
         Detected: <Types types={project.types} />
       </p>
       {config ? (
-        <p>
+        <Callout tone={config.mrIid !== null ? "info" : "ok"}>
           Set up with <strong>{config.template}</strong> {config.version} on{" "}
           {when(config.updatedAt)}.{" "}
           {config.mrIid !== null ? (
@@ -86,9 +86,9 @@ function Detect({
           ) : (
             <>It is on the default branch.</>
           )}
-        </p>
+        </Callout>
       ) : (
-        <p>No pipeline has been set up from here yet.</p>
+        <Callout tone="info">No pipeline has been set up from here yet.</Callout>
       )}
       {recommendations.length > 0 ? (
         <>
@@ -103,7 +103,9 @@ function Detect({
           </ul>
         </>
       ) : (
-        <p>No template is a clear fit for what was detected. You can still choose any of them.</p>
+        <Callout tone="info">
+          No template is a clear fit for what was detected. You can still choose any of them.
+        </Callout>
       )}
       <div className="row">
         <button type="button" className="primary" onClick={next}>
@@ -307,20 +309,20 @@ function Parameters({
   return (
     <form className="stack card" aria-label="Step 3: Parameters" onSubmit={onSubmit}>
       <h2>Parameters for {template.name}</h2>
-      <p className="muted">
+      <Callout tone="info">
         What you enter is written into the merge request, where everyone who can read the project
         sees it. Do not put a secret here: keep those in variables.
-      </p>
+      </Callout>
       <fieldset className="bare stack" disabled={busy}>
         {connections.error ? (
           <ErrorPanel error={connections.error} retry={() => void connections.refetch()} />
         ) : !connections.data ? (
           <Loading what="Loading connections" />
         ) : connections.data.length === 0 ? (
-          <p>
+          <Callout tone="warn">
             This organization has no {system} connection yet. <a href={href("projects")}>Add one</a>{" "}
             to create a merge request.
-          </p>
+          </Callout>
         ) : (
           <div className="field">
             <label htmlFor="pipeline-connection">{system} connection</label>
@@ -360,11 +362,7 @@ function Parameters({
           ) : null;
         })}
       </fieldset>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
+      {error && <Callout tone="bad">{error}</Callout>}
       <div className="row">
         <button type="button" onClick={back} disabled={busy}>
           Back
@@ -391,7 +389,9 @@ function Diff({ before, after, file }: { before: string | null; after: string; f
       <figcaption>
         {added + removed === 0 ? "No changes." : `${added} added, ${removed} removed.`}
       </figcaption>
-      <pre className="diff">
+      {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a box that scrolls takes the keyboard's focus, or only a pointer can read the rest of a long line */}
+      {/* biome-ignore lint/a11y/useSemanticElements: the lines are the pre's own text; a section round it would be one more box */}
+      <pre className="diff" role="region" aria-label={`Lines of ${file}`} tabIndex={0}>
         {lines.map((l, i) => (
           // the same line can appear twice; the position is all that tells them apart
           // biome-ignore lint/suspicious/noArrayIndexKey: the list is read only and never reordered
@@ -439,88 +439,91 @@ function Review({
       <h2>
         Review {file} from {request.template} {request.version}
       </h2>
-      <p className={preview.existing === "hand-written" ? "warn" : undefined}>
+      <Callout tone={preview.existing === "hand-written" ? "warn" : "info"}>
         {existingNote(file)[preview.existing]}
-      </p>
+      </Callout>
       {request.include && (
-        <p>
+        <Callout tone="info">
           The merge request writes a short {file} that{" "}
           {request.mode === "component" ? "uses" : "includes"} {request.template} from{" "}
           <code>{request.include.project}</code>
           {request.include.ref ? ` at ${request.include.ref}` : ""}.
-        </p>
+        </Callout>
       )}
       {config && config.mode !== "inline" && !request.mode && (
-        <p className="warn">
+        <Callout tone="warn">
           This project{" "}
           {config.mode === "component"
             ? "uses its template as a component of"
             : "includes its template from"}{" "}
           another project. Creating this merge request writes the whole pipeline into {file}{" "}
           instead.
-        </p>
+        </Callout>
       )}
       {!lint.valid && (
-        <section className="stack" aria-label="Lint errors">
-          <h3>{FORGES[project.forge].name}'s lint refuses this pipeline</h3>
-          <ul className="error">
-            {unique(lint.errors).map((e) => (
-              <li key={e}>{e}</li>
-            ))}
-          </ul>
-          <p>No merge request can be created until the errors are gone. Change the parameters.</p>
+        <section aria-label="Lint errors">
+          <Callout tone="bad" title={`${FORGES[project.forge].name}'s lint refuses this pipeline`}>
+            <ul>
+              {unique(lint.errors).map((e) => (
+                <li key={e}>{e}</li>
+              ))}
+            </ul>
+            <p>No merge request can be created until the errors are gone. Change the parameters.</p>
+          </Callout>
         </section>
       )}
       {violations.length > 0 && (
-        <section className="stack" aria-label="Guardrails">
-          <h3>This pipeline breaks a guardrail</h3>
-          <ul className="error">
-            {violations.map((v) => (
-              <li key={`${v.rule}:${v.message}`}>
-                {v.rule}: {v.message}
-              </li>
-            ))}
-          </ul>
-          <p>
-            No merge request can be created until the targets protect their variables: set protected
-            to true in the target's config.
-          </p>
+        <section aria-label="Guardrails">
+          <Callout tone="bad" title="This pipeline breaks a guardrail">
+            <ul>
+              {violations.map((v) => (
+                <li key={`${v.rule}:${v.message}`}>
+                  {v.rule}: {v.message}
+                </li>
+              ))}
+            </ul>
+            <p>
+              No merge request can be created until the targets protect their variables: set
+              protected to true in the target's config.
+            </p>
+          </Callout>
         </section>
       )}
-      {unlinted && <p className="muted">{unlinted}</p>}
+      {unlinted && <Callout tone="info">{unlinted}</Callout>}
       {lint.warnings.length > 0 && (
-        <section className="stack" aria-label="Lint warnings">
-          <h3>{unlinted ? "Notes" : `${FORGES[project.forge].name}'s lint warns`}</h3>
-          <ul className="warn">
-            {unique(lint.warnings).map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
+        <section aria-label="Lint warnings">
+          <Callout
+            tone="warn"
+            title={unlinted ? "Notes" : `${FORGES[project.forge].name}'s lint warns`}
+          >
+            <ul>
+              {unique(lint.warnings).map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          </Callout>
         </section>
       )}
       {missingVariables.length > 0 && (
-        <section className="stack" aria-label="Missing variables">
-          <h3>Variables the pipeline needs</h3>
-          <ul className="warn">
-            {missingVariables.map((m) => (
-              <li key={m.environment ?? "\u0000"}>
-                Not set {m.environment ? `for ${m.environment}` : "for the project"}:{" "}
-                {m.keys.join(", ")}
-              </li>
-            ))}
-          </ul>
-          <p>
-            The merge request can be created anyway; the pipeline fails until they exist.{" "}
-            <a href={href("variables")}>Set them on the Variables page</a>.
-          </p>
+        <section aria-label="Missing variables">
+          <Callout tone="warn" title="Variables the pipeline needs">
+            <ul>
+              {missingVariables.map((m) => (
+                <li key={m.environment ?? "\u0000"}>
+                  Not set {m.environment ? `for ${m.environment}` : "for the project"}:{" "}
+                  {m.keys.join(", ")}
+                </li>
+              ))}
+            </ul>
+            <p>
+              The merge request can be created anyway; the pipeline fails until they exist.{" "}
+              <a href={href("variables")}>Set them on the Variables page</a>.
+            </p>
+          </Callout>
         </section>
       )}
       <Diff before={preview.current} after={preview.text} file={file} />
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
+      {error && <Callout tone="bad">{error}</Callout>}
       <div className="row">
         <button type="button" onClick={back} disabled={busy}>
           Back to parameters
@@ -549,17 +552,19 @@ function Done({ applied, restart }: { applied: Applied; restart: () => void }) {
   return (
     <section className="stack card" aria-label="Result">
       <h2>Done</h2>
-      <p role="status">
-        {mr && outcome !== "in_place" ? (
-          <>
-            {VERB[outcome]} <MergeRequest iid={mr.iid} url={mr.url} />.
-            {outcome === "updated" && " It is the same merge request as before."}
-            {outcome === "unchanged" && " It already has this pipeline."}
-          </>
-        ) : (
-          "The default branch already has this pipeline, so there is nothing to merge. The setup is saved."
-        )}
-      </p>
+      <div role="status">
+        <Callout tone="ok">
+          {mr && outcome !== "in_place" ? (
+            <>
+              {VERB[outcome]} <MergeRequest iid={mr.iid} url={mr.url} />.
+              {outcome === "updated" && " It is the same merge request as before."}
+              {outcome === "unchanged" && " It already has this pipeline."}
+            </>
+          ) : (
+            "The default branch already has this pipeline, so there is nothing to merge. The setup is saved."
+          )}
+        </Callout>
+      </div>
       {mr && <p className="muted">Nothing was written to the default branch.</p>}
       <div className="row">
         <button type="button" onClick={restart}>
@@ -674,18 +679,34 @@ function Wizard({
 
   // the steps before this one are done; once the result is shown, all of them are
   const reached = step === "done" ? STEPS.length : STEPS.findIndex(([key]) => key === step);
+  // what each finished step settled, said under its name
+  const opened = applied?.mr && applied.outcome !== "in_place" ? applied.mr : undefined;
+  const settled = [
+    project.types.map((t) => t.tag).join(", ") || "none detected",
+    template ? `${template.name} ${template.version}` : name,
+    modeName(delivery.mode),
+    opened ? `!${opened.iid}` : "Saved",
+  ];
   return (
     <div className="stack wide">
       <ol className="steps" aria-label="Steps">
-        {STEPS.map(([key, label], i) => (
-          <li
-            key={key}
-            className={i < reached ? "done" : undefined}
-            aria-current={key === step ? "step" : undefined}
-          >
-            {i + 1}. {label}
-          </li>
-        ))}
+        {STEPS.map(([key, label], i) => {
+          const done = i < reached;
+          return (
+            <li
+              key={key}
+              className={done ? "done" : undefined}
+              aria-current={key === step ? "step" : undefined}
+            >
+              <span className="name">
+                {done && <Icon name="success" />}
+                {i + 1}. {label}
+                {done && <span className="visually-hidden"> (done)</span>}
+              </span>
+              {done && <span className="cap">{settled[i]}</span>}
+            </li>
+          );
+        })}
       </ol>
       {step === "detect" && (
         <Detect project={project} overview={overview} next={() => go("select")} />
@@ -701,9 +722,7 @@ function Wizard({
       )}
       {step === "params" && !template && (
         <div className="stack card">
-          <p role="alert" className="error">
-            The template {name} is no longer offered. Choose another.
-          </p>
+          <Callout tone="bad">The template {name} is no longer offered. Choose another.</Callout>
           <div className="row">
             <button type="button" onClick={() => go("select")}>
               Back

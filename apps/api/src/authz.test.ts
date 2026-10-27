@@ -283,6 +283,11 @@ describe("coverage", () => {
       [`POST ${P}/:projectId/state/:stack/import`]: "state.import",
       [`POST ${P}/:projectId/state/:stack/force-unlock`]: "state.force_unlock",
       [`POST ${P}/:projectId/runs/:runId/apply`]: "run.apply",
+      [`GET ${P}/:projectId/resources`]: "resource.read",
+      [`GET ${P}/:projectId/resources/:id`]: "resource.read",
+      [`POST ${P}/:projectId/resources`]: "resource.propose",
+      [`POST ${P}/:projectId/resources/preview`]: "resource.propose",
+      [`PATCH ${P}/:projectId/resources/:id`]: "resource.propose",
       [`GET ${O}/:orgId/connections`]: "connection.read",
       [`POST ${O}/:orgId/connections`]: "connection.create",
       [`POST ${O}/:orgId/connections/:connectionId/test`]: "connection.test",
@@ -367,6 +372,7 @@ describe("coverage", () => {
     expect(marked("x-signed-in").sort()).toEqual([
       "DELETE /tokens/:tokenId",
       "GET /auth/whoami",
+      "GET /blueprints",
       "GET /organizations",
       "GET /tokens",
       "POST /auth/cli/logout",
@@ -435,7 +441,7 @@ describe("without a session", () => {
       const d = (r.hooks as { detail?: Record<string, unknown> } | undefined)?.detail ?? {};
       return d["x-public"] === undefined && !open.has(`${r.method} ${r.path}`);
     });
-    expect(routes.length).toBe(183);
+    expect(routes.length).toBe(189);
     for (const r of routes) {
       const res = await call("nobody", r.method, fill(r.path), r.method === "GET" ? undefined : {});
       expect([r.method, r.path, res.status, res.json?.code]).toEqual([

@@ -58,7 +58,10 @@ const keysOf = (table: HTMLElement) =>
     .getAllByRole("rowheader")
     .map((h) => h.textContent);
 // a boolean, not toBeNull(): a failing check on an element prints the whole of it, which holds the page up while it waits
-const closed = () => waitFor(() => expect(!!screen.queryByRole("dialog")).toBe(false));
+const closed = () =>
+  waitFor(() =>
+    expect(!!screen.queryByRole("dialog") || !!screen.queryByRole("alertdialog")).toBe(false),
+  );
 const bar = () => screen.queryByRole("group", { name: "Selected variables" });
 const present = async (key: string) => {
   const table = screen.getByRole("table", { name: "Variables in dev" });
@@ -137,7 +140,7 @@ describe("Delete selected", () => {
     const user = userEvent.setup();
     for (const key of ["API_KEY", "REGION", "ORG_KEY"]) await user.click(boxOf(key));
     await user.click(screen.getByRole("button", { name: "Delete selected" }));
-    const drawer = await screen.findByRole("dialog", { name: "Delete 3 variables" });
+    const drawer = await screen.findByRole("alertdialog", { name: "Delete 3 variables" });
     const lines = within(within(drawer).getByRole("list"))
       .getAllByRole("listitem")
       .map((li) => li.textContent);
@@ -165,7 +168,7 @@ describe("Delete selected", () => {
     await user.click(boxOf("API_KEY"));
     await user.click(boxOf("PORT"));
     await user.click(screen.getByRole("button", { name: "Delete selected" }));
-    const drawer = await screen.findByRole("dialog", { name: "Delete 2 variables" });
+    const drawer = await screen.findByRole("alertdialog", { name: "Delete 2 variables" });
     await user.click(within(drawer).getByRole("button", { name: "Delete variables" }));
     await closed();
     expect(page.calls).toEqual([
@@ -182,6 +185,11 @@ describe("Delete selected", () => {
     expect(await present("API_KEY")).toBe(false);
     expect(await present("REGION")).toBe(true);
     expect(!!bar()).toBe(false);
+    // the answer is a toast, with the sentence it had before
+    await waitFor(() =>
+      expect(document.querySelector(".toast-text")?.textContent).toBe("Deleted 2 variables."),
+    );
+    expect(document.querySelector(".toast-text")?.getAttribute("role")).toBe("status");
     expect(await s.audit("variable.bulk")).toHaveLength(1);
     expect(await s.audit("variable.delete")).toHaveLength(2);
     expect(document.body.textContent).not.toContain(SECRET);
@@ -195,7 +203,7 @@ describe("Delete selected", () => {
     const user = userEvent.setup();
     await user.click(header());
     await user.click(screen.getByRole("button", { name: "Delete selected" }));
-    const drawer = await screen.findByRole("dialog", { name: "Delete 4 variables" });
+    const drawer = await screen.findByRole("alertdialog", { name: "Delete 4 variables" });
     await user.click(within(drawer).getByRole("button", { name: "Delete variables" }));
     await closed();
     const base = `/organizations/${s.org.id}`;
@@ -221,7 +229,7 @@ describe("a refusal", () => {
     await user.click(boxOf("API_KEY"));
     await user.click(screen.getByRole("button", { name: "Delete selected" }));
     page.refuse("/bulk"); // the first call is refused
-    const drawer = await screen.findByRole("dialog", { name: "Delete 1 variable" });
+    const drawer = await screen.findByRole("alertdialog", { name: "Delete 1 variable" });
     await user.click(within(drawer).getByRole("button", { name: "Delete variables" }));
     const alert = await within(drawer).findByRole("alert");
     expect(alert.textContent).toContain("another variable refers to it");
@@ -247,7 +255,7 @@ describe("a refusal", () => {
     await user.click(screen.getByRole("button", { name: "Delete selected" }));
     // the environment's call goes through, the project's is refused
     page.refuse(`/projects/${s.project.id}/variables/bulk`);
-    const drawer = await screen.findByRole("dialog", { name: "Delete 2 variables" });
+    const drawer = await screen.findByRole("alertdialog", { name: "Delete 2 variables" });
     await user.click(within(drawer).getByRole("button", { name: "Delete variables" }));
     const alert = await within(drawer).findByRole("alert");
     expect(alert.textContent).toMatch(/^API_KEY was deleted; REGION was not: /);

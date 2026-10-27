@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useEffect } from "react";
 import { ApiError, call, useClient } from "./api";
+import { Callout } from "./components";
 import { SsoEntry } from "./ui";
 
 export interface Me {
@@ -21,37 +22,53 @@ export function useMe(): Me {
   return me;
 }
 
+/** A failed load: a bad callout (announced) with the words the server gave, and the button that asks again inside it. */
 export function ErrorPanel({ error, retry }: { error: Error; retry?: () => void }) {
   return (
-    <div role="alert" className="card">
-      <h2>Something went wrong</h2>
-      <p className="error">{error.message}</p>
-      {retry && (
-        <button type="button" onClick={retry}>
-          Try again
-        </button>
-      )}
-    </div>
+    <Callout
+      tone="bad"
+      title="Something went wrong."
+      action={
+        retry && (
+          <button type="button" onClick={retry}>
+            Try again
+          </button>
+        )
+      }
+    >
+      {error.message}
+    </Callout>
+  );
+}
+
+/** The signed-out pages: one card in the middle of an otherwise empty page. */
+function SignInCard({ children }: { children: ReactNode }) {
+  return (
+    <main className="signin">
+      <div className="card signin-card page-enter">{children}</div>
+    </main>
   );
 }
 
 export function LoginPage() {
   return (
-    <div className="center">
-      <div className="card">
+    <SignInCard>
+      <div className="signin-head">
         <h1>Orchastrature</h1>
-        <p>Set up CI/CD, manage variables and sync them to GitLab, all in one place.</p>
-        {/* a full page navigation: the API sends the browser to GitLab (or GitHub) and back */}
-        <a className="button primary" href="/auth/login?return_to=/">
-          Sign in with GitLab
-        </a>
-        <a className="button primary" href="/auth/github/login?return_to=/">
-          Sign in with GitHub
-        </a>
-        <h2>Or through your organization</h2>
-        <SsoEntry query="return_to=/" label="Sign in with single sign-on" />
+        <p className="muted">
+          Set up CI/CD, manage variables and sync them to GitLab, all in one place.
+        </p>
       </div>
-    </div>
+      {/* a full page navigation: the API sends the browser to GitLab (or GitHub) and back */}
+      <a className="button primary" href="/auth/login?return_to=/">
+        Sign in with GitLab
+      </a>
+      <a className="button primary" href="/auth/github/login?return_to=/">
+        Sign in with GitHub
+      </a>
+      <h2 className="signin-or">Or through your organization</h2>
+      <SsoEntry query="return_to=/" label="Sign in with single sign-on" />
+    </SignInCard>
   );
 }
 
@@ -79,9 +96,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (signedOut) return <LoginPage />;
   if (me.error) {
     return (
-      <div className="center">
+      <SignInCard>
+        <h1>Orchastrature</h1>
         <ErrorPanel error={me.error} retry={() => void me.refetch()} />
-      </div>
+      </SignInCard>
     );
   }
   return <MeContext.Provider value={me.data}>{children}</MeContext.Provider>;

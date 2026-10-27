@@ -56,7 +56,10 @@ const onPage = (text: string) =>
   (document.body.textContent ?? "").includes(text) ||
   Array.from(document.querySelectorAll("input")).some((i) => i.value.includes(text));
 const alertText = () => document.querySelector('[role="alert"]')?.textContent ?? undefined;
-const statusText = () => document.querySelector('[role="status"]')?.textContent ?? undefined;
+const toasted = () => document.querySelector(".toast-text")?.textContent || undefined;
+/** The delete question, an alert dialog found by its name. */
+const asked = (name: string) => screen.findByRole("alertdialog", { name }, { timeout: 5000 });
+const statusText = () => document.querySelector('main [role="status"]')?.textContent ?? undefined;
 const rowOf = (t: HTMLElement, name: string) => {
   const tr = within(t).getByRole("rowheader", { name }).closest("tr");
   if (!tr) throw new Error(`no row for ${name}`);
@@ -147,6 +150,9 @@ describe("connections", () => {
       timeout: 5000,
     });
     expect(statusText()).toContain("Scopes: read_api.");
+    // the result is a callout that says which connection it is about
+    expect(statusText()?.startsWith("Mock GitLab")).toBe(true);
+    expect(document.querySelector('main [role="status"] .callout')).not.toBeNull();
     expect(onPage(mock.token)).toBe(false);
     expect((await audited("connection.test", connection.id)).length).toBe(1);
   });
@@ -199,7 +205,9 @@ describe("connections", () => {
     );
     mount(client);
     await userEvent.setup().click(await screen.findByRole("button", { name: "Test Mock GitLab" }));
-    await waitFor(() => expect(alertText()).toBe("GitLab refused the token"), { timeout: 5000 });
+    await waitFor(() => expect(alertText()).toBe("Mock GitLab GitLab refused the token"), {
+      timeout: 5000,
+    });
     expect(statusText()).toBeUndefined();
   });
 
@@ -208,17 +216,24 @@ describe("connections", () => {
     const { connection } = await connect(s);
     mount(s.client);
     const user = userEvent.setup();
-    const row = () => rowOf(screen.getByRole("table", { name: "Connections" }), "Mock GitLab");
     await connections();
-    await user.click(within(row()).getByRole("button", { name: "Delete…" }));
-    expect(within(row()).getByText(/Its stored token is deleted/)).toBeDefined();
-    await user.click(within(row()).getByRole("button", { name: "Keep" }));
-    expect(within(row()).getByRole("button", { name: "Delete…" })).toBeDefined();
+    const opener = () => screen.getByRole("button", { name: "Delete… Mock GitLab" });
+    await user.click(opener());
+    let box = await asked("Delete Mock GitLab");
+    expect(within(box).getByText(/Its stored token is deleted/)).toBeDefined();
+    // nothing has failed yet: no alert before an answer
+    expect(within(box).queryByRole("alert")).toBeNull();
+    await user.click(within(box).getByRole("button", { name: "Keep" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(document.activeElement).toBe(opener());
     expect((await connectionsOf(s)).map((c) => c.id)).toEqual([connection.id]);
 
-    await user.click(within(row()).getByRole("button", { name: "Delete…" }));
-    await user.click(within(row()).getByRole("button", { name: "Delete Mock GitLab" }));
-    await screen.findByText("No connection yet.", undefined, { timeout: 5000 });
+    await user.click(opener());
+    box = await asked("Delete Mock GitLab");
+    await user.click(within(box).getByRole("button", { name: "Delete Mock GitLab" }));
+    await screen.findByRole("heading", { name: "No connection yet" }, { timeout: 5000 });
+    expect(toasted()).toBe("Deleted Mock GitLab.");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(await connectionsOf(s)).toEqual([]);
     expect((await audited("connection.delete", connection.id)).length).toBe(1);
   });
@@ -239,16 +254,24 @@ describe("connections", () => {
     mount(s.client);
     const user = userEvent.setup();
     await connections();
-    await user.click(screen.getByRole("button", { name: "Delete…" }));
-    await user.click(screen.getByRole("button", { name: "Delete Mock GitLab" }));
-    await waitFor(() => expect(alertText()).toContain("Sync targets still use this connection"), {
-      timeout: 5000,
-    });
+    await user.click(screen.getByRole("button", { name: "Delete… Mock GitLab" }));
+    const box = await asked("Delete Mock GitLab");
+    await user.click(within(box).getByRole("button", { name: "Delete Mock GitLab" }));
+    // the refusal is said in the dialog, which stays
+    await waitFor(
+      () =>
+        expect(within(box).getByRole("alert").textContent).toContain(
+          "Sync targets still use this connection",
+        ),
+      { timeout: 5000 },
+    );
+    expect(screen.getByRole("alertdialog", { name: "Delete Mock GitLab" })).toBe(box);
     expect((await connectionsOf(s)).length).toBe(1);
     expect((await audited("connection.delete", connection.id)).length).toBe(0);
-    // keeping it leaves no stale complaint on the row
-    await user.click(screen.getByRole("button", { name: "Keep" }));
+    // keeping it leaves no stale complaint behind
+    await user.click(within(box).getByRole("button", { name: "Keep" }));
     expect(alertText()).toBeUndefined();
+    expect(toasted()).toBeUndefined();
   });
 
   test("a test result is not left standing when a delete is considered", async () => {
@@ -262,9 +285,9 @@ describe("connections", () => {
     await waitFor(() => expect(statusText()?.includes("mock-token-user")).toBe(true), {
       timeout: 5000,
     });
-    await user.click(screen.getByRole("button", { name: "Delete…" }));
+    await user.click(screen.getByRole("button", { name: "Delete… Mock GitLab" }));
     expect(statusText()).toBeUndefined();
-    await user.click(screen.getByRole("button", { name: "Keep" }));
+    await user.click(await screen.findByRole("button", { name: "Keep" }));
     expect(statusText()).toBeUndefined();
   });
 
@@ -279,40 +302,70 @@ describe("connections", () => {
     mount(client);
     await connections();
     expect(screen.queryByRole("button", { name: "Test Mock GitLab" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Delete…" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Delete…/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add a connection…" })).toBeNull();
   });
 
-  test("adds one, and the token is not left on the page", async () => {
+  test("adds one in a drawer, and the token is not left on the page", async () => {
     const s = await sceneOn(backend);
     const mock = backend.gitlab();
     mount(s.client);
     const user = userEvent.setup();
-    await screen.findByText("No connection yet.");
+    await screen.findByRole("heading", { name: "No connection yet" });
     await user.click(screen.getByRole("button", { name: "Add a connection…" }));
-    const form = await screen.findByRole("form", { name: "Connect GitLab" });
+    const drawer = await screen.findByRole("dialog", { name: "Add a connection" });
+    const form = within(drawer).getByRole("form", { name: "Connect GitLab" });
     await user.clear(within(form).getByLabelText("GitLab address"));
     await user.type(within(form).getByLabelText("GitLab address"), mock.url);
     await user.type(within(form).getByLabelText("Access token"), mock.token);
     await user.click(within(form).getByRole("button", { name: "Connect" }));
-    await waitFor(
-      () => expect(document.querySelector('form[aria-label="Connect GitLab"]') === null).toBe(true),
-      { timeout: 5000 },
-    );
+    // not `expect(element).toBeNull()`: formatting a whole drawer for a failed try takes seconds
+    await waitFor(() => expect(drawer.isConnected).toBe(false), { timeout: 5000 });
+    expect(toasted()).toBe("Connected GitLab.");
     const row = rowOf(await connections(), "GitLab");
     expect(row.textContent).toContain(mock.url);
     expect((await connectionsOf(s)).length).toBe(1);
     expect(onPage(mock.token)).toBe(false);
   });
 
-  test("the form can be given up", async () => {
+  test("a refused token is said in the drawer, which stays with what was typed", async () => {
     const s = await sceneOn(backend);
+    const mock = backend.gitlab();
     mount(s.client);
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Add a connection…" }));
+    const drawer = await screen.findByRole("dialog", { name: "Add a connection" });
+    await user.clear(within(drawer).getByLabelText("GitLab address"));
+    await user.type(within(drawer).getByLabelText("GitLab address"), mock.url);
+    await user.type(within(drawer).getByLabelText("Access token"), "not-the-mock-token");
+    await user.click(within(drawer).getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(within(drawer).queryByRole("alert")).not.toBeNull(), {
+      timeout: 5000,
+    });
+    expect(within(drawer).getByRole("alert").classList.contains("callout")).toBe(true);
+    expect(screen.getByRole("dialog", { name: "Add a connection" })).toBe(drawer);
+    expect((within(drawer).getByLabelText("GitLab address") as HTMLInputElement).value).toBe(
+      mock.url,
+    );
+    expect(await connectionsOf(s)).toEqual([]);
+    expect(toasted()).toBeUndefined();
+  });
+
+  test("the drawer can be given up, by Cancel or Esc, and the focus goes back to what opened it", async () => {
+    const s = await sceneOn(backend);
+    mount(s.client);
+    const user = userEvent.setup();
+    const opener = await screen.findByRole("button", { name: "Add a connection…" });
+    await user.click(opener);
     await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByRole("form", { name: "Connect GitLab" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Add a connection…" })).toBeDefined();
+    expect(document.activeElement).toBe(opener);
+    await user.click(opener);
+    await screen.findByRole("dialog", { name: "Add a connection" });
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
     expect(await connectionsOf(s)).toEqual([]);
   });
 });
@@ -328,8 +381,14 @@ describe("API tokens", () => {
   test("says there are none, and the form asks for a name, scopes and a lifetime", async () => {
     const s = await sceneOn(backend);
     mount(s.client);
-    await screen.findByText("You have no tokens.");
+    await screen.findByRole("heading", { name: "You have no tokens" }, { timeout: 5000 });
+    expect(screen.getByText(/Create one below/)).toBeDefined();
     const form = screen.getByRole("form", { name: "Create a token" });
+    // what a scope may be is said under the field, and the field is described by it
+    const describedBy = within(form).getByLabelText("Scopes").getAttribute("aria-describedby");
+    expect(document.getElementById(describedBy ?? "none")?.textContent).toContain(
+      "an action such as variable.read",
+    );
     expect(
       within(form)
         .getAllByRole("option")
@@ -368,7 +427,9 @@ describe("API tokens", () => {
     const row = rowOf(await tokenTable(), "ci");
     expect(row.textContent).toContain(`${made?.prefix}…`);
     expect(row.textContent).toContain("variable.read project.read");
-    expect(row.textContent).toContain("Active");
+    // the state is a badge: its shape and its word
+    expect(row.querySelector(".st-ok svg")).not.toBeNull();
+    expect(row.querySelector(".st-ok")?.textContent).toBe("Active");
     expect(row.textContent).toContain("Never");
 
     // not in the caches, and not in the audit trail
@@ -391,10 +452,13 @@ describe("API tokens", () => {
     await user.click(within(fresh).getByRole("button", { name: "I have copied it" }));
     expect(screen.queryByRole("region", { name: "New token" })).toBeNull();
     expect(onPage(token)).toBe(false);
+    // nor in the markup: an attribute, a title, a hidden label
+    expect(document.documentElement.outerHTML.includes(token)).toBe(false);
     cleanup();
     mount(s.client);
     await tokenTable();
     expect(onPage(token)).toBe(false);
+    expect(document.documentElement.outerHTML.includes(token)).toBe(false);
   });
 
   test("while a token is on show the form is away, so a second one cannot take its place", async () => {
@@ -410,11 +474,18 @@ describe("API tokens", () => {
     const one = first.value;
     expect(formOnPage()).toBe(false);
     expect(onPage(one)).toBe(true);
+    // the form that had the focus is gone: the token has it, ready to copy (a passive effect: a beat after it is on screen)
+    await waitFor(() => expect(document.activeElement === first).toBe(true), { timeout: 5000 });
 
     // once it is let go, the form is back and empty, and the next token is a token of its own
     await user.click(screen.getByRole("button", { name: "I have copied it" }));
     expect(formOnPage()).toBe(true);
     form = screen.getByRole("form", { name: "Create a token" });
+    // and the focus goes to where the next one starts
+    await waitFor(
+      () => expect(document.activeElement === within(form).getByLabelText("Name")).toBe(true),
+      { timeout: 5000 },
+    );
     expect((within(form).getByLabelText("Name") as HTMLInputElement).value).toBe("");
     expect((within(form).getByLabelText("Scopes") as HTMLInputElement).value).toBe("");
     form = await fill(user, "two", "variable.read");
@@ -462,6 +533,7 @@ describe("API tokens", () => {
       await user.click(within(fresh).getByRole("button", { name: "Copy" }));
       await waitFor(() => expect(alertText() === undefined).toBe(false));
       expect(alertText()).toContain("select the token and copy it");
+      expect(statusText()).toBe("");
       // it is still there to be copied by hand
       expect((within(fresh).getByLabelText("Token") as HTMLInputElement).value).toBe(token);
     } finally {
@@ -479,7 +551,7 @@ describe("API tokens", () => {
     await waitFor(() => expect(alertText() !== undefined).toBe(true), { timeout: 5000 });
     expect(screen.queryByRole("region", { name: "New token" })).toBeNull();
     expect(await tokensOf(s)).toEqual([]);
-    expect(screen.getByText("You have no tokens.")).toBeDefined();
+    expect(screen.getByRole("heading", { name: "You have no tokens" })).toBeDefined();
   });
 
   test("revokes one only after a confirm, and the list says it is revoked", async () => {
@@ -490,20 +562,65 @@ describe("API tokens", () => {
     mount(s.client);
     const user = userEvent.setup();
     const row = () => rowOf(screen.getByRole("table", { name: "Your API tokens" }), "old");
+    const opener = () => within(row()).getByRole("button", { name: "Revoke… old" });
     await tokenTable();
-    await user.click(within(row()).getByRole("button", { name: "Revoke…" }));
-    await user.click(within(row()).getByRole("button", { name: "Keep" }));
-    expect(within(row()).getByRole("button", { name: "Revoke…" })).toBeDefined();
+    await user.click(opener());
+    let box = await asked("Revoke old");
+    expect(box.textContent).toContain("Anything using this token stops working at once");
+    expect(box.textContent).toContain("This cannot be undone.");
+    // nothing has failed yet: no alert before an answer
+    expect(within(box).queryByRole("alert")).toBeNull();
+    await user.click(within(box).getByRole("button", { name: "Keep" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(document.activeElement === opener()).toBe(true);
     expect((await tokensOf(s))[0]?.revokedAt).toBeNull();
 
-    await user.click(within(row()).getByRole("button", { name: "Revoke…" }));
-    await user.click(within(row()).getByRole("button", { name: "Revoke old" }));
+    await user.click(opener());
+    box = await asked("Revoke old");
+    await user.click(within(box).getByRole("button", { name: "Revoke old" }));
     await waitFor(() => expect(row().textContent?.includes("Revoked")).toBe(true), {
       timeout: 5000,
     });
+    await waitFor(() => expect(toasted()).toBe("Revoked old."), { timeout: 5000 });
+    expect(row().querySelector(".st-quiet")?.textContent).toBe("Revoked");
     expect(within(row()).queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect((await tokensOf(s))[0]?.revokedAt).not.toBeNull();
     expect((await audited("token.revoke", made.id)).length).toBe(1);
+  });
+
+  test("a revoke the API refuses is said in the dialog, which stays", async () => {
+    const s = await sceneOn(backend);
+    must(await s.client.tokens.post({ name: "old", scopes: ["variable.read"], expiresInDays: 7 }));
+    const client = clientVia(backend.api, s.cookie, async (request, send) =>
+      request.method === "DELETE" && pathOf(request).startsWith("/tokens/")
+        ? Response.json(
+            {
+              type: "about:blank",
+              title: "Conflict",
+              status: 409,
+              code: "conflict",
+              detail: "Could not revoke it",
+            },
+            { status: 409, headers: { "content-type": "application/problem+json" } },
+          )
+        : send(),
+    );
+    mount(client);
+    const user = userEvent.setup();
+    await tokenTable();
+    await user.click(await screen.findByRole("button", { name: "Revoke… old" }));
+    const box = await asked("Revoke old");
+    await user.click(within(box).getByRole("button", { name: "Revoke old" }));
+    await waitFor(
+      () => expect(within(box).getByRole("alert").textContent).toContain("Could not revoke it"),
+      {
+        timeout: 5000,
+      },
+    );
+    expect(box.isConnected).toBe(true);
+    expect(toasted()).toBeUndefined();
+    expect((await tokensOf(s))[0]?.revokedAt).toBeNull();
   });
 
   test("an expired token is listed as expired, with nothing to revoke", async () => {
@@ -517,7 +634,7 @@ describe("API tokens", () => {
       .where(eq(apiTokens.id, made.id));
     mount(s.client);
     const row = rowOf(await tokenTable(), "stale");
-    expect(row.textContent).toContain("Expired");
+    expect(row.querySelector(".st-warn")?.textContent).toBe("Expired");
     expect(within(row).queryByRole("button")).toBeNull();
   });
 

@@ -11,6 +11,7 @@ a mock GitHub, and the real-instance runs are tasks of their own (GitLab FRG-8, 
 |---|---|---|
 | Sign in with GitLab, and GitLab-membership roles | **one GitLab per deployment** | `GITLAB_URL` and the three `GITLAB_OAUTH_*` settings, all or none |
 | Sign in with GitHub (github.com), and project roles through the repositories' collaborators | **one GitHub OAuth app per deployment** | the three `GITHUB_OAUTH_*` settings, all or none; needs `ORCH_MASTER_KEYS` ([below](#signing-in-with-github-frg-25)) |
+| Organization roles through a GitHub organization's owners and members | one membership token per deployment | `GITHUB_MEMBERSHIP_TOKEN`, and an organization's `githubOrgId` ([below](#an-organization-on-github-frg-34)) |
 | Sign in through another GitLab (or any OpenID Connect provider) | any number, one per organization's identity provider | [sso.md](sso.md), "A second GitLab instance as the provider" |
 | Connections (import, sync, merge request notes, pipelines) | any number per organization, each with its own address and token | `POST /organizations/:orgId/connections` |
 | CI job tokens (`id_token` exchange) | the deployment's GitLab, and any GitLab a connection is registered at | [ci.md](ci.md), "More than one GitLab" |
@@ -106,8 +107,8 @@ by `apps/api/src/connections.test.ts`, `packages/github/src/permissions.test.ts`
 
 **What ran:** every area above against the in-process mock GitHub, and the forge contract against the same mock. **Not
 run:** anything against a real GitHub (FRG-27), a workflow on a runner, a GitHub Enterprise Server. Nothing outside the
-list is built for GitHub: deployments and environments of GitLab's kind, runners and their health, project access
-tokens and GitLab's state backend are refused with a sentence, and the capability flags say so.
+list is built for GitHub: runners and their health, project access tokens and GitLab's state backend are refused with a
+sentence, and the capability flags say so. Deployments and environments are built (CLD-10, below).
 
 - **The test reads, it does not write.** A fine-grained token's permissions cannot be read back, so the test uses the
   token for one read per permission on the first repository it sees (contents, pull requests, actions, secrets,
@@ -122,7 +123,7 @@ tokens and GitLab's state backend are refused with a sentence, and the capabilit
 
 It answers the same operations as the GitLab one, on a mock GitHub, with the same contract test for projects,
 repositories and merge requests (`packages/forge/src/github.mock.contract.test.ts`). Everything else (pipelines,
-variables, members, deployments, runners, access tokens, Terraform state) refuses with "is not available for GitHub
+variables, members, runners, access tokens, Terraform state) refuses with "is not available for GitHub
 yet", and every capability flag says no, until the task that builds it (most are built since: see the table at the top
 of this section).
 
@@ -205,8 +206,8 @@ so a workflow run reads the way a pipeline does: its `status` and `conclusion` b
 - **Starting a run is `startRun` (FRG-30), below.** Still refused: a child pipeline (`pipelines.trigger`) and a run's
   artifacts (`pipelines.artifact`), so the secret scan of a finished GitHub run does not run.
 - **Run events reach it since FRG-22; pull requests and their comments since FRG-32.** The worker's run-event, pull
-  request and comment handlers open a GitHub connection for a GitHub event (below). The other consumers that start runs
-  (state, deployments, pools, the template registry) open GitLab connections only. The pipeline delivery routes
+  request and comment handlers open a GitHub connection for a GitHub event (below), and so does the deployment handler
+  (CLD-10, below). The other consumers that start runs (state, pools, the template registry) open GitLab connections only. The pipeline delivery routes
   follow the connection's type since FRG-16. The sentences of `retryPipeline`'s refusals still
   say GitLab.
 - **Mapping choices of ours:** `waiting` (held for an environment's reviewers) and `action_required` are `manual`.
@@ -310,13 +311,14 @@ against GitHub**.
   | `pull_request` | `pull_request` | `action`, `iid`, `state`, `sourceBranch`, `targetBranch`, `sha`, `headRepositoryId` |
   | `issue_comment` on a pull request | `issue_comment` | `action`, `noteId`, `mrIid`; a comment on an issue is ignored |
   | `deployment_review` | `deployment_review` | `action`, `environment`, `pipelineId` |
+  | `deployment_status` | `deployment_status` | `action`, `deploymentId`, `status`, `environment` |
 
 - **Named as GitHub names them.** Nothing written for GitLab's events (`pipeline`, `merge_request`, `note`,
   `deployment`) matches these, and `linkedProjects` without a connection means GitLab's projects only, so the
   repository with id N can never be read as GitLab's project N; a test pins that those consumers' schemas refuse every
   job from here. `headRepositoryId` is there so a consumer can refuse a pull request from a fork.
-- **All of them are consumed:** `workflow_run`, `workflow_job` and `deployment_review` (FRG-22, below), and
-  `pull_request` and `issue_comment` (FRG-32, below).
+- **All of them are consumed:** `workflow_run`, `workflow_job` and `deployment_review` (FRG-22, below),
+  `pull_request` and `issue_comment` (FRG-32, below), and `deployment_status` (CLD-10, below).
 - **The delivery id is not signed.** A captured delivery could be sent again under a new id and be queued again. Every
   consumer reads the present state from the forge and none acts on the body, so a replay costs a read; keep that true.
 - Two connections sharing one webhook secret accept each other's deliveries; give each its own.
@@ -397,6 +399,25 @@ file, so no dispatch could succeed (`apps/api/src/pipeline-apply.github.test.ts`
 - **What ran:** the delivery against the mock GitHub (one pull request with both files, repeat, update, in place, no
   stacks, no platform, bad address), and the pipeline route with and without a platform. **Not run:** a real GitHub, and
   the workflow itself on a runner.
+
+### Deployments on GitHub (CLD-10)
+
+A deployment on GitHub is a request to deploy, with a list of statuses; the platform keeps the newest status as the
+deployment's status. `deployment_status` queues the deployment's id only, and `deploymentEventHandler` reads the
+deployment and its statuses from GitHub and stores that, so a replayed or reordered delivery does nothing a read would
+not (the same rule as a run). **Refresh** (`POST .../deployments/refresh`) reads the newest 100 through the project's
+connection, whichever forge it is. Covered by `apps/api/src/deployments.github.test.ts` and
+`packages/github/src/deployments.test.ts`; **not run against GitHub**.
+
+- **Ids.** `deployments.gitlab_deployment_id` holds GitHub's deployment id and the API field keeps its name, as
+  `projects.gitlab_project_id` holds a repository id: no migration.
+- **No run behind it.** `jobId` and `pipelineId` are null on GitHub; the page links the status's `log_url` when it is a
+  web address, and nothing else of a status (its description, its creator) is read.
+- **Unverified.** The `deployment_status` payload field names, what `log_url` holds when a workflow made the
+  deployment, whether statuses come newest first, and how `inactive` is set. Each is a guess from the documentation
+  until FRG-27 runs against a real repository.
+- **Promote and rollback on GitHub (CLD-11)** dispatch the deploy workflow of a `cloud-run` or `ecs` project and find the
+  run by its `run-name` (`deployRunName`); see `docs/deployments.md`.
 
 ### Following a run on GitHub (FRG-22)
 
@@ -489,8 +510,7 @@ required one left out and a choice that is not an option are each a 422.
 
 ## What is not there yet
 
-A real GitLab run, twice (FRG-8); a real GitHub run (FRG-27); a GitHub organization link and a list of platform
-administrators by GitHub id (FRG-34, an auth-model change, so not built); a per-organization GitLab group link on a second
+A real GitLab run, twice (FRG-8); a real GitHub run (FRG-27); a per-organization GitLab group link on a second
 instance; roles for people of a second instance who belong through a parent group only (GitLab's `groups_direct` lists
 direct membership alone).
 
@@ -569,7 +589,7 @@ project, not the connection, what it can do.
   | Flag | Screen | On GitHub |
   |---|---|---|
   | `ciLint` | Pipeline review | "GitHub does not check a workflow before it is merged, so the review cannot lint it." The heading says Notes, not "lint warns"; the diff names `.github/workflows/orch.yml` |
-  | `deployments` | Status → Deployments | the reason, with no Refresh or promotion |
+  | `deployments` | Status → Deployments | true on GitHub since CLD-10: the card reads in GitHub's words and refreshes; a forge that lacked the flag would show the reason in its place |
   | `runners` | Settings → Pools, health check | the reason, in place of the Check button |
 
   The pipeline wizard offers only the connections of the project's forge. The other flags (`approvalState` aside)
@@ -609,9 +629,9 @@ sign-in mode. It works without the GitLab settings.
   connection, what the user may do in the repository (collaborator permission: read and triage are Reporter, write is
   Developer, maintain and admin are Maintainer, as in the table above) and gives the highest. A user with no role anywhere gets `403
   no_access` and nobody is made. Their GitHub id is logged (not the code, not the token).
-- **Project roles only.** Organization roles come from a GitLab group or single sign-in. A team that is on GitHub
-  alone cannot make its first organization or hold an organization administrator through GitHub (FRG-34, not built:
-  it is an auth-model change). Platform administrators are still GitLab ids.
+- **Organization roles too, when the organization is linked to a GitHub organization** ([below](#an-organization-on-github-frg-34)).
+  A person with no repository role but an owner's or member's seat in a linked GitHub organization signs in; a person
+  on the platform-administrator list for GitHub signs in with no role at all.
 - **Failures.** GitHub unreachable or rate-limited: 502. A code GitHub refuses, a spent code, or a person who
   turned it down: 401. A refused client secret is also logged at error level (the deployment's fault). Roles that
   could not be read, e.g. a connection token GitHub now refuses: 503 and no session, never a guess.
@@ -629,3 +649,33 @@ access token issued.
 **Not run against GitHub.** PKCE for an OAuth app is taken from GitHub's changelog of 2025-07-14 (S256, and the
 client secret is still sent); it was not tried against a real app. github.com only: a GitHub Enterprise Server
 connection's repositories give no role here, and the settings carry no base URL.
+
+### An organization on GitHub (FRG-34)
+
+> **An auth-model change.** It adds a second way to become an organization owner, and a second list of platform
+> administrators. Read it before turning it on; `/security-review` of it is logged in `.claude/.planning/25-multi-forge/LOG.md`.
+
+An organization is made with `githubOrgId`: the GitHub **account id** of an organization (`https://api.github.com/orgs/<login>`,
+field `id`; never the login, which GitHub lets be changed and handed on). Like the slug and the GitLab group it is fixed at
+creation, one GitHub organization belongs to one organization here (`409 github_org_linked` otherwise), and the web form
+asks for a GitLab group, a GitHub organization or both.
+
+| Setting | Meaning |
+|---|---|
+| `GITHUB_MEMBERSHIP_TOKEN` | a token with `read:org`, owned by a member of every linked GitHub organization; needs the three `GITHUB_OAUTH_*` settings |
+| `ORCH_PLATFORM_ADMIN_GITHUB_IDS` | GitHub user ids that may create organizations; a list of its own |
+
+- **Why a deployment token and not a connection's.** A new organization has no connection yet to read its membership with.
+  The token is read from the environment, never stored or shown, and is the only secret FRG-34 adds.
+- **Roles.** An owner of the GitHub organization is an owner here, an active member a member. A billing manager, an
+  invitation not yet accepted, and anyone else hold nothing. Where GitLab or single sign-in also speak, the highest role
+  holds. It is read with the same five-minute cache as the repository roles, and a lookup that fails is a 503, never a guess.
+- **Platform administrators.** `ORCH_PLATFORM_ADMIN_GITHUB_IDS` is checked against the GitHub user id of the person who
+  signed in with GitHub; `ORCH_PLATFORM_ADMIN_GITLAB_IDS` against a GitLab id. A GitLab user with the same number is not an
+  administrator through the GitHub list, and the reverse. Such a person signs in with no role (there may be no organization yet)
+  and can then make the first one.
+- **Audited.** `organization.create` records `githubOrgId` next to `gitlabGroupId`.
+
+**Not run against GitHub.** The membership route is taken from GitHub's documentation (`GET /orgs/{org}/memberships/{user}`:
+`state` and `role`) and the `read:org` scope from the same page; it was run only against the mock. Which token types
+GitHub accepts for it, and what an organization that restricts third-party access does to it, were not tried.

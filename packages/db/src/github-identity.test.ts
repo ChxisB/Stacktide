@@ -4,7 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import { createConnection } from "./connections";
 import { importProject } from "./imports";
 import { pgConstraint } from "./pg-error";
-import { createOrganization, githubLinks } from "./repo";
+import { createOrganization, githubLinks, githubOrgLinks } from "./repo";
 import { userIdentities, users } from "./schema";
 import {
   createSsoProvider,
@@ -184,5 +184,41 @@ describe("the repositories a GitHub account's roles are read from", () => {
       repositoryId: 9001,
     });
     expect(found.some((l) => l.repositoryId === 9005)).toBe(false);
+  });
+});
+
+// FRG-34: an organization linked to a GitHub organization, whose owners and members hold its roles.
+describe("organizations linked to a GitHub organization", () => {
+  test("are listed with their GitHub account id, in creation order, and the unlinked are not", async () => {
+    const [a, b] = [7_100_000_001, 7_100_000_002];
+    const first = await createOrganization(t.db, {
+      slug: `hub-a${++n}`,
+      name: "A",
+      githubOrgId: a,
+    });
+    await createOrganization(t.db, { slug: `plain${++n}`, name: "P" });
+    const second = await createOrganization(t.db, {
+      slug: `hub-b${++n}`,
+      name: "B",
+      githubOrgId: b,
+    });
+    const found = (await githubOrgLinks(t.db)).filter((l) => [a, b].includes(l.githubOrgId));
+    expect(found).toEqual([
+      { organizationId: first.id, githubOrgId: a },
+      { organizationId: second.id, githubOrgId: b },
+    ]);
+  });
+
+  test("one GitHub organization belongs to one organization here, and many may have none", async () => {
+    const hub = 7_100_000_003;
+    await createOrganization(t.db, { slug: `hub-c${++n}`, name: "C", githubOrgId: hub });
+    const err = await createOrganization(t.db, {
+      slug: `hub-d${++n}`,
+      name: "D",
+      githubOrgId: hub,
+    }).catch((e) => e);
+    expect(pgConstraint(err)).toBe("organizations_github_org_key");
+    await createOrganization(t.db, { slug: `none${++n}`, name: "N1" });
+    await createOrganization(t.db, { slug: `none${++n}`, name: "N2" });
   });
 });

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { Card, Named } from "./components";
+import { Callout, Card, Confirm, Drawer, Empty, Named, useToast } from "./components";
 import { SignInMethods } from "./identities";
 import type { Org } from "./org";
 import { Pools } from "./pools";
@@ -29,26 +29,88 @@ interface Connection {
 
 type Access = NonNullable<ReturnType<typeof useAccess>["data"]>;
 
+const probe = (client: ReturnType<typeof useClient>, orgId: string, c: Connection) =>
+  call(() => client.organizations({ orgId }).connections({ connectionId: c.id }).test.post());
+type Outcome = Awaited<ReturnType<typeof probe>>;
+
+/** What a test found, below the table and naming the connection it is about: it is not one row's news. */
+function Tested({ name, outcome }: { name: string; outcome: Outcome }) {
+  if (!outcome.ok) {
+    return (
+      <Callout tone="bad" title={name}>
+        {outcome.message}
+      </Callout>
+    );
+  }
+  return (
+    <div role="status">
+      <Callout tone="ok" title={name}>
+        {"user" in outcome ? (
+          <>
+            GitLab accepts it, as {outcome.user.name} (@{outcome.user.username}).{" "}
+            {outcome.scopes ? `Scopes: ${outcome.scopes.join(", ")}.` : "Its scopes are not shown."}
+            {outcome.expiresAt ? ` Expires ${outcome.expiresAt}.` : " It does not expire."}
+            {outcome.version && ` GitLab ${outcome.version}.`}
+            {(["no", "unknown"] as const).map((state) => {
+              const list = outcome.capabilities.filter((c) => c.state === state);
+              return (
+                list.length > 0 && (
+                  <span key={state}>
+                    {" "}
+                    {state === "no" ? "Not available here:" : "Cannot be told:"}{" "}
+                    {list.map((c) => `${c.label} (needs ${c.needs})`).join("; ")}.
+                  </span>
+                )
+              );
+            })}
+          </>
+        ) : (
+          `${outcome.summary}.`
+        )}
+      </Callout>
+    </div>
+  );
+}
+
 function Row({
   orgId,
   connection,
   actions,
+  testing,
+  busy,
+  onTest,
+  onAsk,
 }: {
   orgId: string;
   connection: Connection;
   actions: Access["actions"];
+  /** This row's test is under way. */
+  testing: boolean;
+  /** Some row's test is under way. */
+  busy: boolean;
+  onTest: () => void;
+  /** The delete question is opened. */
+  onAsk: () => void;
 }) {
   const client = useClient();
   const queries = useQueryClient();
-  const at = () => client.organizations({ orgId }).connections({ connectionId: connection.id });
+  const toast = useToast();
   const [confirming, setConfirming] = useState(false);
-  const test = useMutation({ mutationFn: () => call(() => at().test.post()) });
   const remove = useMutation({
-    mutationFn: () => call(() => at().delete()),
-    onSuccess: () => queries.invalidateQueries({ queryKey: ["connections", orgId] }),
+    mutationFn: () =>
+      call(() =>
+        client.organizations({ orgId }).connections({ connectionId: connection.id }).delete(),
+      ),
+    onSuccess: async () => {
+      await queries.invalidateQueries({ queryKey: ["connections", orgId] });
+      toast(`Deleted ${connection.name}.`);
+    },
   });
   const address = connection.config.baseUrl;
-  const result = test.data;
+  const keep = () => {
+    remove.reset();
+    setConfirming(false);
+  };
   return (
     <tr>
       <th scope="row">{connection.name}</th>
@@ -58,143 +120,120 @@ function Row({
         <time dateTime={stamp(connection.createdAt)}>{when(connection.createdAt)}</time>
       </td>
       <td>
-        <div className="stack">
-          {confirming ? (
-            <div className="row">
-              <button
-                type="button"
-                className="danger"
-                disabled={remove.isPending}
-                onClick={() => remove.mutate()}
-              >
-                {remove.isPending ? "Deleting…" : `Delete ${connection.name}`}
-              </button>
-              <button
-                type="button"
-                disabled={remove.isPending}
-                onClick={() => {
-                  remove.reset();
-                  setConfirming(false);
-                }}
-              >
-                Keep
-              </button>
-            </div>
-          ) : (
-            <div className="row">
-              {actions.includes("connection.test") && (
-                <button type="button" disabled={test.isPending} onClick={() => test.mutate()}>
-                  {test.isPending ? "Testing…" : <Named word="Test" name={connection.name} />}
-                </button>
-              )}
-              {actions.includes("connection.delete") && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    // the news of an earlier test says nothing of what is about to be decided
-                    test.reset();
-                    setConfirming(true);
-                  }}
-                >
-                  Delete…
-                </button>
-              )}
-            </div>
+        <div className="row">
+          {actions.includes("connection.test") && (
+            <button type="button" disabled={busy} onClick={onTest}>
+              {testing ? "Testing…" : <Named word="Test" name={connection.name} />}
+            </button>
           )}
-          {confirming && (
-            <p className="muted">
-              Its stored token is deleted, and what reaches its forge through it stops working until
-              another connection is set up. One that sync targets still use cannot be deleted.
-            </p>
-          )}
-          {result?.ok && !("user" in result) && <p role="status">{result.summary}.</p>}
-          {result?.ok && "user" in result && (
-            <p role="status">
-              GitLab accepts it, as {result.user.name} (@{result.user.username}).{" "}
-              {result.scopes ? `Scopes: ${result.scopes.join(", ")}.` : "Its scopes are not shown."}
-              {result.expiresAt ? ` Expires ${result.expiresAt}.` : " It does not expire."}
-              {result.version && ` GitLab ${result.version}.`}
-              {(["no", "unknown"] as const).map((state) => {
-                const list = result.capabilities.filter((c) => c.state === state);
-                return (
-                  list.length > 0 && (
-                    <span key={state}>
-                      {" "}
-                      {state === "no" ? "Not available here:" : "Cannot be told:"}{" "}
-                      {list.map((c) => `${c.label} (needs ${c.needs})`).join("; ")}.
-                    </span>
-                  )
-                );
-              })}
-            </p>
-          )}
-          {result && !result.ok && (
-            <p role="alert" className="error">
-              {result.message}
-            </p>
-          )}
-          {(test.error || remove.error) && (
-            <p role="alert" className="error">
-              {(test.error ?? remove.error)?.message}
-            </p>
+          {actions.includes("connection.delete") && (
+            <button
+              type="button"
+              onClick={() => {
+                onAsk();
+                setConfirming(true);
+              }}
+            >
+              <Named word="Delete…" name={connection.name} />
+            </button>
           )}
         </div>
+        {confirming && (
+          <Confirm
+            title={`Delete ${connection.name}`}
+            warn="Its stored token is deleted, and what reaches its forge through it stops working until another connection is set up."
+            note="One that sync targets still use cannot be deleted."
+            go={`Delete ${connection.name}`}
+            busy={remove.isPending}
+            error={remove.error?.message}
+            onConfirm={() => remove.mutate()}
+            close={keep}
+          />
+        )}
       </td>
     </tr>
   );
 }
 
 function Connections({ orgId, actions }: { orgId: string; actions: Access["actions"] }) {
+  const client = useClient();
   const connections = useConnections(orgId);
+  const toast = useToast();
   const [adding, setAdding] = useState(false);
+  const test = useMutation({ mutationFn: (c: Connection) => probe(client, orgId, c) });
   return (
-    <Card title="Connections">
-      <p className="muted">
-        The GitLab and GitHub access tokens this organization works through. A token is stored
-        encrypted and is never shown again.
-      </p>
+    <Card
+      title="Connections"
+      sub="The GitLab and GitHub access tokens this organization works through. A token is stored encrypted and is never shown again."
+      actions={
+        actions.includes("connection.create") && (
+          <button type="button" className="primary" onClick={() => setAdding(true)}>
+            Add a connection…
+          </button>
+        )
+      }
+    >
       {connections.isPending && <Loading what="Loading connections" />}
       {connections.error && !connections.data && (
         <ErrorPanel error={connections.error} retry={() => void connections.refetch()} />
       )}
       {connections.data &&
         (connections.data.length === 0 ? (
-          <p>No connection yet.</p>
+          <Empty title="No connection yet" text="Nothing is connected to GitLab or GitHub yet." />
         ) : (
-          <table>
-            <caption className="visually-hidden">Connections</caption>
-            <thead>
-              <tr>
-                <th scope="col">Name</th>
-                <th scope="col">Forge</th>
-                <th scope="col">Address</th>
-                <th scope="col">Added</th>
-                <th scope="col">
-                  <span className="visually-hidden">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {connections.data.map((c) => (
-                <Row key={c.id} orgId={orgId} connection={c} actions={actions} />
-              ))}
-            </tbody>
-          </table>
-        ))}
-      {adding ? (
-        <AddConnection
-          orgId={orgId}
-          onDone={() => setAdding(false)}
-          onCancel={() => setAdding(false)}
-        />
-      ) : (
-        actions.includes("connection.create") && (
-          <div className="row">
-            <button type="button" onClick={() => setAdding(true)}>
-              Add a connection…
-            </button>
+          <div className="scroll">
+            <table>
+              <caption className="visually-hidden">Connections</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Name</th>
+                  <th scope="col">Forge</th>
+                  <th scope="col">Address</th>
+                  <th scope="col">Added</th>
+                  <th scope="col">
+                    <span className="visually-hidden">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {connections.data.map((c) => (
+                  <Row
+                    key={c.id}
+                    orgId={orgId}
+                    connection={c}
+                    actions={actions}
+                    testing={test.isPending && test.variables?.id === c.id}
+                    busy={test.isPending}
+                    onTest={() => test.mutate(c)}
+                    // the news of an earlier test says nothing of what is about to be decided
+                    onAsk={() => test.reset()}
+                  />
+                ))}
+              </tbody>
+            </table>
           </div>
-        )
+        ))}
+      {test.data && test.variables && <Tested name={test.variables.name} outcome={test.data} />}
+      {test.error && (
+        <Callout tone="bad" title={test.variables?.name}>
+          {test.error.message}
+        </Callout>
+      )}
+      {adding && (
+        <Drawer
+          title="Add a connection"
+          sub="The platform reads your projects with this token."
+          close={() => setAdding(false)}
+        >
+          <AddConnection
+            orgId={orgId}
+            onDone={(_, name) => {
+              setAdding(false);
+              toast(`Connected ${name}.`);
+            }}
+            onCancel={() => setAdding(false)}
+          />
+        </Drawer>
       )}
     </Card>
   );

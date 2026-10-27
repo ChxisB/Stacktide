@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type Backend, clientVia, mount, pathOf, startBackend } from "./testing";
+import { type Backend, clientVia, inMain, mount, pathOf, startBackend } from "./testing";
 import {
   must,
   openSecrets,
@@ -42,7 +42,7 @@ const edit = (key: string) => screen.getByRole("button", { name: `Edit ${key}` }
 const copy = (key: string) => screen.getByRole("button", { name: `Copy value of ${key}` });
 const more = (key: string) => screen.getByRole("button", { name: `More actions for ${key}` });
 const items = () => screen.getAllByRole("menuitem").map((i) => i.textContent);
-const status = () => screen.queryByRole("status")?.textContent;
+const status = () => inMain().queryByRole("status")?.textContent;
 const nothingOf = (value: string) => expect(document.body.textContent).not.toContain(value);
 
 describe("a row's buttons", () => {
@@ -198,7 +198,7 @@ describe("the menu", () => {
     const user = userEvent.setup();
     await user.click(more("REGION"));
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    const form = await screen.findByRole("form", { name: "Delete REGION" });
+    const form = await screen.findByRole("alertdialog", { name: "Delete REGION" });
     expect(form.textContent).toContain("Every environment that gets it from there loses it too.");
     const table = screen.getByRole("table", { name: "Variables in dev" });
     expect(within(table).getByRole("button", { name: "REGION" })).toBeTruthy();

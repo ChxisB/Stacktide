@@ -8,11 +8,12 @@ import {
   savePipelineConfig,
   setEnvironmentProtection,
 } from "@orch/db";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { and, eq } from "drizzle-orm";
 import { newQueryClient, Providers } from "./app";
 import { AuthGate } from "./auth";
+import { Toaster } from "./components";
 import { OrgProvider, RequireOrg } from "./org";
 import { RunsPage } from "./runs";
 import { type Backend, clientVia, down, pathOf, startBackend } from "./testing";
@@ -59,14 +60,19 @@ const deployed = (
 function mountPage(client: ReturnType<Backend["anonymous"]>) {
   render(
     <Providers client={client} queries={newQueryClient()}>
-      <AuthGate>
-        <OrgProvider>
-          <RequireOrg>{(org) => <RunsPage orgId={org.id} />}</RequireOrg>
-        </OrgProvider>
-      </AuthGate>
+      <Toaster>
+        <AuthGate>
+          <OrgProvider>
+            <RequireOrg>{(org) => <RunsPage orgId={org.id} />}</RequireOrg>
+          </OrgProvider>
+        </AuthGate>
+      </Toaster>
     </Providers>,
   );
 }
+
+/** The toast, where results are reported (UXR-18): empty until something is. */
+const toastIn = () => document.querySelector(".toast-text") as HTMLElement;
 
 /** The Deployments card, once it has loaded. */
 const card = async () => screen.findByRole("region", { name: "Deployments" });
@@ -316,7 +322,8 @@ describe("Refresh", () => {
     mountPage(maintainer.client);
     expect(words(await box("staging"))).toContain("aaaaaaaa");
     await userEvent.setup().click(within(await card()).getByRole("button", { name: "Refresh" }));
-    expect((await screen.findByRole("status")).textContent).toContain("1 new or changed");
+    await waitFor(() => expect(words(toastIn())).toContain("1 new or changed"));
+    expect(within(await card()).queryByText(/new or changed/)).toBeNull();
     await waitFor(() => expect(words(document.body)).toContain("ffffffff"));
     expect(await audited(s)).toHaveLength(1);
     // what GitLab says of the people and the commit never reaches the page
@@ -354,7 +361,7 @@ describe("Refresh", () => {
     const s = await sceneOn(backend, { environments: [] });
     mountPage(s.client);
     await userEvent.setup().click(within(await card()).getByRole("button", { name: "Refresh" }));
-    expect((await screen.findByRole("alert")).textContent).toMatch(/not imported from GitLab/i);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/not linked to a repository/i);
   });
 });
 
@@ -460,14 +467,15 @@ describe("Promote and Roll back", () => {
       { key: "ORCH_PREVIOUS_SHA", value: SHA("a"), type: "env_var" },
     ]);
     // the person is told, with a link to the pipeline, and that the box changes when GitLab says so
-    const status = await screen.findByRole("status");
-    expect(words(status)).toMatch(/Started.*bbbbbbbb.*production/);
+    // by toast (UXR-18), not left in the card
+    await waitFor(() => expect(words(toastIn())).toMatch(/Started.*bbbbbbbb.*production/));
     expect(
-      within(status)
+      within(toastIn())
         .getByRole("link", { name: /pipeline/i })
         .getAttribute("href"),
     ).toMatch(/^http/);
-    expect(words(status)).toContain("when GitLab reports it");
+    expect(words(toastIn())).toContain("when GitLab reports it");
+    expect(within(await card()).queryByText(/Started/)).toBeNull();
     // what GitLab says of the people and the commit never reaches the page
     for (const word of ["Mock Deployer", "mock-deployer", "mock commit title", "mock@example.test"])
       expect(words(document.body)).not.toContain(word);
@@ -586,8 +594,8 @@ describe("Promote and Roll back", () => {
     expect(rest).toHaveLength(0);
     expect(asked?.subject).toEqual({ sha: SHA("b") });
     expect(g.started()).toHaveLength(0);
-    expect(words(await screen.findByRole("status"))).toMatch(
-      /Asked for approval.*bbbbbbbb.*production/,
+    await waitFor(() =>
+      expect(words(toastIn())).toMatch(/Asked for approval.*bbbbbbbb.*production/),
     );
     // the box lists it; its author cannot approve it, but may withdraw it
     const waiting = await within(await box("production")).findByText(/You asked/);
@@ -764,6 +772,74 @@ describe("Promote and Roll back", () => {
       { key: "ORCH_DEPLOY_SHA", value: SHA("a"), type: "env_var" },
       { key: "ORCH_PREVIOUS_SHA", value: SHA("b"), type: "env_var" },
     ]);
+  });
+
+  // UXR-18: today's drawer title and form title become the one heading of a dialog
+  test("the dialog has one heading, named for what it does, and the form under it has no title of its own", async () => {
+    const s = await sceneWith();
+    await deployable(s);
+    mountPage(s.client);
+    await userEvent.setup().click(await button("production", /^promote/i));
+    const d = await dialog("Promote to production");
+    await d.findByRole("button", { name: "Start deployment" });
+    expect(d.getAllByRole("heading").map((h) => h.textContent)).toEqual(["Promote to production"]);
+    expect(screen.queryByRole("form", { name: "Promote" })).toBeNull();
+    expect(d.getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
+
+  test("the note that an environment is protected is a callout, in the words it had", async () => {
+    const s = await sceneWith();
+    await deployable(s);
+    await protect(s, "production");
+    mountPage(s.client);
+    await userEvent.setup().click(await button("production", /^promote/i));
+    const d = await dialog("Promote to production");
+    await d.findByRole("button", { name: "Ask for approval" });
+    const note = document.querySelector(".dialog .callout-info") as HTMLElement;
+    expect(words(note)).toMatch(
+      /production is protected: starting needs an approval from someone other than you/,
+    );
+  });
+
+  test("the approval flow runs end to end in the dialog: ask, someone else approves, start", async () => {
+    const s = await sceneWith();
+    const g = await deployable(s);
+    const envId = await protect(s, "production");
+    mountPage(s.client);
+    const user = userEvent.setup();
+    await user.click(await button("production", /^promote/i));
+    let d = await dialog("Promote to production");
+    const ask = await d.findByRole("button", { name: "Ask for approval" });
+    await waitFor(() => expect((ask as HTMLButtonElement).disabled).toBe(false));
+    await user.click(ask);
+    await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
+    await waitFor(() => expect(words(toastIn())).toMatch(/Asked for approval/));
+    expect(g.started()).toHaveLength(0);
+    // someone other than the person who asked approves it
+    const [request] = await requests(s, envId);
+    const other = await backend.signIn("second admin", {
+      orgRoles: { [s.org.id]: "admin" },
+      projectRoles: {},
+    });
+    must(
+      await other.client
+        .organizations({ orgId: s.org.id })
+        .projects({ projectId: s.project.id })
+        .environments({ envId })
+        ["change-requests"]({ crId: request?.id ?? "" })
+        .approve.post(),
+    );
+    // the person comes back to the page (a fresh load: the approval was given in another session), and the same dialog now starts it
+    cleanup();
+    mountPage(s.client);
+    await user.click(await button("production", /^promote/i));
+    d = await dialog("Promote to production");
+    const start = await d.findByRole("button", { name: "Start deployment" });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    await user.click(start);
+    await waitFor(() => expect(screen.queryByRole("dialog") === null).toBe(true));
+    expect(g.started()).toHaveLength(1);
+    await waitFor(() => expect(words(toastIn())).toMatch(/Started.*bbbbbbbb.*production/));
   });
 
   test("the dialog closes on Escape and the focus goes back to the button that opened it", async () => {

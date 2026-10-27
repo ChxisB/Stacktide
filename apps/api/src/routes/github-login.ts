@@ -27,8 +27,8 @@ const githubFlow = z.object({ s: z.string(), v: z.string(), r: z.string(), e: z.
 /**
  * Sign in with GitHub (FRG-25): authorization code + PKCE + `state`, scope `read:user`. The person is known by their
  * GitHub user id, never by login or email, and is never matched to an existing person. They get a session only if
- * they hold a role through a repository linked here (`auth.githubRoles`): a sign-in with none is refused and makes
- * nobody. The access token answers "who is this" once and is dropped.
+ * they hold a role through a repository or an organization linked here (`auth.githubRoles`), or are on the platform-admin
+ * list for GitHub (FRG-34): a sign-in with none is refused and makes nobody. The access token answers "who is this" once and is dropped.
  */
 export const githubLoginRoutes = ({
   db,
@@ -39,6 +39,7 @@ export const githubLoginRoutes = ({
   const {
     github,
     githubRoles,
+    githubPlatformAdmins = [],
     sessionTtlMs = DEFAULT_SESSION_TTL_MS,
     secureCookies = false,
   } = auth;
@@ -122,16 +123,18 @@ export const githubLoginRoutes = ({
             : new DomainError("login_failed", 401, "GitHub did not accept the sign-in");
         }
 
-        // No role through any linked repository: nobody is made and no session is given.
+        // No role through a linked repository or organization, and not a platform admin (who has none until they create
+        // the first organization): nobody is made and no session is given.
         const held = await githubRoles(who.githubId);
         if (
           Object.keys(held.projectRoles).length === 0 &&
-          Object.keys(held.orgRoles).length === 0
+          Object.keys(held.orgRoles).length === 0 &&
+          !githubPlatformAdmins.includes(who.githubId)
         ) {
           logger.warn("github sign-in refused", {
             request_id: set.headers["x-request-id"],
             github_id: who.githubId,
-            reason: "no role in any linked repository",
+            reason: "no role in any linked repository or organization",
           });
           throw new DomainError(
             "no_access",

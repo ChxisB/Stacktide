@@ -116,6 +116,8 @@ const allowed: Record<string, string[]> = {
   "run.create": DEVELOPER_UP,
   "run.summary": REPORTER_UP,
   "run.apply": MAINTAINER_UP,
+  "resource.read": REPORTER_UP,
+  "resource.propose": MAINTAINER_UP,
   // Org rules for everything that sets where notifications go; a project reader may see where its project's go.
   "notification.sink.read": ["org admin", "org owner"],
   "notification.sink.create": ["org admin", "org owner"],

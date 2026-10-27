@@ -35,6 +35,20 @@ describe("the demo world (DEMO-1)", () => {
     expect(demo.hub.url).toStartWith("http://127.0.0.1");
   });
 
+  test("the web project asks for one resource of each kind, and the service shows its link (BLP-20)", async () => {
+    const listed = must(await project(demo.web).resources.get({ query: { limit: 100 } })).items;
+    expect(listed.map((r) => [r.stack, r.kind]).sort()).toEqual([
+      ["staging-api-service", "service"],
+      ["staging-files-bucket", "bucket"],
+      ["staging-main-network", "network"],
+      ["staging-main-postgres", "postgres"],
+    ]);
+    expect(listed.find((r) => r.kind === "service")?.url).toBe("https://api.demo.invalid");
+    // each is a request on the mock GitLab: nothing is applied, so none has run
+    expect(new Set(listed.map((r) => r.state))).toEqual(new Set(["proposed"]));
+    expect(listed.every((r) => r.proposalUrl?.startsWith(demo.mock.url))).toBe(true);
+  });
+
   test("the web project has the three environments of a real one", async () => {
     const listed = must(await project(demo.web).environments.get({ query: { limit: 100 } })).items;
     expect(listed.map((e) => e.slug).sort()).toEqual(["dev", "production", "staging"]);

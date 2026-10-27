@@ -106,6 +106,10 @@ export const RULES = {
   "run.summary": { project: "reporter" },
   // Applying a saved plan changes real infrastructure with the credentials of the project's runners: a maintainer, as for retrying a pipeline, and not a developer, who may start a plan. Merging is a separate decision, made in GitLab.
   "run.apply": { project: "maintainer" },
+  // The resources a project has asked for from the blueprint catalog (ADR-0024): names, kinds, clouds, the closed inputs and a state read from the stack's runs. A reporter reads what a plan summary already shows. Asking for one is a separate action.
+  "resource.read": { project: "reporter" },
+  // Proposing a resource opens a merge or pull request in the project's own repository with the connection's token, and merging it lets the runners create cloud resources that bill: a maintainer, as for applying a plan. The platform changes nothing in the cloud itself.
+  "resource.propose": { project: "maintainer" },
   // Notification sinks hold an address that is itself a credential (a Slack hook, a webhook with a token) and send out of the platform: org admins create, list and delete them, as for connections. A project's reporters may see which sinks hear of the project; choosing them is the admins' too, as it decides what leaves.
   "notification.sink.read": { org: "admin" },
   "notification.sink.create": { org: "admin" },

@@ -7,6 +7,7 @@ import { findingsCommands } from "./findings";
 import { leaseCommands } from "./lease";
 import { pipelineCommands } from "./pipeline";
 import { poolCommands } from "./pool";
+import { resourceCommands } from "./resource";
 import { rotationCommands } from "./rotation";
 import { stateCommands } from "./state";
 import { syncCommands } from "./sync";
@@ -23,6 +24,7 @@ export const commands: Record<string, Command> = {
   ...leaseCommands(),
   ...pipelineCommands(),
   ...poolCommands(),
+  ...resourceCommands(),
   ...stateCommands(),
   ...rotationCommands(),
   ...syncCommands(),

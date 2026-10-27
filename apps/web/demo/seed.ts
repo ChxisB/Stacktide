@@ -7,6 +7,7 @@ import {
   putState,
   queueDriftChecks,
   recordPipelineRun,
+  recordResourceOutputs,
   savePipelineConfig,
   upsertFindings,
 } from "@orch/db";
@@ -264,6 +265,39 @@ deploy:
       at: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
     });
   must(await scope.deployments.refresh.post());
+
+  // one resource of each kind (BLP-20), each a merge request on the mock GitLab: nothing exists in a cloud, and the
+  // service shows the link a plan summary would have carried
+  const staging = {
+    environment: "staging",
+    cloud: "gcp",
+    region: "us-central1",
+    project: "demo-acme-staging",
+  };
+  must(await scope.resources.post({ ...staging, kind: "network", name: "main" }));
+  must(
+    await scope.resources.post({
+      ...staging,
+      kind: "postgres",
+      name: "main",
+      uses: ["network:main"],
+    }),
+  );
+  must(await scope.resources.post({ ...staging, kind: "bucket", name: "files" }));
+  must(
+    await scope.resources.post({
+      ...staging,
+      kind: "service",
+      name: "api",
+      uses: ["network:main", "postgres:main", "bucket:files"],
+    }),
+  );
+  await recordResourceOutputs(
+    db,
+    { organizationId: org.id, projectId: projects.web, stack: "staging-api-service" },
+    { url: "https://api.demo.invalid", consoleUrl: "https://console.demo.invalid/run/api" },
+    new Date(),
+  );
 
   // pipelines of the mock GitLab, so that a failed or canceled run can really be retried from the page
   const gitlab = createGitlab({

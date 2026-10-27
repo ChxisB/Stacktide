@@ -1,8 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
-import { type FormEvent, useState } from "react";
+import { useIsFetching, useQuery } from "@tanstack/react-query";
+import { type FormEvent, useId, useState } from "react";
 import { allPages, call, useClient } from "./api";
 import { ErrorPanel } from "./auth";
-import { Card } from "./components";
+import { Callout, Card, Empty, Icon } from "./components";
 import { ProjectPicker } from "./projects";
 import { Loading, stamp, when } from "./ui";
 
@@ -38,17 +38,31 @@ function Stack({ orgId, projectId, stack }: { orgId: string; projectId: string; 
   if (versions.error)
     return <ErrorPanel error={versions.error} retry={() => void versions.refetch()} />;
   if (!versions.data) return <Loading what="Loading state" />;
-  if (versions.data.length === 0) return <p>No state for {stack} in this project.</p>;
+  if (versions.data.length === 0)
+    return (
+      <Card title="State versions">
+        <Empty
+          title={`No state for ${stack}`}
+          text="Nothing is stored under that name in this project. Check the spelling of the stack."
+        />
+      </Card>
+    );
+  const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
   return (
     <>
-      <Card title="State versions">
+      <Card
+        title="State versions"
+        sub={`${count(versions.data.length, "version")} of ${stack}, newest first.`}
+      >
         <table>
           <caption className="visually-hidden">State versions</caption>
           <thead>
             <tr>
               <th scope="col">Serial</th>
               <th scope="col">Written</th>
-              <th scope="col">Size</th>
+              <th scope="col" className="num">
+                Size
+              </th>
               <th scope="col">By</th>
             </tr>
           </thead>
@@ -59,7 +73,7 @@ function Stack({ orgId, projectId, stack }: { orgId: string; projectId: string; 
                 <td>
                   <time dateTime={stamp(v.createdAt)}>{when(v.createdAt)}</time>
                 </td>
-                <td>{v.sizeBytes} bytes</td>
+                <td className="num">{v.sizeBytes} bytes</td>
                 <td>
                   <code>{v.createdBy}</code>
                 </td>
@@ -73,9 +87,17 @@ function Stack({ orgId, projectId, stack }: { orgId: string; projectId: string; 
       ) : !resources.data ? (
         <Loading what="Loading resources" />
       ) : resources.data.length === 0 ? (
-        <p>The newest version holds no resources.</p>
-      ) : (
         <Card title="Resources in the newest version">
+          <Empty
+            title="The newest version holds no resources"
+            text="A stack with no resources has nothing to list here."
+          />
+        </Card>
+      ) : (
+        <Card
+          title="Resources in the newest version"
+          sub={`${count(resources.data.length, "resource")} in version ${versions.data[0]?.serial}.`}
+        >
           <table>
             <caption className="visually-hidden">Resources in the newest version</caption>
             <thead>
@@ -110,26 +132,57 @@ function Stack({ orgId, projectId, stack }: { orgId: string; projectId: string; 
 function Look({ orgId, projectId }: { orgId: string; projectId: string }) {
   const [draft, setDraft] = useState("");
   const [stack, setStack] = useState<string>();
+  const id = useId();
+  const reading = useIsFetching({ queryKey: ["state-versions", orgId, projectId] }) > 0;
+  const invalid = draft !== "" && !STACK.test(draft);
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    setStack(draft);
+    if (!reading && STACK.test(draft)) setStack(draft);
   };
   return (
     <div className="stack wide">
-      <Card>
-        <p className="muted">
-          What the platform holds for a stack, by name: who wrote each version and the resources in
-          the newest one. Never the state itself: outputs and attribute values are not shown, and
-          nothing here changes it. The newest 20 versions are kept.
-        </p>
-        <form className="row" onSubmit={submit}>
-          <label>
-            Stack
-            <input value={draft} maxLength={63} onChange={(e) => setDraft(e.target.value)} />
-          </label>
-          <button type="submit" disabled={!STACK.test(draft)}>
-            Show state
-          </button>
+      <Card
+        title="Look up a stack"
+        sub="What the platform holds for a stack, by name: who wrote each version and the resources in the newest one."
+      >
+        <form className="stack" onSubmit={submit}>
+          <div className="field">
+            <label htmlFor={id}>Stack</label>
+            <div className="row">
+              <input
+                id={id}
+                value={draft}
+                maxLength={63}
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={invalid || undefined}
+                aria-describedby={`${id}-line`}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+              <button
+                type="submit"
+                className="primary"
+                aria-busy={reading || undefined}
+                disabled={!STACK.test(draft) || reading}
+              >
+                {reading ? "Reading…" : "Show state"}
+              </button>
+            </div>
+            {invalid ? (
+              <span className="error" id={`${id}-line`}>
+                <Icon name="error" />
+                Use lowercase letters, digits and dashes. Start and end with a letter or digit.
+              </span>
+            ) : (
+              <span className="hint" id={`${id}-line`}>
+                Lowercase letters, digits and dashes, up to 63 characters.
+              </span>
+            )}
+          </div>
+          <Callout tone="info">
+            Never the state itself: outputs and attribute values are not shown, and nothing here
+            changes it. The newest 20 versions are kept.
+          </Callout>
         </form>
       </Card>
       {stack && <Stack orgId={orgId} projectId={projectId} stack={stack} />}

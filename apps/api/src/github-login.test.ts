@@ -43,6 +43,10 @@ interface Over {
   configured?: "none" | "oauth-only";
   roles?: (githubId: number) => Promise<never> | never;
   secret?: string;
+  /** GitHub accounts (by user id) that are platform admins for GitHub (FRG-34). */
+  admins?: (mock: MockGithub) => number[];
+  /** Link the organization to this new GitHub organization, read with a membership token (FRG-34). */
+  linkOrg?: boolean;
 }
 
 async function setup(over: Over = {}) {
@@ -53,7 +57,12 @@ async function setup(over: Over = {}) {
   let clock = Date.now();
 
   // one repository linked to one project through a github.com connection, as the platform would hold it
-  const org = await createOrganization(t.db, { slug: `acme-${++n}`, name: "Acme" });
+  const hubOrg = over.linkOrg ? mock.addOrg(`acme-hub${++n}`) : undefined;
+  const org = await createOrganization(t.db, {
+    slug: `acme-${++n}`,
+    name: "Acme",
+    githubOrgId: hubOrg?.id,
+  });
   const connection = await createConnection(t.db, keys, {
     organizationId: org.id,
     type: "github",
@@ -80,6 +89,16 @@ async function setup(over: Over = {}) {
         createGithubClient({ baseUrl: mock.url, allowInsecureHttp: true, token, maxRetries: 0 }),
       ),
     now: () => clock,
+    orgForge: hubOrg
+      ? githubForge(
+          createGithubClient({
+            baseUrl: mock.url,
+            allowInsecureHttp: true,
+            token: "ghp_membership-SECRET-CANARY-1177",
+            maxRetries: 0,
+          }),
+        )
+      : undefined,
   });
   const github = githubOAuth({
     baseUrl: mock.url,
@@ -91,12 +110,17 @@ async function setup(over: Over = {}) {
   const auth = {
     ...(over.configured === "none" ? {} : { github }),
     ...(over.configured ? {} : { githubRoles: over.roles ?? roles }),
+    ...(over.admins ? { githubPlatformAdmins: over.admins(mock) } : {}),
     now: () => clock,
   };
   const app = createApp({
     logger,
     db: t.db,
-    principal: sessionPrincipal({ db: t.db, githubRoles: roles }),
+    principal: sessionPrincipal({
+      db: t.db,
+      githubRoles: roles,
+      githubPlatformAdmins: auth.githubPlatformAdmins,
+    }),
     ready: async () => {},
     keys,
     auth,
@@ -134,6 +158,7 @@ async function setup(over: Over = {}) {
     mock,
     roles,
     org,
+    hubOrg,
     project,
     owner,
     lines,
@@ -272,6 +297,40 @@ describe("completing a GitHub sign-in", () => {
     expect(
       (await s.browser().call("/auth/me", { headers: { cookie: `orch_session=${first}` } })).status,
     ).toBe(401);
+  });
+
+  test("an owner of the linked GitHub organization signs in with no repository at all, as an owner here (FRG-34)", async () => {
+    const s = await setup({ linkOrg: true });
+    s.mock.addUser("ada");
+    s.mock.addOrgMember(s.hubOrg?.login ?? "", "ada", "admin");
+    const b = s.browser();
+    const { back } = await b.start("ada");
+    const done = await b.call(back);
+    expect(done.status).toBe(302);
+    const me = await b.call("/auth/me");
+    expect(me.status).toBe(200);
+    const access = await b.call(`/organizations/${s.org.id}/access`);
+    expect(await access.json()).toMatchObject({ role: "owner" });
+  });
+
+  test("a stranger to the linked GitHub organization is still refused", async () => {
+    const s = await setup({ linkOrg: true });
+    s.mock.addUser("stranger");
+    const b = s.browser();
+    const res = await b.call((await b.start("stranger")).back);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: "no_access" });
+  });
+
+  test("a platform admin for GitHub signs in with no role, and may create an organization; no one else on no role does (FRG-34)", async () => {
+    const s = await setup({ admins: (m) => [m.addUser("root").id] });
+    const b = s.browser();
+    const done = await b.call((await b.start("root")).back);
+    expect(done.status).toBe(302);
+    expect(await (await b.call("/auth/me")).json()).toMatchObject({ platformAdmin: true });
+    const other = s.browser();
+    s.mock.addUser("nobody");
+    expect((await other.call((await other.start("nobody")).back)).status).toBe(403);
   });
 
   test("a GitHub account that holds no role in any linked repository is refused, and nothing is made", async () => {

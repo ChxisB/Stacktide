@@ -56,6 +56,23 @@
   --radius-field: 14px;
   --radius-tile: 28px;
   --radius-pill: 999px;
+  /* the standard (feature 32): three durations, three curves, three radii; an entering thing moves by a --move token
+     and reduced motion zeroes them in one place (the block after the buttons), so fades stay and movement goes */
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.64, 0, 0.78, 0);
+  --ease-io: cubic-bezier(0.65, 0, 0.35, 1);
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 20px;
+  --move-press: 1px;
+  --move-menu: 4px;
+  --move-page: 6px;
+  --move-toast: 16px;
+  --move-drawer: 40px;
+  --pop-scale: 0.96;
   --gap: 16px;
   /* the one gutter a drawer's header, body and footer share, so their text starts at one edge */
   --drawer-pad: 28px;
@@ -201,9 +218,9 @@ time {
   align-self: start;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 12px;
   height: 100vh;
-  padding: 20px 16px;
+  padding: 16px 12px;
   overflow-y: auto;
   background: var(--surface);
   border-right: 1px solid var(--border);
@@ -211,8 +228,8 @@ time {
 .brandrow {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 4px;
+  gap: 10px;
+  padding: 4px 8px;
   color: var(--text);
   text-decoration: none;
 }
@@ -221,44 +238,55 @@ time {
 }
 .mark {
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   fill: none;
-  stroke: var(--action);
+  stroke: var(--accent);
   stroke-width: 2;
 }
 .mark .dot {
-  fill: var(--hl);
+  fill: var(--accent);
   stroke: none;
 }
 .wordmark {
   display: flex;
   flex-direction: column;
+  font-size: 15px;
   font-weight: 800;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
+  letter-spacing: -0.01em;
+  line-height: 18px;
 }
 .wordmark small {
   color: var(--muted);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0;
+  line-height: 14px;
 }
 .navwrap {
   display: grid;
-  gap: 20px;
 }
 .nav {
   display: grid;
   gap: 2px;
 }
 .nav-label {
-  margin: 0 0 4px 12px;
+  margin: 0;
+  padding: 14px 12px 4px;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-weight: 600;
+}
+/* colour, border and filter fade on a short ease; fades are kept under reduced motion */
+button,
+.button,
+.nav-item,
+tbody tr {
+  transition:
+    background-color var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out),
+    filter var(--dur-1) var(--ease-out);
 }
 .nav-item {
   display: flex;
@@ -266,17 +294,18 @@ time {
   gap: 12px;
   min-height: 44px;
   padding: 0 12px;
-  border-radius: var(--radius-pill);
-  font-weight: 700;
+  border-radius: var(--r-md);
+  font-weight: 600;
   text-decoration: none;
   color: var(--text);
 }
 .nav-item:hover {
   background: var(--slate-tint);
 }
+/* the tint is the pointer's too, so the current page also reads heavier */
 .nav-item[aria-current="page"] {
-  background: var(--action);
-  color: var(--on-action);
+  background: var(--slate-tint);
+  font-weight: 700;
 }
 .ico {
   flex: none;
@@ -308,14 +337,19 @@ time {
   height: 16px;
 }
 .side-foot {
-  display: grid;
-  gap: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-top: auto;
+  padding: 12px 8px 0;
+  border-top: 1px solid var(--border);
 }
 .me {
   display: flex;
+  flex: 1;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  min-width: 0;
   font-weight: 700;
 }
 .av {
@@ -364,7 +398,7 @@ time {
 }
 .crumbs [aria-current="page"] {
   color: var(--text);
-  font-weight: 800;
+  font-weight: 700;
 }
 /* a list and the details of the row opened from it: side by side where there is room */
 .split {
@@ -373,6 +407,17 @@ time {
   gap: 24px;
   align-items: start;
 }
+/* the two buttons that work the phone menu show only where there is one */
+button.menu-btn,
+button.menu-close {
+  display: none;
+}
+.side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 @media (max-width: 900px) {
   .app {
     grid-template-columns: minmax(0, 1fr);
@@ -380,28 +425,41 @@ time {
   .split {
     grid-template-columns: minmax(0, 1fr);
   }
+  /* the sidebar is a menu: not drawn (so no Tab stop and no room) until opened, then a panel from the left edge over a scrim */
   .side {
-    position: static;
-    height: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-  }
-  .navwrap {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-  .nav {
-    display: contents;
-  }
-  .nav-label {
     display: none;
   }
-  .side-foot {
-    grid-auto-flow: column;
-    justify-content: space-between;
-    align-items: center;
-    margin-top: 0;
+  .side.open {
+    display: flex;
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 31;
+    width: min(20rem, 85vw);
+    height: 100%;
+    border-right: 1px solid var(--line-strong);
+    overscroll-behavior: contain;
+    animation: slide-in-left var(--dur-3) var(--ease-out);
+  }
+  button.menu-btn,
+  button.menu-close {
+    display: inline-flex;
+  }
+  /* the top bar is one row at any width: the breadcrumb takes what is left and clips (the menu says the rest) */
+  .topbar {
+    flex-wrap: nowrap;
+    gap: 4px;
+    min-height: 56px;
+    padding: 0 12px 0 6px;
+    background: var(--surface);
+  }
+  .topbar nav {
+    flex: 1;
+    min-width: 0;
+  }
+  .crumbs {
+    flex-wrap: nowrap;
+    overflow: hidden;
+    white-space: nowrap;
   }
 }
 main {
@@ -412,8 +470,8 @@ main {
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-tile);
-  padding: 28px;
+  border-radius: var(--r-lg);
+  padding: 24px;
   position: relative;
   overflow-x: auto;
 }
@@ -427,6 +485,7 @@ main {
   margin: 12vh auto 0;
   padding: 0 var(--gap);
 }
+/* a slate tile with no edge of its own: the border is there, transparent, so the tile keeps its size and shows as a line in forced colours */
 button,
 .button {
   display: inline-flex;
@@ -437,67 +496,182 @@ button,
   padding: 0 18px;
   font: inherit;
   font-weight: 700;
-  border-radius: var(--radius-pill);
-  border: 1.5px solid var(--field-line);
-  background: transparent;
+  border-radius: var(--r-md);
+  border: 1.5px solid transparent;
+  background: var(--slate-tint);
   color: var(--text);
   cursor: pointer;
   text-decoration: none;
 }
-/* a table has many of them: smaller and quieter, still above the 24px target size */
+/* a table has many of them, and a small one sits in a toolbar: 32px, still above the 24px target size */
 td button,
-td .button {
+td .button,
+button.small,
+.button.small {
   min-height: 32px;
   padding: 0 12px;
   font-size: 13px;
-  border-color: var(--line-strong);
+  border-radius: var(--r-sm);
 }
 button:hover:not(:disabled),
 .button:hover {
-  background: var(--slate-tint);
+  background: color-mix(in srgb, var(--slate-tint), var(--text) 9%);
+}
+/* a press settles by a token (none when motion is reduced) */
+button:active:not(:disabled),
+.button:active {
+  background: color-mix(in srgb, var(--slate-tint), var(--text) 15%);
+  transform: translateY(var(--move-press));
 }
 button.primary,
 .button.primary {
   background: var(--action);
-  border-color: var(--action);
   color: var(--on-action);
 }
 button.primary:hover:not(:disabled),
 .button.primary:hover {
   background: var(--action);
-  filter: brightness(1.12);
+  filter: brightness(1.14);
+}
+button.primary:active:not(:disabled),
+.button.primary:active {
+  background: var(--action);
+  filter: brightness(0.9);
+}
+/* the signed-out pages (UXR-13): one card in the middle of the page, a rule either side of the way in through an organization */
+.signin {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  max-width: none;
+  padding: 48px clamp(16px, 4vw, 48px);
+}
+.signin-card {
+  display: grid;
+  gap: 24px;
+  width: min(440px, 100%);
+  padding: 40px;
+}
+.signin-card > *,
+.signin-head > * {
+  margin: 0;
+  min-width: 0;
+}
+.signin-head {
+  display: grid;
+  gap: 12px;
+}
+.signin-card .button {
+  width: 100%;
+}
+.signin-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+.signin-or::before,
+.signin-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+@media (max-width: 600px) {
+  .signin {
+    padding: 16px;
+  }
+  .signin-card {
+    padding: 24px;
+  }
 }
 button.danger {
-  color: var(--danger);
-  border-color: var(--danger);
-}
-button.danger:hover:not(:disabled) {
   background: var(--danger-tint);
+  color: var(--danger);
 }
-/* a cell holds up to five actions: plain words, so a row of them does not read as a row of pills; only Delete has a colour */
+/* the board's pressed mix (24%) reads under 4.5:1, so a pressed danger tile keeps the hovered one and the settle shows the press */
+button.danger:hover:not(:disabled),
+button.danger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--danger-tint), var(--danger) 14%);
+}
+/* the confirm of a delete: the danger colour itself */
+button.danger.solid {
+  background: var(--danger);
+  color: var(--accent-text);
+}
+button.danger.solid:hover:not(:disabled) {
+  background: var(--danger);
+  filter: brightness(1.1);
+}
+button.danger.solid:active:not(:disabled) {
+  background: var(--danger);
+  filter: brightness(0.88);
+}
+/* a cell holds up to five actions: plain words that take a tile when pointed at, so a row of them does not read as a row of tiles; only Delete has a colour */
 button.quiet {
-  border-color: transparent;
+  background: transparent;
   color: var(--text);
   padding: 0 6px;
+}
+button.quiet:hover:not(:disabled) {
+  background: var(--slate-tint);
+}
+button.quiet:active:not(:disabled) {
+  background: color-mix(in srgb, var(--slate-tint), var(--text) 8%);
 }
 button.quiet.danger {
   color: var(--danger);
 }
+/* in a cell it has the small button's room, so the target is 32px by at least a word and a half */
+td button.quiet {
+  padding: 0 12px;
+}
+button.quiet.danger:hover:not(:disabled),
+button.quiet.danger:active:not(:disabled) {
+  background: var(--danger-tint);
+}
 button:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
+}
+button[aria-busy="true"]:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+/* busy keeps the label and puts a spinner before it; the tile ignores the pointer meanwhile, and the ring turns only where motion is welcome */
+button[aria-busy="true"],
+.button[aria-busy="true"] {
+  pointer-events: none;
+}
+button[aria-busy="true"]::before,
+.button[aria-busy="true"]::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  button[aria-busy="true"]::before,
+  .button[aria-busy="true"]::before {
+    animation: busy-spin 0.7s linear infinite;
+  }
 }
 .error {
   color: var(--danger);
 }
-@media (prefers-reduced-motion: no-preference) {
-  button,
-  .button,
-  .nav-item,
-  tbody tr {
-    transition:
-      background-color 0.15s,
-      filter 0.15s;
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --move-press: 0px;
+    --move-menu: 0px;
+    --move-page: 0px;
+    --move-toast: 0px;
+    --move-drawer: 0px;
+    --pop-scale: 1;
   }
 }
 
@@ -523,7 +697,7 @@ button:disabled {
 }
 /* a stack that is a card (a wizard step, a form) keeps the card's rhythm */
 .stack.card {
-  gap: 20px;
+  gap: 16px;
 }
 .row {
   display: flex;
@@ -540,6 +714,7 @@ td .row {
 }
 /* a link and buttons in a table row: each stays whole, and the last go to a line of their own when the column is squeezed */
 .row.actions {
+  gap: 4px;
   white-space: nowrap;
 }
 /* on a phone the table scrolls in its card anyway: one line to a row, as before */
@@ -551,7 +726,7 @@ td .row {
 label,
 .field {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   font-weight: 600;
 }
 input,
@@ -561,23 +736,130 @@ textarea {
   font-weight: 400;
   color: var(--text);
   background: var(--surface);
-  border: 1.5px solid var(--field-line);
-  border-radius: var(--radius-field);
+  border: 1px solid var(--field-line);
+  border-radius: var(--r-md);
   min-height: 44px;
   max-width: 30rem;
   padding: 8px 14px;
+  transition:
+    border-color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out);
 }
 textarea {
   min-height: 5.5rem;
   max-width: none;
 }
+::placeholder {
+  color: var(--muted);
+}
+input:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+input:focus-visible:not(:disabled),
+select:focus-visible:not(:disabled),
+textarea:focus-visible:not(:disabled) {
+  border-color: var(--focus);
+}
+/* after hover and focus at the same strength, so an invalid field keeps its danger edge (the focus ring still shows) */
+input[aria-invalid="true"]:not(:disabled),
+select[aria-invalid="true"]:not(:disabled),
+textarea[aria-invalid="true"]:not(:disabled) {
+  border-color: var(--danger);
+}
+input:disabled,
+select:disabled,
+textarea:disabled {
+  background: var(--slate-tint);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+/* the line under a field: a hint (muted) or an error (its glyph, then a sentence; a form's own error stays a plain line) */
+.hint {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.field > .error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+/* a check and a radio are drawn, so the box, its tick and its colours are ours; the label around it is the 44px target */
 input[type="checkbox"],
 input[type="radio"] {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  flex: none;
   width: 20px;
   height: 20px;
   min-height: 0;
+  margin: 0;
   padding: 0;
-  accent-color: var(--action);
+  border: 1.5px solid var(--field-line);
+  background: var(--surface);
+  cursor: pointer;
+}
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled {
+  cursor: not-allowed;
+}
+input[type="checkbox"] {
+  border-radius: 6px;
+}
+input[type="radio"] {
+  border-radius: 50%;
+}
+input[type="checkbox"]:checked,
+input[type="radio"]:checked,
+input[type="checkbox"]:indeterminate {
+  background: var(--action);
+  border-color: var(--action);
+}
+input[type="checkbox"]::after {
+  content: "";
+  width: 9px;
+  height: 5px;
+  border-left: 2px solid var(--on-action);
+  border-bottom: 2px solid var(--on-action);
+  transform: rotate(-45deg) translate(1px, -1px);
+  opacity: 0;
+}
+input[type="radio"]::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--on-action);
+  opacity: 0;
+}
+/* the select-all box that is part-way: a dash */
+input[type="checkbox"]:indeterminate::after {
+  width: 10px;
+  height: 2px;
+  border: 0;
+  background: var(--on-action);
+  transform: none;
+  opacity: 1;
+}
+input[type="checkbox"]:checked::after,
+input[type="radio"]:checked::after {
+  opacity: 1;
+  animation: mark-in var(--dur-2) var(--ease-out);
+}
+@keyframes mark-in {
+  from {
+    opacity: 0;
+    transform: rotate(-45deg) translate(1px, -1px) scale(var(--pop-scale));
+  }
+}
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled {
+  opacity: 0.5;
 }
 fieldset.bare {
   border: 0;
@@ -618,30 +900,50 @@ fieldset.cards {
   overflow: visible;
   border: 0;
 }
+/* a template or a way to deliver one (UXR-16): the whole tile is the radio's label, tinted when chosen */
 .cards .item {
   align-items: flex-start;
+  min-height: 44px;
   padding: 16px;
-  border: 1.5px solid var(--line-strong);
-  border-radius: var(--radius-tile);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-1) var(--ease-out),
+    background-color var(--dur-1) var(--ease-out);
+}
+.cards .item:hover {
+  border-color: var(--muted);
 }
 .cards .item:has(input:checked) {
   border-color: var(--action);
-  background: var(--slate-tint);
+  background: var(--aqua-tint);
+}
+.cards .item:has(input:focus-visible) {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
 }
 .tags {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 4px;
 }
+/* an identifier you might copy: mono, never a button; cut short rather than wider than its box */
 .tag {
   display: inline-block;
-  border-radius: var(--radius-pill);
-  padding: 2px 10px;
+  vertical-align: middle;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 8px;
+  overflow: hidden;
+  border-radius: 6px;
   background: var(--slate-tint);
   color: var(--text);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.4;
+  font: 500 12px var(--mono);
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 table {
   border-collapse: collapse;
@@ -651,25 +953,32 @@ th,
 td {
   text-align: left;
   height: 56px;
-  padding: 10px 16px;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--border);
 }
+/* the header is quiet: small, muted, in the words it is written */
 th {
   height: 40px;
+  padding: 12px 16px;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 12.5px;
+  font-weight: 600;
   white-space: nowrap;
 }
+/* a row header is the name of its row */
 tbody th {
+  padding: 14px 16px;
   color: var(--text);
   font-size: inherit;
+  font-weight: 600;
   letter-spacing: normal;
   text-transform: none;
   white-space: normal;
   overflow-wrap: break-word;
+}
+th.num,
+td.num {
+  text-align: right;
 }
 /* the first and last cell line up with the card's own edges */
 th:first-child,
@@ -681,7 +990,7 @@ td:last-child {
   padding-right: 0;
 }
 tbody tr:hover {
-  background: var(--slate-tint);
+  background: color-mix(in srgb, var(--slate-tint), transparent 50%);
 }
 .results {
   padding-left: 1.2em;
@@ -692,10 +1001,15 @@ tbody tr:hover {
   display: flex;
   align-items: center;
   min-height: 44px;
-  padding: 0 16px;
-  border: 1.5px solid var(--line-strong);
-  border-radius: var(--radius-pill);
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
   font-weight: 700;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.org:hover {
+  background: var(--slate-tint);
 }
 .org select {
   flex: 1;
@@ -726,7 +1040,7 @@ th button.quiet {
   background: var(--surface);
 }
 .matrix tbody tr:hover th:first-child {
-  background: var(--slate-tint);
+  background: color-mix(in srgb, var(--slate-tint), var(--surface) 50%);
 }
 /* an environment's name and its menu, in one line of the matrix head */
 .col-head {
@@ -734,10 +1048,6 @@ th button.quiet {
   align-items: center;
   gap: 4px;
   white-space: nowrap;
-}
-button.small {
-  padding: 0 14px;
-  font-size: 13px;
 }
 /* the Changes card: a sentence, its time, where it was made and why, wrapping on a narrow screen */
 .changes {
@@ -774,42 +1084,89 @@ mark {
 .warn {
   color: var(--warn);
 }
+/* the wizard's stepper (UXR-16): four segments, a bar on top of each that fades (UXR-1 allows no transform) to ok when done
+   and to action on the current one, and under the name what the step settled */
 .steps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
   list-style: none;
   padding: 0;
   margin: 0;
 }
 .steps li {
-  padding: 8px 16px;
-  border: 1.5px solid var(--line-strong);
-  border-radius: var(--radius-pill);
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  min-width: 0;
+  padding-top: 14px;
   color: var(--muted);
   font-weight: 700;
+  transition: color var(--dur-2) var(--ease-out);
 }
-.steps li.done {
-  border-color: var(--mint);
-  background: var(--mint);
+.steps li::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line-strong);
+  transition: background-color var(--dur-2) var(--ease-out);
+}
+.steps li.done,
+.steps li[aria-current="step"] {
+  color: var(--text);
+}
+.steps li.done::after {
+  background: var(--ok);
+}
+.steps li[aria-current="step"]::after {
+  background: var(--action);
+}
+.steps .name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+}
+.steps .ico {
+  flex: none;
   color: var(--ok);
 }
-.steps [aria-current="step"] {
-  border-color: var(--action);
-  background: var(--action);
-  color: var(--on-action);
+.steps .cap {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 600px) {
+  .steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 16px;
+  }
 }
 .diff,
 .changes {
   margin: 0;
 }
+/* the merge request's lines (UXR-16): a box of their own that scrolls both ways, one column as wide as the longest line so a
+   tint runs the whole way across when it scrolls sideways */
 .diff {
-  overflow-x: auto;
-  padding: 12px 16px;
-  background: var(--slate-tint);
-  border-radius: var(--radius-field);
-  font-family: var(--mono);
-  font-size: 12.5px;
+  display: grid;
+  grid-template-columns: minmax(max-content, 1fr);
+  max-height: 380px;
+  overflow: auto;
+  padding: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  font: 13px / 20px var(--mono);
+}
+.diff > span {
+  padding: 0 16px;
 }
 .op {
   width: 22px;
@@ -835,30 +1192,46 @@ mark {
   stroke: var(--danger);
 }
 .diff-add {
+  background: var(--mint);
   color: var(--ok);
 }
 .diff-del {
+  background: var(--danger-tint);
   color: var(--danger);
 }
 
+/* a tray, the chosen side raised on the surface; the board slides a thumb, but a transition here fades only (UXR-1) */
 .seg {
   display: inline-flex;
   margin: 0;
   min-width: 0;
   padding: 3px;
   gap: 2px;
-  border: 1.5px solid var(--field-line);
+  border: 0;
   border-radius: var(--radius-pill);
+  background: var(--slate-tint);
 }
 .seg button {
-  min-height: 36px;
-  padding: 0 14px;
-  border: 0;
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
   font-size: 13px;
+  font-weight: 600;
+}
+@media (max-width: 900px) {
+  .seg button {
+    padding: 0 12px;
+  }
 }
 .seg button[aria-pressed="true"] {
-  background: var(--action);
-  color: var(--on-action);
+  border-color: var(--field-line);
+  background: var(--surface);
+  color: var(--text);
+}
+.seg button:hover:not(:disabled) {
+  color: var(--text);
 }
 
 /* shared components */
@@ -876,24 +1249,6 @@ mark {
   letter-spacing: -0.035em;
   text-wrap: balance;
 }
-.eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0 0 10px;
-  color: var(--accent);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-.eyebrow::before {
-  content: "";
-  width: 10px;
-  height: 10px;
-  border-radius: 3px;
-  background: var(--hl);
-}
 .lede {
   max-width: 40rem;
   margin: 8px 0 0;
@@ -910,8 +1265,14 @@ mark {
 .card-flow {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
   min-width: 0;
+}
+/* cards side by side: as many to a line as fit, never wider than the screen */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr));
+  gap: 24px;
 }
 /* the card's gap is the only space between its parts; a paragraph or list brings none of its own */
 .card-flow > * {
@@ -933,6 +1294,29 @@ mark {
   padding-top: 20px;
   border-top: 1px solid var(--border);
 }
+/* a form's fields side by side: as many to a line as fit, one to a line on a phone */
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+  gap: 16px 24px;
+  align-items: start;
+}
+/* what is done to the card as a whole (delete it, check it) sits apart, under a rule, at its foot */
+.card-foot {
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+/* under a table, the table's own last rule is the rule; a picker and its button share a line as far as they fit */
+.scroll + .card-foot {
+  padding-top: 0;
+  border-top: 0;
+}
+.card-foot .stack {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 16px 24px;
+}
 dl {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
@@ -951,7 +1335,7 @@ dd {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 16px;
 }
 .card-head h2 {
   margin: 0;
@@ -960,18 +1344,146 @@ dd {
   margin: 2px 0 0;
   color: var(--muted);
 }
+/* Projects (UXR-15): what is imported beside the way to import more, one column under 1100px */
+.pj-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .pj-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* the rows, the results and the footer run to the card's own edges, as the checklist does */
+/* the address field takes the width the Find button leaves, and the button lines up with the field, not with its label */
+.pj-address label {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+fieldset.pj-list {
+  min-width: 0;
+  max-height: 24rem;
+  margin: 0 -24px;
+  padding: 0;
+  border: 0;
+  overflow: auto;
+}
+fieldset.pj-list legend {
+  padding: 4px 24px 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+/* a row is one target (the 44px label around its box), and its picked state is the box as well as the tint */
+.pj-pick {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 4px 24px;
+  border-top: 1px solid var(--border);
+  font-weight: 400;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.pj-pick:hover {
+  background: color-mix(in srgb, var(--slate-tint), transparent 50%);
+}
+.pj-pick.on {
+  background: var(--aqua-tint);
+}
+.pj-pick .path {
+  font: 500 14px var(--mono);
+  overflow-wrap: anywhere;
+}
+.pj-pick .badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+}
+.pj-res,
+.pj-foot {
+  margin-inline: -24px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+}
+.pj-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: -24px;
+}
+.pj-foot .count {
+  margin: 0 auto 0 0;
+  font-size: 12.5px;
+}
+@media (max-width: 600px) {
+  fieldset.pj-list,
+  .pj-res,
+  .pj-foot {
+    margin-inline: -16px;
+  }
+  fieldset.pj-list legend,
+  .pj-pick,
+  .pj-res,
+  .pj-foot {
+    padding-inline: 16px;
+  }
+  .pj-foot {
+    margin-bottom: -16px;
+  }
+}
 .st {
   display: inline-flex;
   vertical-align: middle; /* not the baseline: that is the bottom of its picture, and the words beside it sit lower */
   align-items: center;
-  gap: 8px;
-  font-weight: 700;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px 0 8px;
+  border-radius: var(--radius-pill);
+  font-size: 12.5px;
+  font-weight: 600;
   line-height: 1.25;
+  white-space: nowrap;
+}
+/* a tone is a tint and the colour of its words; quiet has no tint, so it recedes and starts at the shape */
+.st-ok {
+  background: var(--mint);
+  color: var(--ok);
+}
+.st-bad {
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+.st-warn {
+  background: var(--sun-tint);
+  color: var(--warn);
+}
+.st-active {
+  background: var(--aqua-tint);
+  color: var(--active);
+}
+.st-manual {
+  background: var(--slate-tint);
+  color: var(--text);
+}
+.st-quiet {
+  padding-left: 0;
+  background: transparent;
+  color: var(--muted);
 }
 .glyph {
   flex: none;
   width: 18px;
   height: 18px;
+}
+.st .glyph {
+  width: 14px;
+  height: 14px;
 }
 /* the stacks of one plan, one to a line */
 .plan-stacks {
@@ -1016,13 +1528,20 @@ dd {
   padding-top: 8px;
   border-top: 1px solid var(--border);
 }
-/* what a promotion or a rollback would do: the lines of the dialog's dry-run answer, close together (DEP-14) */
+/* what a promotion or a rollback would do: the dialog's dry-run answer as ruled rows, a label and a sha each (DEP-14, UXR-18) */
 .deploy-plan {
   display: grid;
-  gap: 6px;
 }
-.deploy-plan p {
-  margin: 0;
+.deploy-plan > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.deploy-plan > div:first-child {
+  border-top: 1px solid var(--border);
 }
 /* the order a plan's stacks go in (FLW-3): boxes placed by the page, lines under them, scrolling in a box of its own */
 .plan-order {
@@ -1081,6 +1600,26 @@ dd {
   align-items: center;
   gap: 12px;
   margin: 12px 0;
+}
+/* what a plan does, counted: one pill each for create, change and delete */
+.sync-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sync-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.sync-count .op {
+  margin-right: 0;
 }
 .sync-box {
   display: grid;
@@ -1153,17 +1692,46 @@ dd {
 .jobs-list code {
   overflow-wrap: anywhere;
 }
+/* the rows bleed to the card's edges (its padding is 24px, 16px on a phone), so a hover reaches them */
 .checklist {
   list-style: none;
+  margin: 0 0 -24px;
   padding: 0;
-  display: grid;
-  gap: 14px;
 }
+/* a row is one target: its link is stretched over it; its st- class is for the glyph's colours, so it gets none of the badge's wash */
 .checklist li {
+  position: relative;
+  background: transparent;
+  color: inherit;
   display: grid;
-  grid-template-columns: 18px 1fr;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   gap: 12px;
   align-items: start;
+  margin-inline: -24px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+.checklist li:hover {
+  background: color-mix(in srgb, var(--slate-tint), transparent 50%);
+}
+.checklist a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.checklist .go {
+  align-self: center;
+  color: var(--muted);
+}
+@media (max-width: 600px) {
+  .checklist {
+    margin-bottom: -16px;
+  }
+  .checklist li {
+    margin-inline: -16px;
+    padding-inline: 16px;
+  }
 }
 /* the link, then its hint on the line below */
 .checklist li > span {
@@ -1277,8 +1845,13 @@ dd {
   display: grid;
   justify-items: center;
   gap: 4px;
+  height: auto;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
   font-size: 13px;
   line-height: 16px;
+  white-space: normal;
 }
 /* 36 + 2 * 12 + 2 * 2 = the 64 of SQUARE, the part the lines point at */
 .job-flow .glyph {
@@ -1348,32 +1921,162 @@ dd {
     transform: rotate(360deg);
   }
 }
+@keyframes busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* a message in a box (UXR-5): the glyph beside its words, tinted by tone */
+.callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--r-md);
+}
+.callout .ico {
+  margin-top: 1px;
+}
+.callout b {
+  font-weight: 700;
+}
+/* a list or a sentence after the title sits close under it, not a browser margin away */
+.callout ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+.callout p {
+  margin: 8px 0 0;
+}
+.callout-action {
+  margin-top: 12px;
+}
+.callout-info {
+  background: var(--aqua-tint);
+}
+.callout-info .ico {
+  color: var(--active);
+}
+.callout-ok {
+  background: var(--mint);
+}
+.callout-ok .ico {
+  color: var(--ok);
+}
+.callout-warn {
+  background: var(--sun-tint);
+}
+.callout-warn .ico {
+  color: var(--warn);
+}
+.callout-bad {
+  background: var(--danger-tint);
+}
+.callout-bad .ico {
+  color: var(--danger);
+}
+/* the nav's marks: here, after the other .ico colour rules, which are less specific (Biome keeps the order ascending) */
+.nav-item .ico {
+  color: var(--muted);
+  transition: color var(--dur-1) var(--ease-out);
+}
+.nav-item:hover .ico {
+  color: var(--text);
+}
+.nav-item[aria-current="page"] .ico {
+  color: var(--accent);
+}
+/* nothing here yet, or it failed: what belongs here and the one button that fixes it */
+.empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 48px 24px;
+  text-align: center;
+}
+.empty .orb {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 8px;
+  border-radius: 50%;
+  background: var(--slate-tint);
+  color: var(--muted);
+}
+.empty-bad .orb {
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+.empty-title,
+.empty p {
+  margin: 0;
+}
+.empty p {
+  max-width: 44ch;
+  color: var(--muted);
+}
+.empty-action {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+/* the shape of what is on its way: a few slate bars under the words */
+.loading {
+  display: grid;
+  gap: 12px;
+}
+.loading p {
+  margin: 0;
+}
+.skel {
+  display: block;
+  height: 14px;
+  border-radius: 6px;
+  background: var(--slate-tint);
+}
+.loading .skel:last-child {
+  width: 60%;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .skel {
+    animation: skel-pulse 1.4s var(--ease-io) infinite;
+  }
+}
+@keyframes skel-pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
 .kpis {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(13rem, 100%), 1fr));
-  gap: 20px;
+  gap: 16px;
   margin-bottom: 24px;
 }
 .kpi {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
-  padding: 20px 22px;
+  padding: 20px 24px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-tile);
+  border-radius: var(--r-lg);
   background: var(--surface);
 }
 .kpi-label {
   color: var(--muted);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
 }
 .kpi-value {
-  font-size: 34px;
+  font-size: 32px;
   font-weight: 800;
-  letter-spacing: -0.035em;
-  line-height: 1.05;
+  letter-spacing: -0.02em;
+  line-height: 38px;
 }
 .kpi-value small {
   margin-left: 4px;
@@ -1384,7 +2087,48 @@ dd {
 }
 .kpi-foot {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
+}
+.kpi-foot a {
+  font-weight: 600;
+}
+/* the link is stretched over the whole tile */
+.kpi-foot a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+/* Home: the checklist, then the figures beside it; one column below the sidebar's breakpoint */
+.home-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.home-grid .kpis {
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 0;
+}
+@media (max-width: 900px) {
+  .home-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* how far along: a track and a fill as wide as the share done (a width set once, since a transition may not move one: UXR-1) */
+.bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--slate-tint);
+  overflow: hidden;
+}
+.bar i {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+  width: calc(var(--p, 0) * 100%);
+}
+.skel.short {
+  width: 40%;
 }
 fieldset.chips {
   display: flex;
@@ -1463,8 +2207,10 @@ details.advanced > summary {
 label.tick {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  min-height: 44px;
   font-weight: 500;
+  cursor: pointer;
 }
 /* a value box with a button beside it: the box takes what the button leaves */
 .with-action {
@@ -1496,6 +2242,10 @@ label.tick {
   max-width: none;
   padding-left: 42px;
 }
+.toolbar select {
+  flex: 0 1 12rem;
+  min-width: 0;
+}
 .toolbar .search .ico {
   position: absolute;
   left: 14px;
@@ -1508,6 +2258,55 @@ label.tick {
 button.icon {
   width: 44px;
   padding: 0;
+}
+button.icon.small {
+  width: 32px;
+}
+/* overlays enter and that is all (UXR-7): a fade, and a move by a token that reduced motion sets to nothing, so the fade stays */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--move-drawer));
+  }
+}
+@keyframes slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(calc(var(--move-drawer) * -1));
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--move-menu) * var(--menu-dir, 1))) scale(var(--pop-scale));
+  }
+}
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(var(--move-drawer));
+  }
+}
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--move-toast));
+  }
+}
+/* the page enters when the route changes (UXR-10): shell.tsx keys this wrapper on the route, so a refetch does not replay it */
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--move-page));
+  }
+}
+.page-enter {
+  animation: page-in var(--dur-2) var(--ease-out);
 }
 .popover {
   position: relative;
@@ -1523,6 +2322,8 @@ button.icon {
   background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-field);
+  transform-origin: top left;
+  animation: pop-in var(--dur-2) var(--ease-out);
 }
 @media (max-width: 600px) {
   .toolbar .search {
@@ -1556,23 +2357,37 @@ td.select {
   width: 1%;
   padding-right: 0;
 }
-/* a row's own buttons: there for a Tab, shown for the row that is pointed at or worked in (and always where nothing hovers) */
+/* a row's own buttons: always shown, on one line at the right (a pointer, a touch screen and a keyboard all see the same row) */
 td.row-actions {
   text-align: right;
   white-space: nowrap;
-  opacity: 0;
-}
-tr:hover td.row-actions,
-tr:focus-within td.row-actions {
-  opacity: 1;
-}
-@media (hover: none) {
-  td.row-actions {
-    opacity: 1;
-  }
 }
 .row-actions button.icon {
   width: 32px;
+}
+/* who dismissed it and when is held to a measure too (a person's id is long): the time stays whole, the id may break anywhere */
+.note {
+  margin-top: 6px;
+  max-width: 30ch;
+}
+.note code {
+  overflow-wrap: anywhere;
+}
+.note time {
+  white-space: nowrap;
+}
+.note-reason {
+  margin-top: 2px;
+  max-width: 30ch;
+}
+/* a finding's path breaks after a slash (the <wbr>s) and, for one name wider than the column, anywhere: a long path never widens the table */
+th.where {
+  min-width: 12rem;
+}
+th.where code {
+  display: block;
+  max-width: 30ch;
+  overflow-wrap: anywhere;
 }
 /* a picture button and a text button on one line share a middle, not a baseline */
 .row-actions button {
@@ -1593,11 +2408,13 @@ tr:focus-within td.row-actions {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-field);
   text-align: left;
+  animation: pop-in var(--dur-2) var(--ease-out);
 }
 .menu button {
   justify-content: flex-start;
   width: 100%;
   border-color: transparent;
+  background: transparent;
   border-radius: var(--radius-field);
 }
 .menu button.danger {
@@ -1619,9 +2436,15 @@ button.drawer-scrim {
   border-radius: 0;
   background: var(--scrim);
   cursor: default;
+  animation: fade-in var(--dur-3) var(--ease-out);
 }
 button.drawer-scrim:hover:not(:disabled) {
   background: var(--scrim);
+}
+/* the phone menu's scrim: over the page and the toasts, under the panel (the sidebar at 31) */
+button.menu-scrim {
+  position: fixed;
+  z-index: 30;
 }
 /* a <dialog> brings a border, padding, margin and colours of its own */
 .drawer {
@@ -1639,6 +2462,7 @@ button.drawer-scrim:hover:not(:disabled) {
   border-left: 1px solid var(--line-strong);
   background: var(--surface);
   color: var(--text);
+  animation: slide-in var(--dur-3) var(--ease-out);
 }
 .drawer:focus {
   outline: none;
@@ -1675,6 +2499,7 @@ button.drawer-scrim:hover:not(:disabled) {
   gap: 20px;
   padding: 24px var(--drawer-pad);
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .drawer-body > * + * {
   padding-top: 20px;
@@ -1723,11 +2548,148 @@ button .shown {
   max-height: calc(100% - 32px);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-field);
+  animation: pop-in var(--dur-2) var(--ease-out);
+}
+/* a dialog (UXR-8): one question with two answers, in the middle of the screen; under 600px a sheet on the bottom edge */
+.dialog {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(28rem, calc(100% - 32px));
+  max-width: none;
+  height: fit-content;
+  max-height: calc(100% - 32px);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  overflow: hidden;
+  animation: pop-in var(--dur-2) var(--ease-out);
+}
+.dialog:focus {
+  outline: none;
+}
+.dialog-form {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+/* a long form scrolls inside the box and the buttons stay in it */
+.dialog-body {
+  display: grid;
+  gap: 12px;
+  padding: 24px 24px 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* the gap spaces what the dialog says, so a paragraph in it adds no margin of its own (UXR-18) */
+.dialog-body > p {
+  margin: 0;
+}
+.dialog-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.dialog-sub {
+  margin: 0;
+  color: var(--muted);
+}
+.dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 24px 24px;
+}
+@media (max-width: 600px) {
+  .dialog {
+    inset: auto 0 0;
+    width: 100%;
+    margin: 0;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    animation: slide-up var(--dur-3) var(--ease-out);
+  }
+  .dialog-foot {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+}
+/* the toasts (UXR-9): where a result is reported. The live region is always there, so the box belongs to the .on state; it is
+   under the menus and the scrim, so it never covers a dialog's buttons */
+.toasts {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  max-width: min(32rem, calc(100% - 48px));
+}
+.toasts.on {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 4px 6px 4px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  animation: rise-in var(--dur-2) var(--ease-out);
+}
+.toasts.on .ico {
+  flex: none;
+  color: var(--ok);
+}
+.toast-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .toasts {
+    right: 16px;
+    bottom: 16px;
+    left: 16px;
+    width: fit-content;
+    margin-inline: auto;
+  }
 }
 /* the matrix of marks (VUI-9): a tick where an environment has the key, a circle where it has not, a cross where it does not resolve */
 .cell-mark {
   display: inline-flex;
   align-items: center;
+  gap: 8px;
+}
+/* the colour is the picture's; the words are read in the text colour, and a missing one in the muted */
+.cell-mark .words {
+  color: var(--text);
+}
+.cell-mark.missing .words {
+  color: var(--muted);
+}
+/* a cell that opens: the picture and its words in a pill of the board's (36px; the dashed edge is where nothing is set) */
+button.mx-cell {
+  min-height: 36px;
+  padding: 0 12px 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+button.mx-cell:hover:not(:disabled) {
+  background: var(--slate-tint);
+  border-color: var(--muted);
+}
+button.mx-cell.not-set {
+  background: transparent;
+  border-style: dashed;
 }
 .cell-mark.set {
   color: var(--ok);
@@ -1745,6 +2707,16 @@ button .shown {
 }
 button[aria-expanded="true"] .chev {
   transform: none;
+}
+/* a row's link out and Jobs arrow sit beside their words, a little under the text's height */
+.row.actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.row.actions .ico {
+  width: 16px;
+  height: 16px;
 }
 /* the open row: one line for each environment, under the key's name and past its arrow */
 tr.env-open > td {
@@ -1790,20 +2762,10 @@ button.env-value code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* a line's own buttons: there for a Tab, shown for the line that is pointed at or worked in (and always where nothing hovers) */
+/* a line's own buttons: always shown, pushed to the right of the line */
 .line-actions {
   margin-left: auto;
   white-space: nowrap;
-  opacity: 0;
-}
-.env-line:hover .line-actions,
-.env-line:focus-within .line-actions {
-  opacity: 1;
-}
-@media (hover: none) {
-  .line-actions {
-    opacity: 1;
-  }
 }
 .line-actions button.icon {
   width: 32px;
@@ -1814,6 +2776,8 @@ button.env-value code {
   max-width: none;
   display: flex;
   flex-direction: column;
+  /* .card scrolls sideways, which makes it clip the footer's 24px hang below the form: the drawer body scrolls instead */
+  overflow: visible;
 }
 /* the actions of a form: one row at the bottom of the drawer, Cancel and then the one that does it, kept in view while the form scrolls */
 .drawer-foot {
@@ -1835,6 +2799,79 @@ button.env-value code {
 .drawer.centered .drawer-foot {
   bottom: 0;
   margin-bottom: 0;
+}
+/* a role rule of the identity provider (UXR-27): a box of its own with its number and Remove on top, its claim, value and role in a line, one to a line on a phone */
+.rule-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.rule-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.rule-card-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 0.9fr);
+  gap: 12px;
+  align-items: start;
+}
+/* a label's own track would not shrink below its input's width, and the claim ran under the value */
+.rule-card-cols label {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (max-width: 600px) {
+  .rule-card-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* the sign-in link (UXR-28): the slug field takes what it needs, no more, and the button that appears beside it stays on its line */
+.link-row label {
+  flex: 1 1 16rem;
+  max-width: 28rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+/* creating a token (UXR-28): name, scopes and lifetime in a line, the scopes widest; a field's own track would not shrink below its input, so each is one column; one to a line on a phone */
+.token-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 0.7fr);
+  gap: 16px 24px;
+  align-items: start;
+}
+.token-form > * {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (max-width: 600px) {
+  .token-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* the new token, shown once: set apart from the cards around it, its value in the mono face and wrapping rather than scrolling */
+.fresh-token {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--slate-tint);
+}
+.fresh-token p {
+  margin: 0;
+}
+.token-value {
+  font-family: var(--mono);
+  font-size: 14px;
+  max-width: none; /* the whole value is in view: it is the one thing in this panel to read and copy */
+}
+/* a token's scopes may be many: they wrap between scopes in their cell, never inside one, and on a phone the table scrolls in its card */
+td.scopes {
+  max-width: 28ch;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 /* what a variable's details can do: one row from the left edge of the list above it, and Delete apart at the far end */
 .detail-actions {

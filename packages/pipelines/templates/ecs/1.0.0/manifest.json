@@ -1,0 +1,73 @@
+{
+  "name": "ecs",
+  "version": "1.0.0",
+  "description": "Deploy a build to the ECS Fargate service a `service` blueprint created. The job assumes an IAM role with the forge's OIDC token (no access key is stored), builds the image, pushes it to the service's ECR repository tagged with the commit, registers a task definition revision and updates the service. A pipeline started with ORCH_DEPLOY_ENV and ORCH_DEPLOY_SHA deploys that build: promote and rollback. The trust is the `deploy-identity` blueprint, applied once by a person.",
+  "params": {
+    "type": "object",
+    "properties": {
+      "account": {
+        "type": "string",
+        "description": "The AWS account id (12 digits).",
+        "pattern": "^[0-9]{12}$"
+      },
+      "region": {
+        "type": "string",
+        "description": "The region of the service and of its ECR repository.",
+        "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]$"
+      },
+      "role": {
+        "type": "string",
+        "description": "The deploy role's name.",
+        "pattern": "^[A-Za-z0-9_.@][A-Za-z0-9_.@-]{0,63}$"
+      },
+      "cluster": {
+        "type": "string",
+        "description": "The ECS cluster's name.",
+        "pattern": "^[a-z][a-z0-9-]{0,62}$"
+      },
+      "service": {
+        "type": "string",
+        "description": "The ECS service's name.",
+        "pattern": "^[a-z][a-z0-9-]{0,62}$"
+      },
+      "repository": {
+        "type": "string",
+        "description": "The ECR repository the service's images go to.",
+        "pattern": "^[a-z][a-z0-9-]{0,62}$"
+      },
+      "deployImage": {
+        "type": "string",
+        "description": "The image the GitLab job runs in. It needs the AWS CLI v2 and the Docker CLI; this was not checked against a public image. GitHub's hosted runner has both.",
+        "pattern": "^(?!.*\\.\\.)[a-z0-9][a-z0-9._/-]{0,127}(:[A-Za-z0-9._-]{1,128})?$"
+      },
+      "dockerVersion": {
+        "type": "string",
+        "description": "Tag of the docker:dind service that builds the image on GitLab. GitHub's runner has Docker and ignores it.",
+        "default": "27",
+        "pattern": "^[0-9][0-9A-Za-z.-]{0,30}$"
+      },
+      "dockerfile": {
+        "type": "string",
+        "description": "Path of the Dockerfile, from the repository root.",
+        "default": "Dockerfile",
+        "pattern": "^(?![/-])(?!.*\\.\\.)[A-Za-z0-9._/-]{1,100}$"
+      },
+      "context": {
+        "type": "string",
+        "description": "Build context directory, from the repository root.",
+        "default": ".",
+        "pattern": "^(?![/-])(?!.*\\.\\.)[A-Za-z0-9._/-]{1,100}$"
+      },
+      "environment": {
+        "type": "string",
+        "description": "The environment a merge to the default branch deploys to: its slug, which is the name GitLab and GitHub give it. The deploy identity trusts this one.",
+        "default": "staging",
+        "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+        "maxLength": 63
+      }
+    },
+    "required": ["account", "region", "role", "cluster", "service", "repository", "deployImage"]
+  },
+  "detects": [],
+  "requiresVariables": []
+}

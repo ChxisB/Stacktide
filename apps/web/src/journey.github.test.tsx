@@ -45,6 +45,7 @@ test("connect GitHub, import a repository by its address, open the pipeline's pu
     );
 
   // 1. connect GitHub with a token, then paste the repository's address: it is found and ticked
+  await user.click(await screen.findByRole("button", { name: "Add a connection" }));
   await user.selectOptions(await screen.findByLabelText("Forge"), "GitHub");
   await user.clear(screen.getByLabelText("GitHub address"));
   await user.type(screen.getByLabelText("GitHub address"), hub.url);
@@ -91,10 +92,11 @@ test("connect GitHub, import a repository by its address, open the pipeline's pu
     kind: "not_found",
   });
 
-  // 3. the status page says what GitHub is not read for, instead of offering it
+  // 3. the status page reads GitHub's deployments in GitHub's words (CLD-10); it still has no GitLab to name
   await nav("Status");
   const deployments = await screen.findByRole("region", { name: "Deployments" });
-  expect(deployments.textContent).toContain("GitHub deployments are not read");
-  expect(within(deployments).queryByRole("button", { name: "Refresh" })).toBeNull();
+  expect(deployments.textContent).toContain("What GitHub says is deployed");
+  expect(deployments.textContent).not.toContain("GitLab");
+  await within(deployments).findByRole("button", { name: "Refresh" });
   expect(document.body.innerHTML).not.toContain(TOKEN);
 }, 60_000);

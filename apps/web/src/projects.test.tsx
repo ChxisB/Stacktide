@@ -3,7 +3,7 @@ import { auditEvents, createProject } from "@orch/db";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { eq } from "drizzle-orm";
-import { type Backend, clientVia, down, mount, pathOf, startBackend } from "./testing";
+import { type Backend, clientVia, down, inMain, mount, pathOf, startBackend } from "./testing";
 
 let backend: Backend;
 beforeAll(async () => {
@@ -54,6 +54,10 @@ async function fillConnection(
   await user.click(screen.getByRole("button", { name: "Connect" }));
 }
 
+/** The form to add a connection is a drawer (UXR-15): open it from the one button for it on the page. */
+const openConnection = async (user: ReturnType<typeof userEvent.setup>) =>
+  user.click(await screen.findByRole("button", { name: "Add a connection" }));
+
 const box = async (path: string) => screen.findByRole("checkbox", { name: new RegExp(`^${path}`) });
 
 describe("no organization", () => {
@@ -88,9 +92,13 @@ describe("connecting GitLab", () => {
   test("a wrong token says why, keeps nothing, and the token is not on the page", async () => {
     const s = await scene();
     mount(s.client);
-    await fillConnection(userEvent.setup(), s.mock.url, BAD_TOKEN);
+    const user = userEvent.setup();
+    await openConnection(user);
+    await fillConnection(user, s.mock.url, BAD_TOKEN);
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("GitLab rejected the token");
+    // the drawer stays open with what went wrong inside it
+    expect(alert.closest("dialog")).not.toBeNull();
     expect(document.body.textContent).not.toContain(BAD_TOKEN);
     expect(screen.getByLabelText("Access token").getAttribute("type")).toBe("password");
     expect(await connectionsOf(s)).toHaveLength(0);
@@ -101,8 +109,11 @@ describe("connecting GitLab", () => {
     const s = await scene();
     s.mock.addProject({ path: "acme/api", files: { "bun.lock": "" } });
     const { queries } = mount(s.client);
-    await fillConnection(userEvent.setup(), s.mock.url, s.mock.token);
+    const user = userEvent.setup();
+    await openConnection(user);
+    await fillConnection(user, s.mock.url, s.mock.token);
     expect(await screen.findByRole("heading", { name: "Import from GitLab" })).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(await box("acme/api")).toBeTruthy();
     expect(await connectionsOf(s)).toHaveLength(1);
     expect(document.body.textContent).not.toContain(s.mock.token);
@@ -392,7 +403,7 @@ describe("when the server fails", () => {
     await screen.findByRole("heading", { name: "Welcome" });
     await settled();
     expect(screen.queryByRole("region", { name: "Getting started" })).toBeNull();
-    expect(screen.queryByRole("status")).toBeNull();
+    expect(inMain().queryByRole("status")).toBeNull();
   });
 });
 
@@ -411,7 +422,7 @@ describe("when the organizations cannot be listed", () => {
     expect(screen.queryByText(/not in an organization/)).toBeNull();
     failing = false;
     await userEvent.setup().click(within(alert).getByRole("button", { name: "Try again" }));
-    expect(await screen.findByRole("heading", { name: "Connect GitLab" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Add a connection" })).toBeTruthy();
   });
 });
 
@@ -428,6 +439,7 @@ describe("more than one connection", () => {
 
     await user.click(screen.getByRole("button", { name: "Add a connection" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(await box("one/first")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Add a connection" }));
@@ -628,11 +640,29 @@ describe("how the screen is laid out", () => {
     expect(within(flow).getByRole("button", { name: "Import 0 selected" })).toBeTruthy();
   });
 
-  test("with no connection, the form to add one sits in a card", async () => {
+  test("with no connection, the import card says so and holds the button that opens the form", async () => {
     const s = await scene();
     mount(s.client);
-    const form = await screen.findByRole("form", { name: "Connect GitLab" });
-    expect(form.closest(".card")).not.toBeNull();
+    const card = await screen.findByRole("region", { name: "Import projects" });
+    expect(within(card).getByRole("heading", { name: "Connect a forge" })).toBeTruthy();
+    expect(screen.queryByRole("form", { name: "Connect GitLab" })).toBeNull();
+    // one button for it, in the empty state, not a second one in the card's header
+    expect(screen.getAllByRole("button", { name: "Add a connection" })).toHaveLength(1);
+    expect(within(card).getByRole("button", { name: "Add a connection" })).toBeTruthy();
+  });
+
+  test("the imported card says how many there are, in the singular for one", async () => {
+    const s = await scene();
+    await s.connect();
+    await createProject(backend.t.db, { organizationId: s.org.id, name: "acme/one" });
+    const view = mount(s.client);
+    const card = await screen.findByRole("region", { name: "Imported projects" });
+    expect(await within(card).findByText("1 project")).toBeTruthy();
+    view.unmount();
+    await createProject(backend.t.db, { organizationId: s.org.id, name: "acme/two" });
+    mount(s.client);
+    const again = await screen.findByRole("region", { name: "Imported projects" });
+    expect(await within(again).findByText("2 projects")).toBeTruthy();
   });
 
   test("imported and archived are badges, each with words and a shape that is not read out", async () => {
@@ -652,5 +682,102 @@ describe("how the screen is laid out", () => {
     expect(done?.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     const old = badge((await box("acme/old")).closest("label"), "archived");
     expect(old?.className).toBe("st st-quiet");
+  });
+});
+
+describe("adding a connection, in a drawer", () => {
+  test("the form is not on the page until Add a connection opens it; Cancel and Escape give the focus back", async () => {
+    const s = await scene();
+    await s.connect();
+    mount(s.client);
+    const user = userEvent.setup();
+    const opener = await screen.findByRole("button", { name: "Add a connection" });
+    expect(screen.queryByRole("form", { name: "Connect GitLab" })).toBeNull();
+    await user.click(opener);
+    const drawer = await screen.findByRole("dialog", { name: "Add a connection" });
+    expect(within(drawer).getByRole("form", { name: "Connect GitLab" })).toBeTruthy();
+    // the drawer's title is the heading: the form does not say it twice
+    expect(within(drawer).queryByRole("heading")).toBeNull();
+    await user.click(within(drawer).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    await user.click(opener);
+    await screen.findByRole("dialog", { name: "Add a connection" });
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  test("with no connection the same button, in the empty state, opens the same drawer", async () => {
+    const s = await scene();
+    mount(s.client);
+    const user = userEvent.setup();
+    await openConnection(user);
+    const drawer = await screen.findByRole("dialog", { name: "Add a connection" });
+    expect(within(drawer).getByRole("form", { name: "Connect GitLab" })).toBeTruthy();
+  });
+
+  test("choosing another forge changes the form, and the drawer keeps its name", async () => {
+    const s = await scene();
+    await s.connect();
+    mount(s.client);
+    const user = userEvent.setup();
+    await openConnection(user);
+    const drawer = await screen.findByRole("dialog", { name: "Add a connection" });
+    await user.selectOptions(within(drawer).getByLabelText("Forge"), "GitHub");
+    expect(within(drawer).getByRole("form", { name: "Connect GitHub" })).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Add a connection" })).toBe(drawer);
+  });
+
+  test("a connection that works closes the drawer and is reported by the toast, with the token nowhere", async () => {
+    const s = await scene();
+    mount(s.client);
+    const user = userEvent.setup();
+    await openConnection(user);
+    await fillConnection(user, s.mock.url, s.mock.token);
+    const toast = await screen.findByText("Connected GitLab.");
+    expect(toast.getAttribute("role")).toBe("status");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.body.textContent).not.toContain(s.mock.token);
+  });
+});
+
+describe("the live count of what will be imported", () => {
+  test("the footer says how many are picked as they are picked, and nothing when none are", async () => {
+    const s = await scene();
+    await s.connect();
+    s.mock.addProject({ path: "acme/api", files: {} });
+    s.mock.addProject({ path: "acme/img", files: {} });
+    mount(s.client);
+    const user = userEvent.setup();
+    await box("acme/api");
+    const flow = screen.getByRole("region", { name: "Import from GitLab" });
+    const count = () => within(flow).getByRole("status").textContent;
+    expect(count()).toBe("Nothing selected");
+    await user.click(await box("acme/api"));
+    expect(count()).toBe("1 selected");
+    await user.click(await box("acme/img"));
+    expect(count()).toBe("2 selected");
+    expect(within(flow).getByRole("button", { name: "Import 2 selected" })).toBeTruthy();
+    await user.click(await box("acme/img"));
+    expect(count()).toBe("1 selected");
+    await user.click(within(flow).getByRole("button", { name: "Clear selection" }));
+    expect(count()).toBe("Nothing selected");
+  });
+
+  test("it follows an import: what was imported is no longer picked", async () => {
+    const s = await scene();
+    await s.connect();
+    s.mock.addProject({ path: "acme/api", files: {} });
+    mount(s.client);
+    const user = userEvent.setup();
+    await user.click(await box("acme/api"));
+    const flow = screen.getByRole("region", { name: "Import from GitLab" });
+    expect(within(flow).getByRole("status").textContent).toBe("1 selected");
+    await user.click(within(flow).getByRole("button", { name: "Import 1 selected" }));
+    await screen.findByRole("region", { name: "Import results" });
+    await waitFor(() =>
+      expect(within(flow).getByRole("status").textContent).toBe("Nothing selected"),
+    );
   });
 });

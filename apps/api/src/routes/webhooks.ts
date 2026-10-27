@@ -121,6 +121,13 @@ const GITHUB_PICKS = {
     ["environment", ["environment"]],
     ["pipelineId", ["workflow_run", "id"]],
   ],
+  // CLD-10: the consumer reads the deployment from GitHub, so only its id and the two names a log line wants are kept
+  deployment_status: [
+    ["action", ["action"]],
+    ["deploymentId", ["deployment", "id"]],
+    ["status", ["deployment_status", "state"]],
+    ["environment", ["deployment", "environment"]],
+  ],
 } as const satisfies Record<string, PickList>;
 type GithubEvent = keyof typeof GITHUB_PICKS;
 

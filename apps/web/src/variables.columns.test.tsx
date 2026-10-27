@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } fr
 import { parseDotenv } from "@orch/core";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type Backend, clientVia, mount, pathOf, startBackend } from "./testing";
+import { type Backend, clientVia, inMain, mount, pathOf, startBackend } from "./testing";
 import { must, SECRET, scene as sceneOn, showCompare, withClipboard } from "./variables.fixture";
 
 // VUI-16: each environment's column head in the All environments matrix has a menu: copy the slug, download that
@@ -81,7 +81,7 @@ describe("the column menu", () => {
       await user.click(await screen.findByRole("button", { name: "Options for Prod EU" }));
       await user.click(screen.getByRole("menuitem", { name: "Copy environment slug" }));
       await waitFor(() => expect(written).toEqual(["prod-eu"]));
-      expect((await screen.findByRole("status")).textContent).toBe("Copied the slug of Prod EU");
+      expect((await inMain().findByRole("status")).textContent).toBe("Copied the slug of Prod EU");
     });
   });
 
@@ -94,7 +94,7 @@ describe("the column menu", () => {
       await user.click(screen.getByRole("button", { name: "Options for dev" }));
       await user.click(screen.getByRole("menuitem", { name: "Copy environment slug" }));
       expect((await screen.findByRole("alert")).textContent).toBeTruthy();
-      expect(screen.queryByRole("status")).toBeNull();
+      expect(inMain().queryByRole("status")).toBeNull();
     });
   });
 

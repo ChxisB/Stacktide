@@ -115,6 +115,56 @@ describe("the pipeline delivered to a GitHub repository", () => {
     expect(w.writes().filter((x) => x.path.endsWith("/heads/main"))).toEqual([]);
   });
 
+  // CLD-9: the cloud deploy workflows go the same way, in a pull request, and a run is never a deploy
+  test.each([
+    [
+      "cloud-run",
+      {
+        project: "acme-staging-123",
+        region: "europe-west2",
+        service: "staging-web-service",
+        repository: "staging-web-service",
+        provider:
+          "projects/123456789/locations/global/workloadIdentityPools/staging-web-deploy/providers/github",
+        serviceAccount: "staging-web-deploy@acme-staging-123.iam.gserviceaccount.com",
+        deployImage: "example/gcloud-docker:1",
+      },
+    ],
+    [
+      "ecs",
+      {
+        account: "123456789012",
+        region: "eu-west-2",
+        role: "staging-web-deploy",
+        cluster: "staging-web-service",
+        service: "staging-web-service",
+        repository: "staging-web-service",
+        deployImage: "example/aws-docker:1",
+      },
+    ],
+  ])(
+    "the %s workflow is committed whole to a branch, in one pull request, and main is untouched",
+    async (name, params) => {
+      const w = await world();
+      const r = await w.run({ template: name, params });
+      expect(r).toMatchObject({ outcome: "opened", committed: true, existing: "none" });
+      const committed = await w.file(PIPELINE_BRANCH);
+      expect(committed).toBe(renderWorkflow(find(name), [{ params }]));
+      expect(committed).toContain("id-token: write");
+      expect(committed).not.toContain("stages:");
+      expect(await w.file("main")).toBeNull();
+      expect(w.writes().filter((x) => x.path.endsWith("/heads/main"))).toEqual([]);
+      // asking again changes nothing
+      expect(await w.run({ template: name, params })).toMatchObject({
+        outcome: "unchanged",
+        committed: false,
+      });
+      // and without the cloud's own names the request is refused before anything is written
+      const bare = await w.run({ template: name }).catch((x) => x);
+      expect(bare).toMatchObject({ code: "invalid_pipeline", status: 422 });
+    },
+  );
+
   test("says that the workflow was not checked, and does not call a lint it has not got", async () => {
     const w = await world();
     const r = await w.run(bun);

@@ -21,6 +21,7 @@ import {
   MAX_RUN_STACKS,
   notifyStackDrift,
   type RunWithStacks,
+  recordResourceOutputs,
   recordStackDrift,
   ruleNames,
   runOfPipeline,
@@ -238,6 +239,13 @@ const address = z
   .max(1024)
   .regex(/^[^\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+$/u, "not a resource address");
 
+// A link the stack's state names (BLP-17), which a person may be sent to: http(s), printable ASCII, no longer than
+// the generated job lets through (`OUTPUTS_FILTER`) and the database accepts (`resources_outputs_check`).
+const link = z
+  .string()
+  .max(300)
+  .regex(/^https?:\/\/[!-~]+$/, "not a link");
+
 const summaryBody = z.strictObject({
   stack: z.string().min(1).max(63),
   add: count,
@@ -282,6 +290,9 @@ const summaryBody = z.strictObject({
         .max(MAX_LINT_FINDINGS),
     })
     .optional(),
+  // The public links of the stack's state, which a resource of the catalog shows (BLP-17). Absent: the job could
+  // not say, and the resource keeps what it had; `{}`: the state has none, and the resource shows none.
+  outputs: z.strictObject({ url: link.optional(), consoleUrl: link.optional() }).optional(),
 });
 
 // A rule name is the one thing of a policy's finding that travels (never its message, which may quote
@@ -569,6 +580,20 @@ export const runRoutes = ({
               },
             });
           }
+          // A resource keeps the links of the newest plan of its stack; a stack no resource names has none to keep.
+          // Only a job on a protected ref is heard: any branch's job holds `run.summary`, and what it says here is
+          // shown to the whole organization after its run is gone. The state it reads is the same on every ref.
+          const links =
+            principal?.kind === "ci" && principal.job?.refProtected ? body.outputs : undefined;
+          if (links) {
+            await recordResourceOutputs(
+              tx,
+              { organizationId: orgId, projectId, stack: body.stack },
+              links,
+              // when the plan was asked for, so a run that finishes late cannot undo a newer one's links
+              run.createdAt,
+            );
+          }
           await audit(tx, {
             action: "run.summary",
             resourceType: "run",
@@ -583,6 +608,8 @@ export const runRoutes = ({
               destroy: body.destroy,
               resources: body.resources.length,
               costed: body.cost !== undefined,
+              // how many links, not which: they are for the resource's readers
+              outputs: Object.keys(links ?? {}).length,
             },
           });
           // A drift run's plan is the finding; an episode's start and end are the only news.

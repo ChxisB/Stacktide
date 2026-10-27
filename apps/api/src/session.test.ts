@@ -259,6 +259,49 @@ describe("a role through GitHub", () => {
     });
   });
 
+  test("a GitHub id on the platform-admin list for GitHub is a platform admin; a GitLab id or another GitHub id is not (FRG-34)", async () => {
+    const admin = await signInGithub(t.db, { githubId: 5154, login: "eve", name: "Eve" });
+    const other = await signInGithub(t.db, { githubId: 5155, login: "fay", name: "Fay" });
+    // a GitLab person whose GitLab id is the number on the GitHub list is another person
+    const gitlab = await upsertUser(t.db, { gitlabId: 5154, username: "gl5154", name: "G" });
+    const resolve = sessionPrincipal({
+      db: t.db,
+      githubRoles: () => ({ orgRoles: {}, projectRoles: {} }),
+      githubPlatformAdmins: [5154],
+    });
+    const adminOf = async (userId: string) =>
+      ((await resolve(await sessionFor(userId))) as { subject: { platformAdmin: boolean } }).subject
+        .platformAdmin;
+    expect(await adminOf(admin.id)).toBe(true);
+    expect(await adminOf(other.id)).toBe(false);
+    expect(await adminOf(gitlab.id)).toBe(false);
+  });
+
+  test("the list is not read for a person with a GitHub id when GitHub sign-in is off", async () => {
+    const admin = await signInGithub(t.db, { githubId: 5156, login: "gus", name: "Gus" });
+    const resolve = sessionPrincipal({ db: t.db, githubPlatformAdmins: [5156] });
+    expect(
+      ((await resolve(await sessionFor(admin.id))) as { subject: { platformAdmin: boolean } })
+        .subject.platformAdmin,
+    ).toBe(false);
+  });
+
+  test("an organization role through GitHub is added to the others, the highest holding", async () => {
+    const [a, b] = [crypto.randomUUID(), crypto.randomUUID()];
+    const user = await signInGithub(t.db, { githubId: 5157, login: "hal", name: "Hal" });
+    await t.db.execute(sql`UPDATE users SET gitlab_id = ${next++} WHERE id = ${user.id}`);
+    const orgRolesOf = async (gitlab: OrgRole, github: OrgRole) =>
+      (
+        (await sessionPrincipal({
+          db: t.db,
+          roles: () => ({ orgRoles: { [a]: gitlab }, projectRoles: {} }),
+          githubRoles: () => ({ orgRoles: { [a]: github, [b]: github }, projectRoles: {} }),
+        })(await sessionFor(user.id))) as { subject: { orgRoles: Record<string, OrgRole> } }
+      ).subject.orgRoles;
+    expect(await orgRolesOf("member", "owner")).toEqual({ [a]: "owner", [b]: "owner" });
+    expect(await orgRolesOf("admin", "viewer")).toEqual({ [a]: "admin", [b]: "viewer" });
+  });
+
   test("a source that fails fails the request: no session, no guess", async () => {
     const user = await signInGithub(t.db, { githubId: 5153, login: "di", name: "Di" });
     const resolve = sessionPrincipal({

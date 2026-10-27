@@ -126,6 +126,18 @@ export const SUMMARY_FILTER = [
 ].join(" ");
 
 /**
+ * The outputs a plan's summary carries (BLP-17): the stack's `url` and `console_url`, read from the state the plan
+ * started from (`prior_state`: what exists, not what the plan would create) and only when the output is not
+ * sensitive and is an http(s) link of at most 300 printable ASCII characters. A plan shows a sensitive output in
+ * clear, so `sensitive == false` is the one thing that keeps it out, and an output without it is left out too.
+ * `\\z` and not `$`, which would let a trailing newline through. The bounds are the plan-summary route's.
+ */
+export const OUTPUTS_FILTER = [
+  String.raw`def link(n): (.prior_state.values.outputs // {})[n] | select(type == "object" and .sensitive == false and (.value | type) == "string" and (.value | length) <= 300 and (.value | test("^https?://[!-~]+\\z"))) | .value;`,
+  '{url: (link("url") // null), consoleUrl: (link("console_url") // null)} | with_entries(select(.value != null))',
+].join(" ");
+
+/**
  * The estimate a plan's cost job posts, from `infracost diff --format json` (its totals are strings,
  * its currency a code): the delta, the new total, the currency and the tool, as numbers. Anything that
  * is not a usable estimate (a field missing, not a number, out of range, a lower-case currency) is no
@@ -697,6 +709,12 @@ export function buildPipeline(input: GenerateInput) {
                 "if [ -s cost.json ] && jq -c --slurpfile cost cost.json '. + {cost: $cost[0]}' summary.json > summary.merged; then mv summary.merged summary.json; fi",
               ]
             : []),
+          // so do the outputs of the state the plan started from; a plan that cannot be read leaves the summary as it was
+          ...(isZone(stackOf)
+            ? []
+            : [
+                `if jq -c '${OUTPUTS_FILTER}' ${inDir(dir, "plan.json")} > outputs.json && jq -c --slurpfile outputs outputs.json '. + {outputs: $outputs[0]}' summary.json > summary.merged; then mv summary.merged summary.json; fi`,
+              ]),
           `curl --fail --silent --show-error --request POST --header "Authorization: Bearer $ORCH_TOKEN" --header "Content-Type: application/json" --data @summary.json "$ORCH_API_URL${input.summaryPath}"`,
           ...(judged.length > 0 && input.policy
             ? policyScript(name, dir, judged, input.policy.path)

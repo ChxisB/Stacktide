@@ -141,6 +141,22 @@ const REVIEW = {
   workflow_run: { id: 9001, display_title: CANARY },
   approver: { login: "mallory" },
 };
+const DEPLOYMENT_STATUS = {
+  action: "created",
+  repository,
+  deployment: {
+    id: 31337,
+    environment: "staging",
+    description: CANARY,
+    creator: { login: "mallory" },
+  },
+  deployment_status: {
+    state: "in_progress",
+    description: CANARY,
+    log_url: `https://example.test/${CANARY}`,
+    creator: { login: "mallory" },
+  },
+};
 
 const sameButForId = (problem: { request_id?: string }) => ({ ...problem, request_id: undefined });
 const allJobs = () => t.db.select().from(jobs).where(eq(jobs.queue, WEBHOOK_QUEUE));
@@ -247,6 +263,11 @@ describe("a delivery with a good signature", () => {
     ],
     ["issue_comment", COMMENT, { action: "created", noteId: 555, mrIid: 12 }],
     ["deployment_review", REVIEW, { action: "requested", environment: "prod", pipelineId: 9001 }],
+    [
+      "deployment_status",
+      DEPLOYMENT_STATUS,
+      { action: "created", deploymentId: 31337, status: "in_progress", environment: "staging" },
+    ],
   ];
   for (const [event, body, picked] of cases) {
     test(`${event}: only the picked fields reach the job`, async () => {
@@ -268,7 +289,13 @@ describe("a delivery with a good signature", () => {
   }
 
   test("a job from GitHub is not an event to the consumers written for GitLab", async () => {
-    for (const event of ["workflow_run", "workflow_job", "pull_request", "issue_comment"]) {
+    for (const event of [
+      "workflow_run",
+      "workflow_job",
+      "pull_request",
+      "issue_comment",
+      "deployment_status",
+    ]) {
       const job = (await allJobs()).find((j) => j.payload.event === event);
       expect(job).toBeDefined();
       for (const schema of [pipelineEvent, mrEvent, deploymentEvent]) {
