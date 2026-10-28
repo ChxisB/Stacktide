@@ -234,7 +234,10 @@ export const importRoutes = ({
           }
         };
         for (let i = 0; i < ids.length; i += READ_BATCH) {
-          await Promise.all(ids.slice(i, i + READ_BATCH).map(readOne));
+          // every read ends before the answer, so none is still talking to GitLab after a failure
+          const settled = await Promise.allSettled(ids.slice(i, i + READ_BATCH).map(readOne));
+          const rejected = settled.find((s): s is PromiseRejectedResult => s.status === "rejected");
+          if (rejected) throw rejected.reason;
         }
 
         const results = await db.transaction(async (tx) => {
