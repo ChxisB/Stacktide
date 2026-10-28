@@ -12,7 +12,7 @@
     "react-dom": "19.3.1"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "21.0.3",
+    "@happy-dom/global-registrator": "21.0.4",
     "@orch/api": "workspace:*",
     "@orch/crypto": "workspace:*",
     "@orch/db": "workspace:*",
@@ -26,6 +26,6 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "drizzle-orm": "0.45.4",
-    "happy-dom": "21.0.3"
+    "happy-dom": "21.0.4"
   }
 }
