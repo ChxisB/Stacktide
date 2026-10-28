@@ -1,4 +1,4 @@
-# DevOps Orchastrature - Roadmap
+# Stacktide - Roadmap
 
 A control plane to **set up CI/CD for GitLab projects in minutes, manage variables/secrets in one place, and sync them where they need to go** - later extended to IaC stack orchestration. Inspiration and what we borrow: [REFERENCES.md](REFERENCES.md). How we build: `.claude/skills/software-factory/SKILL.md`.
 

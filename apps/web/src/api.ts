@@ -54,7 +54,7 @@ export async function call<T>(
   }
   // a page that is not JSON (a proxy's login, another service) arrives as text; a 204 has no body
   if (res.status !== 204 && (typeof res.data !== "object" || res.data === null)) {
-    throw new ApiError("The server did not answer like the Orchastrature API.", res.status);
+    throw new ApiError("The server did not answer like the Stacktide API.", res.status);
   }
   return res.data as T;
 }

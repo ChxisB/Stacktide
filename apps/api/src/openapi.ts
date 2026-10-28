@@ -20,5 +20,5 @@ export const openapiPlugin = () =>
     path: "/openapi",
     specPath: "/openapi/json",
     mapJsonSchema: { zod: plain },
-    documentation: { info: { title: "DevOps Orchastrature API", version: "0.1.0" } },
+    documentation: { info: { title: "Stacktide API", version: "0.1.0" } },
   });

@@ -54,7 +54,7 @@ export function LoginPage() {
   return (
     <SignInCard>
       <div className="signin-head">
-        <h1>Orchastrature</h1>
+        <h1>Stacktide</h1>
         <p className="muted">
           Set up CI/CD, manage variables and sync them to GitLab, all in one place.
         </p>
@@ -97,7 +97,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (me.error) {
     return (
       <SignInCard>
-        <h1>Orchastrature</h1>
+        <h1>Stacktide</h1>
         <ErrorPanel error={me.error} retry={() => void me.refetch()} />
       </SignInCard>
     );

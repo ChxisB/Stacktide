@@ -1,9 +1,9 @@
 ---
 name: software-factory
-description: Plan and build the DevOps Orchastrature platform (Bun + TypeScript control plane for GitLab CI/CD pipelines, variables/secrets sync and IaC stacks) through a gated pipeline - spec, mini-task breakdown under .claude/.planning/{feature}/, test-first build, verify and review, hand-off. When the request is to design something, make the design in Claude Design first, with the design skills, get a yes, and build from it. Use for "factory <feature>", "/software-factory", "plan feature X", "build/continue X", "what's next", or whenever a feature must be broken into tasks.
+description: Plan and build the Stacktide platform (Bun + TypeScript control plane for GitLab CI/CD pipelines, variables/secrets sync and IaC stacks) through a gated pipeline - spec, mini-task breakdown under .claude/.planning/{feature}/, test-first build, verify and review, hand-off. When the request is to design something, make the design in Claude Design first, with the design skills, get a yes, and build from it. Use for "factory <feature>", "/software-factory", "plan feature X", "build/continue X", "what's next", or whenever a feature must be broken into tasks.
 ---
 
-# Software Factory - DevOps Orchastrature
+# Software Factory - Stacktide
 
 You orchestrate the build of this platform: a Bun + TypeScript **control plane** that sets up GitLab CI/CD for projects, manages variables/secrets and syncs them to targets, and orchestrates IaC stacks. GitLab CI is the runner; the platform never holds cloud credentials. Work one small task at a time through the gates below.
 

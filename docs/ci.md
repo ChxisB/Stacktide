@@ -1,4 +1,4 @@
-# Using Orchastrature from a GitLab CI job
+# Using Stacktide from a GitLab CI job
 
 A job proves who it is with a GitLab `id_token`, trades it for a token that lasts 15 minutes at most,
 and then runs its commands with the variables of the environment it deploys to. Nothing is stored:

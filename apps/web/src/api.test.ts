@@ -50,7 +50,7 @@ test("no answer at all is status 0, whether the client threw or reported the exc
 test("an empty answer is refused too: a null must not reach a screen as data", async () => {
   const error = await call(answer(200, null)).catch((e: unknown) => e);
   expect(error).toBeInstanceOf(ApiError);
-  expect((error as Error).message).toContain("did not answer like the Orchastrature API");
+  expect((error as Error).message).toContain("did not answer like the Stacktide API");
 });
 
 test("a page that is not the API's JSON is refused, and no message repeats what it said", async () => {
@@ -59,7 +59,7 @@ test("a page that is not the API's JSON is refused, and no message repeats what 
   );
   expect(error).toBeInstanceOf(ApiError);
   expect((error as Error).message).not.toContain("s3cret");
-  expect((error as Error).message).toContain("did not answer like the Orchastrature API");
+  expect((error as Error).message).toContain("did not answer like the Stacktide API");
 });
 
 test("a paged list is followed to its last page", async () => {

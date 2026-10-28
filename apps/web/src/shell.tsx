@@ -135,7 +135,7 @@ export function Shell({ pages }: { pages: readonly Page[] }) {
                 <circle className="dot" cx="16" cy="16" r="3" />
               </svg>
               <span className="wordmark">
-                Orchastrature<small>Control plane</small>
+                Stacktide<small>Control plane</small>
               </span>
             </a>
             <button

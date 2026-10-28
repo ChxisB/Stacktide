@@ -108,7 +108,7 @@ describe("the sidebar", () => {
     await shell();
     expect(screen.getByText("Shell Tester")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Orchastrature/ }).getAttribute("href")).toBe("#/");
+    expect(screen.getByRole("link", { name: /Stacktide/ }).getAttribute("href")).toBe("#/");
   });
 });
 
@@ -145,7 +145,7 @@ describe("the phone menu", () => {
 
   test("Tab stays inside: from the last control to the first, and Shift+Tab the other way", async () => {
     const { user, menu } = await openMenu();
-    const first = within(menu).getByRole("link", { name: /Orchastrature/ });
+    const first = within(menu).getByRole("link", { name: /Stacktide/ });
     const last = within(menu).getByRole("button", { name: "Sign out" });
     last.focus();
     await user.tab();
